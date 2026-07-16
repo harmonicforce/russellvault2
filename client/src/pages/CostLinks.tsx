@@ -22,13 +22,13 @@ export default function CostLinks() {
 
   const { data: lotResults } = useQuery({
     queryKey: ['link-lot-search', debouncedLot],
-    queryFn: () => get<Page<InventoryLot>>('/inventory', { q: debouncedLot, pageSize: 8 }),
+    queryFn: () => get<Page<InventoryLot>>('/inventory', { q: debouncedLot, pageSize: 500 }),
     enabled: debouncedLot.length > 1,
   });
 
   const { data: purchaseResults } = useQuery({
     queryKey: ['link-purchase-search', debouncedPurchase],
-    queryFn: () => get<Page<WhatnotPurchase>>('/purchases', { q: debouncedPurchase, pageSize: 8 }),
+    queryFn: () => get<Page<WhatnotPurchase>>('/purchases', { q: debouncedPurchase, pageSize: 500 }),
     enabled: debouncedPurchase.length > 1,
   });
 
@@ -84,24 +84,27 @@ export default function CostLinks() {
                 onClear={() => setSelectedLot(null)}
               />
             ) : (
-              <div className="flex flex-col gap-1 max-h-64 overflow-y-auto">
-                {(lotResults?.rows ?? []).map((r) => (
-                  <button
-                    key={r.inventory_lot_id}
-                    onClick={() => { setSelectedLot(r); setAllocQty(String(r.available_quantity ?? '')); }}
-                    className="text-left rounded-lg border border-hairline px-3 py-2 text-sm hover:bg-surface-2"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate font-medium">{r.product_name || r.inventory_lot_id}</span>
-                      <StatusBadge status={r.cost_status} />
-                    </div>
-                    <div className="text-xs text-ink-muted">{r.inventory_lot_id} · avail {r.available_quantity} · {money(r.recorded_unit_value)}</div>
-                  </button>
-                ))}
-                {debouncedLot.length > 1 && (lotResults?.rows.length ?? 0) === 0 && (
-                  <p className="text-xs text-ink-muted px-1">No matches.</p>
-                )}
-              </div>
+              <>
+                <MatchCount total={lotResults?.total} shown={lotResults?.rows.length} show={debouncedLot.length > 1} />
+                <div className="flex flex-col gap-1 max-h-[26rem] overflow-y-auto pr-1">
+                  {(lotResults?.rows ?? []).map((r) => (
+                    <button
+                      key={r.inventory_lot_id}
+                      onClick={() => { setSelectedLot(r); setAllocQty(String(r.available_quantity ?? '')); }}
+                      className="text-left rounded-lg border border-hairline px-3 py-2 text-sm hover:bg-surface-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-medium">{r.product_name || r.inventory_lot_id}</span>
+                        <StatusBadge status={r.cost_status} />
+                      </div>
+                      <div className="text-xs text-ink-muted">{r.inventory_lot_id} · avail {r.available_quantity} · {money(r.recorded_unit_value)}</div>
+                    </button>
+                  ))}
+                  {debouncedLot.length > 1 && (lotResults?.rows.length ?? 0) === 0 && (
+                    <p className="text-xs text-ink-muted px-1">No matches.</p>
+                  )}
+                </div>
+              </>
             )}
           </div>
 
@@ -122,24 +125,27 @@ export default function CostLinks() {
                 onClear={() => setSelectedPurchase(null)}
               />
             ) : (
-              <div className="flex flex-col gap-1 max-h-64 overflow-y-auto">
-                {(purchaseResults?.rows ?? []).map((r) => (
-                  <button
-                    key={r.acquisition_line_id}
-                    onClick={() => { setSelectedPurchase(r); setAllocCost(String(r.remaining_cost ?? r.total_paid ?? '')); }}
-                    className="text-left rounded-lg border border-hairline px-3 py-2 text-sm hover:bg-surface-2"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate font-medium">{r.product_name}</span>
-                      <StatusBadge status={r.reconciliation_status} />
-                    </div>
-                    <div className="text-xs text-ink-muted">{r.acquisition_line_id} · {r.seller} · {money(r.total_paid)}</div>
-                  </button>
-                ))}
-                {debouncedPurchase.length > 1 && (purchaseResults?.rows.length ?? 0) === 0 && (
-                  <p className="text-xs text-ink-muted px-1">No matches.</p>
-                )}
-              </div>
+              <>
+                <MatchCount total={purchaseResults?.total} shown={purchaseResults?.rows.length} show={debouncedPurchase.length > 1} />
+                <div className="flex flex-col gap-1 max-h-[26rem] overflow-y-auto pr-1">
+                  {(purchaseResults?.rows ?? []).map((r) => (
+                    <button
+                      key={r.acquisition_line_id}
+                      onClick={() => { setSelectedPurchase(r); setAllocCost(String(r.remaining_cost ?? r.total_paid ?? '')); }}
+                      className="text-left rounded-lg border border-hairline px-3 py-2 text-sm hover:bg-surface-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-medium">{r.product_name}</span>
+                        <StatusBadge status={r.reconciliation_status} />
+                      </div>
+                      <div className="text-xs text-ink-muted">{r.acquisition_line_id} · {r.seller} · {money(r.total_paid)}</div>
+                    </button>
+                  ))}
+                  {debouncedPurchase.length > 1 && (purchaseResults?.rows.length ?? 0) === 0 && (
+                    <p className="text-xs text-ink-muted px-1">No matches.</p>
+                  )}
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -173,6 +179,17 @@ export default function CostLinks() {
       </div>
 
       <CostLinksTable />
+    </div>
+  );
+}
+
+function MatchCount({ total, shown, show }: { total?: number; shown?: number; show: boolean }) {
+  if (!show || !total) return null;
+  return (
+    <div className="text-xs text-ink-muted px-1 pb-1.5">
+      {total} match{total === 1 ? '' : 'es'}
+      {shown != null && shown < total ? ` — showing first ${shown}, keep typing to narrow` : ''}
+      {(shown ?? 0) > 6 ? ' · scroll to see all' : ''}
     </div>
   );
 }
