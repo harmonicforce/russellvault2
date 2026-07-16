@@ -42,6 +42,43 @@ backend. The SQLite database is created and seeded automatically on first run
 of the server (`server/data/vault.db`, gitignored) — delete it to reseed
 from scratch.
 
+## Running it on a Chromebook (Linux / Crostini)
+
+A Chromebook runs this natively through its built-in Linux environment — no
+cloud account needed. Everything below is typed into the **Linux Terminal**.
+
+1. **Turn on Linux** (one time): Settings → *Advanced* → *Developers* → *Linux
+   development environment* → **Turn on**. When it finishes, a "Terminal" app
+   appears.
+
+2. **Install the basics** (Node 20+ via nvm, plus build tools for the native
+   SQLite module):
+   ```bash
+   sudo apt update && sudo apt install -y git curl build-essential python3
+   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+   # close the Terminal and reopen it, then:
+   nvm install 22
+   ```
+
+3. **Get the code and run it** (single-port production mode — one URL, simplest):
+   ```bash
+   git clone <your-repo-url> russellvault2
+   cd russellvault2
+   git checkout claude/ui-better-spreadsheet-cjhwjb
+   npm install
+   npm run build     # installs deps + builds the client (first run takes a few minutes)
+   npm start         # serves the whole app on http://localhost:4000
+   ```
+
+4. Open **http://localhost:4000** in the Chromebook's Chrome browser. Leave the
+   Terminal open while you use it; press `Ctrl+C` there to stop.
+
+   Prefer live-reload while developing? Use `npm run install:all && npm run dev`
+   instead and open **http://localhost:5173**.
+
+The database file (`server/data/vault.db`) lives in the Linux container and
+persists between runs, so anything you enter stays put.
+
 ## Deploying to Railway
 
 The app deploys as a **single Railway service**: the build compiles the React
