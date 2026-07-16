@@ -41,3 +41,34 @@ Open http://localhost:5173. The Vite dev server proxies `/api` to the Express
 backend. The SQLite database is created and seeded automatically on first run
 of the server (`server/data/vault.db`, gitignored) — delete it to reseed
 from scratch.
+
+## Deploying to Railway
+
+The app deploys as a **single Railway service**: the build compiles the React
+client, and in production the Express server serves that build alongside the
+API on one port. `railway.json` already wires this up.
+
+1. **Create the service** — "New Project → Deploy from GitHub repo" and pick
+   this repo/branch. Railway reads `railway.json`:
+   - Build: `npm run build` (installs server + client deps, builds the client).
+   - Start: `npm run start` (runs the API, which also serves the client).
+   - Health check: `/api/health`.
+2. **Add a volume for the database (recommended).** SQLite lives on disk, and
+   Railway containers have an ephemeral filesystem — without a volume the
+   database resets on every redeploy. It would re-seed the original workbook
+   data automatically, but any inventory/sales you entered in the app would be
+   lost. To persist:
+   - Add a Volume to the service and mount it at e.g. `/data`.
+   - Set the environment variable `DATA_DIR=/data`.
+
+   The database is then stored at `/data/vault.db` and survives redeploys.
+3. **Port** — none needed; Railway injects `PORT` and the server reads it.
+
+That's it — Railway builds, runs the health check, and serves the app at the
+generated domain. No `.env` is required for a default deploy.
+
+### Notes
+- `better-sqlite3` is a native module; Railway's Nixpacks Node build compiles
+  or fetches a prebuilt binary automatically.
+- To reseed a deployed instance from scratch, delete `vault.db` from the volume
+  (or detach/reattach the volume) and redeploy.

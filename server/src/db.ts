@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, '..', 'data', 'vault.db');
+// DATA_DIR lets a hosting platform (e.g. a Railway volume) point the SQLite
+// file at persistent storage. Falls back to a local ./data directory.
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+const DB_PATH = process.env.DATABASE_PATH || path.join(DATA_DIR, 'vault.db');
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
