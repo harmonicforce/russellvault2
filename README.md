@@ -62,7 +62,7 @@ cloud account needed. Everything below is typed into the **Linux Terminal**.
 
 3. **Get the code and run it** (single-port production mode — one URL, simplest):
    ```bash
-   git clone <your-repo-url> russellvault2
+   git clone https://github.com/harmonicforce/russellvault2.git russellvault2
    cd russellvault2
    git checkout claude/ui-better-spreadsheet-cjhwjb
    npm install
