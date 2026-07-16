@@ -1,0 +1,21 @@
+{
+  "name": "russellvault2",
+  "version": "1.0.0",
+  "description": "The Russell Vault operations app — replaces the reconciliation spreadsheets with a live inventory, cost-basis, listing, and sales workflow.",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install --prefix server && npm install --prefix client",
+    "dev": "concurrently -n server,client -c blue,magenta \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "seed": "npm run seed --prefix server"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:41729/git/harmonicforce/russellvault2"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}

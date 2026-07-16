@@ -1,0 +1,65 @@
+[
+ {
+  "check_id": "OP-001",
+  "test": "Inventory IDs unique",
+  "actual": 1987,
+  "expected": 1987,
+  "difference": 0,
+  "status": "PASS",
+  "notes": "500 reserved new IDs plus 1,487 existing IDs."
+ },
+ {
+  "check_id": "OP-002",
+  "test": "SKUs unique",
+  "actual": 1987,
+  "expected": 1987,
+  "difference": 0,
+  "status": "PASS",
+  "notes": "One stable sellable SKU per inventory lot."
+ },
+ {
+  "check_id": "OP-003",
+  "test": "Whatnot lines loaded",
+  "actual": 2149,
+  "expected": 2149,
+  "difference": 0,
+  "status": "PASS",
+  "notes": "Complete imported acquisition history."
+ },
+ {
+  "check_id": "OP-004",
+  "test": "Allocation rows loaded",
+  "actual": 600,
+  "expected": 600,
+  "difference": 0,
+  "status": "PASS",
+  "notes": "Includes 287 candidates and reserved capacity."
+ },
+ {
+  "check_id": "OP-005",
+  "test": "Allocation blocking rows",
+  "actual": 0,
+  "expected": 0,
+  "difference": 0,
+  "status": "PASS",
+  "notes": "Candidate review is allowed; BLOCK is not."
+ },
+ {
+  "check_id": "OP-006",
+  "test": "Listing blocking rows",
+  "actual": 0,
+  "expected": 0,
+  "difference": 0,
+  "status": "PASS",
+  "notes": "Draft/next steps are allowed; BLOCK is not."
+ },
+ {
+  "check_id": "OP-007",
+  "test": "Sales blocking rows",
+  "actual": 0,
+  "expected": 0,
+  "difference": 0,
+  "status": "PASS",
+  "notes": "Reserved rows are inactive."
+ }
+]

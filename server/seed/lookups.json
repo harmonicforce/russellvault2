@@ -1,0 +1,92 @@
+{
+ "Business Vertical": [
+  "Pokemon TCG",
+  "Sneakers",
+  "Electronics",
+  "Apparel",
+  "Accessories",
+  "Other"
+ ],
+ "Category": [
+  "Raw card",
+  "Graded slab",
+  "Sealed product",
+  "Sneakers",
+  "Electronics",
+  "Top",
+  "Bottom",
+  "Outerwear",
+  "Headwear",
+  "Bag",
+  "Jewelry",
+  "Accessory",
+  "Other"
+ ],
+ "Tracking Mode": [
+  "Lot-managed",
+  "Serialized"
+ ],
+ "Condition Reviewed": [
+  "Yes",
+  "No"
+ ],
+ "Allocation Status": [
+  "Reserved",
+  "Candidate",
+  "Confirmed",
+  "Rejected",
+  "Superseded"
+ ],
+ "Confidence": [
+  "High",
+  "Medium",
+  "Low"
+ ],
+ "Listing Status": [
+  "Reserved",
+  "Draft",
+  "Ready to List",
+  "Active",
+  "Ended",
+  "Sold",
+  "Hold"
+ ],
+ "Yes No": [
+  "Yes",
+  "No"
+ ],
+ "Listing Format": [
+  "Fixed Price",
+  "Auction"
+ ],
+ "Payment Status": [
+  "Not Paid",
+  "Paid",
+  "Partially Refunded",
+  "Refunded"
+ ],
+ "Fulfillment Status": [
+  "Not Packed",
+  "Packed",
+  "Shipped",
+  "Delivered",
+  "Returned",
+  "Cancelled"
+ ],
+ "Return Status": [
+  "None",
+  "Requested",
+  "Received",
+  "Refunded",
+  "Closed"
+ ],
+ "Intake Status": [
+  "Available Intake Row",
+  "Draft",
+  "Ready",
+  "Active Inventory",
+  "Hold",
+  "Sold",
+  "Voided"
+ ]
+}
