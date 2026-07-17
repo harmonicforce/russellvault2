@@ -5,4 +5,5 @@ dist/
 
 # Generated data exports / review files (one-off, not app source)
 *_for_review.csv
+*_remaining.csv
 /server/data/
