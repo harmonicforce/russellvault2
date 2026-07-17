@@ -8,7 +8,7 @@
 // Bump CLASSIFIER_VERSION whenever this logic changes; the startup migration
 // re-tags auto-classified rows on a version change but never touches a row the
 // owner edited by hand.
-export const CLASSIFIER_VERSION = 4;
+export const CLASSIFIER_VERSION = 5;
 
 export type ProductType =
   | 'Slab' | 'Single' | 'Sealed'
@@ -38,6 +38,7 @@ const SINGLE = /\bsingles?\b|\bnm-?lp\b|\bnm\b|near mint|\bjumbo\b/i;
 const SELLER_TYPE: Record<string, ProductType> = {
   topshelfcollects: 'Single',   // singles seller (e.g. "fearow #42")
   loosepacks: 'Sealed',         // packs seller (e.g. "Silver Temp", "Journey Together")
+  findsfordays: 'Single',       // singles seller ("$1start auction item as is on screen")
 };
 
 const VERTICAL_MAP: Record<string, ProductType> = {
