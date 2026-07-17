@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db.js';
+import { PRODUCT_TYPES } from '../classify.js';
 
 const router = Router();
 
@@ -10,7 +11,7 @@ const SORTABLE = new Set([
 
 router.get('/', (req, res) => {
   const {
-    q, seller, reconciliationStatus, businessVertical,
+    q, seller, reconciliationStatus, businessVertical, productType,
     sort = 'processed_date', order = 'desc', page = '1', pageSize = '50',
   } = req.query as Record<string, string>;
 
@@ -24,6 +25,7 @@ router.get('/', (req, res) => {
   if (seller) { where.push('seller = @seller'); params.seller = seller; }
   if (reconciliationStatus) { where.push('reconciliation_status = @reconciliationStatus'); params.reconciliationStatus = reconciliationStatus; }
   if (businessVertical) { where.push('business_vertical = @businessVertical'); params.businessVertical = businessVertical; }
+  if (productType) { where.push('product_type = @productType'); params.productType = productType; }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const sortCol = SORTABLE.has(sort) ? sort : 'processed_date';
@@ -40,6 +42,37 @@ router.get('/', (req, res) => {
     .all({ ...params, limit: ps, offset });
 
   res.json({ rows, total, page: pg, pageSize: ps });
+});
+
+// Settled cost-by-type rollup — the numbers we worked out, live from the data.
+router.get('/type-summary', (_req, res) => {
+  const rows = db.prepare(
+    `SELECT COALESCE(product_type, 'Unreviewed') AS product_type,
+            COUNT(*) AS lines, COALESCE(SUM(total_paid), 0) AS total
+       FROM whatnot_purchases GROUP BY COALESCE(product_type, 'Unreviewed')`,
+  ).all() as any[];
+  const byType = Object.fromEntries(rows.map((r) => [r.product_type, r]));
+  const grand = rows.reduce((s, r) => s + (r.total || 0), 0);
+  res.json({
+    order: PRODUCT_TYPES,
+    byType,
+    grandTotal: grand,
+    grandLines: rows.reduce((s, r) => s + r.lines, 0),
+  });
+});
+
+// Owner override for an ambiguous purchase's type (e.g. tagging the LIVE BID
+// lots once they know what they were). Persists; the startup backfill never
+// overwrites a value that's already set.
+router.patch('/:id', (req, res) => {
+  const { product_type } = req.body as { product_type?: string };
+  if (!product_type || !PRODUCT_TYPES.includes(product_type as any)) {
+    return res.status(400).json({ error: `product_type must be one of: ${PRODUCT_TYPES.join(', ')}` });
+  }
+  const info = db.prepare(`UPDATE whatnot_purchases SET product_type = ? WHERE acquisition_line_id = ?`)
+    .run(product_type, req.params.id);
+  if (info.changes === 0) return res.status(404).json({ error: 'not found' });
+  res.json(db.prepare('SELECT * FROM whatnot_purchases WHERE acquisition_line_id = ?').get(req.params.id));
 });
 
 router.get('/facets', (_req, res) => {

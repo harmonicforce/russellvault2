@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { classifyPurchase } from './classify.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // DATA_DIR lets a hosting platform (e.g. a Railway volume) point the SQLite
@@ -197,4 +198,40 @@ export function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_listings_status ON ebay_listings(listing_status);
     CREATE INDEX IF NOT EXISTS idx_sales_lot ON sales(inventory_lot_id);
   `);
+}
+
+// Adds the settled Slab/Single/Sealed/Other/Unreviewed tag to every purchase.
+// Idempotent and safe on an existing database: it only adds the column if
+// missing and only classifies rows still NULL, so any tag the owner has edited
+// by hand survives restarts. Nothing here touches cost-link approvals.
+export function migrateProductType() {
+  const hasCol = (db.prepare(`PRAGMA table_info(whatnot_purchases)`).all() as any[])
+    .some((c) => c.name === 'product_type');
+  if (!hasCol) {
+    db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN product_type TEXT`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_purchases_type ON whatnot_purchases(product_type)`);
+  }
+
+  const unset = db.prepare(
+    `SELECT acquisition_line_id, product_name, business_vertical
+       FROM whatnot_purchases WHERE product_type IS NULL OR product_type = ''`,
+  ).all() as any[];
+  if (unset.length === 0) return;
+
+  // Lines the app identified as sealed items — sealed regardless of title or
+  // whether their cost link was later rejected.
+  const sealedIds = new Set(
+    (db.prepare(
+      `SELECT DISTINCT acquisition_line_id FROM cost_links WHERE match_method LIKE '%sealed%' AND acquisition_line_id IS NOT NULL`,
+    ).all() as any[]).map((r) => r.acquisition_line_id),
+  );
+
+  const upd = db.prepare(`UPDATE whatnot_purchases SET product_type = @t WHERE acquisition_line_id = @id`);
+  const run = db.transaction((rows: any[]) => {
+    for (const r of rows) {
+      upd.run({ id: r.acquisition_line_id, t: classifyPurchase(r, sealedIds) });
+    }
+  });
+  run(unset);
+  console.log(`classified product_type for ${unset.length} purchases`);
 }

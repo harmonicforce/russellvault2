@@ -1,6 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+dist/
 
 # Generated data exports / review files (one-off, not app source)
 *_for_review.csv

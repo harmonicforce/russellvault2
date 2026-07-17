@@ -96,6 +96,16 @@ export interface WhatnotPurchase {
   confirmed_allocated_cost: number;
   remaining_cost: number;
   reconciliation_status: string;
+  product_type: string | null;
+}
+
+export type ProductType = 'Slab' | 'Single' | 'Sealed' | 'Other' | 'Unreviewed';
+
+export interface TypeSummary {
+  order: ProductType[];
+  byType: Record<string, { product_type: string; lines: number; total: number }>;
+  grandTotal: number;
+  grandLines: number;
 }
 
 export interface CostLink {

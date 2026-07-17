@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { seedIfEmpty } from './seed.js';
+import { migrateProductType } from './db.js';
 import inventoryRouter from './routes/inventory.js';
 import purchasesRouter from './routes/purchases.js';
 import costLinksRouter from './routes/costLinks.js';
@@ -14,6 +15,7 @@ import checksRouter from './routes/checks.js';
 import lookupsRouter from './routes/lookups.js';
 
 seedIfEmpty();
+migrateProductType();
 
 const app = express();
 app.use(cors());
