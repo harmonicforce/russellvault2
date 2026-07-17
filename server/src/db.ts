@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { classifyPurchase } from './classify.js';
+import { classifyPurchase, CLASSIFIER_VERSION } from './classify.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // DATA_DIR lets a hosting platform (e.g. a Railway volume) point the SQLite
@@ -200,38 +200,78 @@ export function initSchema() {
   `);
 }
 
-// Adds the settled Slab/Single/Sealed/Other/Unreviewed tag to every purchase.
-// Idempotent and safe on an existing database: it only adds the column if
-// missing and only classifies rows still NULL, so any tag the owner has edited
-// by hand survives restarts. Nothing here touches cost-link approvals.
+function hasColumn(table: string, col: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some((c) => c.name === col);
+}
+function meta(key: string): string | undefined {
+  const row = db.prepare(`SELECT value FROM app_meta WHERE key = ?`).get(key) as any;
+  return row?.value;
+}
+function setMeta(key: string, value: string) {
+  db.prepare(`INSERT INTO app_meta (key, value) VALUES (?, ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value);
+}
+
+// One-time removal of the food/candy lines Jeff and the owner ate at home —
+// never business inventory. Guarded so it runs once and never nukes a food
+// item added deliberately later. Skips any line that's referenced by a cost
+// link or sale, just in case.
+function cleanupFoodPurchases() {
+  if (meta('food_cleanup_done') === '1') return;
+  const info = db.prepare(
+    `DELETE FROM whatnot_purchases
+       WHERE business_vertical = 'Food / consumables'
+         AND acquisition_line_id NOT IN (SELECT acquisition_line_id FROM cost_links WHERE acquisition_line_id IS NOT NULL)
+         AND acquisition_line_id NOT IN (SELECT inventory_lot_id FROM sales WHERE inventory_lot_id IS NOT NULL)`,
+  ).run();
+  setMeta('food_cleanup_done', '1');
+  if (info.changes > 0) console.log(`removed ${info.changes} personal food/candy purchases`);
+}
+
+// Adds and maintains the settled Slab/Single/Sealed/… tag on every purchase.
+// Safe and idempotent on an existing database:
+//   - only NULL rows are classified on a normal boot;
+//   - when CLASSIFIER_VERSION bumps, auto-classified rows are re-tagged, but a
+//     row the owner edited by hand (product_type_source = 'manual') is never
+//     touched;
+//   - cost-link approvals are never touched.
 export function migrateProductType() {
-  const hasCol = (db.prepare(`PRAGMA table_info(whatnot_purchases)`).all() as any[])
-    .some((c) => c.name === 'product_type');
-  if (!hasCol) {
+  db.exec(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)`);
+  if (!hasColumn('whatnot_purchases', 'product_type')) {
     db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN product_type TEXT`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_purchases_type ON whatnot_purchases(product_type)`);
   }
+  if (!hasColumn('whatnot_purchases', 'product_type_source')) {
+    db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN product_type_source TEXT`);
+  }
 
-  const unset = db.prepare(
-    `SELECT acquisition_line_id, product_name, business_vertical
-       FROM whatnot_purchases WHERE product_type IS NULL OR product_type = ''`,
+  cleanupFoodPurchases();
+
+  const versionChanged = meta('classifier_version') !== String(CLASSIFIER_VERSION);
+  // On a version bump re-tag everything except owner-edited rows; otherwise just
+  // fill in rows that were never classified.
+  const rows = db.prepare(
+    versionChanged
+      ? `SELECT acquisition_line_id, product_name, business_vertical
+           FROM whatnot_purchases WHERE COALESCE(product_type_source, 'auto') <> 'manual'`
+      : `SELECT acquisition_line_id, product_name, business_vertical
+           FROM whatnot_purchases WHERE product_type IS NULL OR product_type = ''`,
   ).all() as any[];
-  if (unset.length === 0) return;
 
-  // Lines the app identified as sealed items — sealed regardless of title or
-  // whether their cost link was later rejected.
-  const sealedIds = new Set(
-    (db.prepare(
-      `SELECT DISTINCT acquisition_line_id FROM cost_links WHERE match_method LIKE '%sealed%' AND acquisition_line_id IS NOT NULL`,
-    ).all() as any[]).map((r) => r.acquisition_line_id),
-  );
-
-  const upd = db.prepare(`UPDATE whatnot_purchases SET product_type = @t WHERE acquisition_line_id = @id`);
-  const run = db.transaction((rows: any[]) => {
-    for (const r of rows) {
-      upd.run({ id: r.acquisition_line_id, t: classifyPurchase(r, sealedIds) });
-    }
-  });
-  run(unset);
-  console.log(`classified product_type for ${unset.length} purchases`);
+  if (rows.length > 0) {
+    const sealedIds = new Set(
+      (db.prepare(
+        `SELECT DISTINCT acquisition_line_id FROM cost_links WHERE match_method LIKE '%sealed%' AND acquisition_line_id IS NOT NULL`,
+      ).all() as any[]).map((r) => r.acquisition_line_id),
+    );
+    const upd = db.prepare(
+      `UPDATE whatnot_purchases SET product_type = @t, product_type_source = 'auto' WHERE acquisition_line_id = @id`,
+    );
+    const run = db.transaction((rs: any[]) => {
+      for (const r of rs) upd.run({ id: r.acquisition_line_id, t: classifyPurchase(r, sealedIds) });
+    });
+    run(rows);
+    console.log(`classified product_type for ${rows.length} purchases (v${CLASSIFIER_VERSION}${versionChanged ? ', re-tag' : ''})`);
+  }
+  setMeta('classifier_version', String(CLASSIFIER_VERSION));
 }

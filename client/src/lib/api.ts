@@ -99,7 +99,10 @@ export interface WhatnotPurchase {
   product_type: string | null;
 }
 
-export type ProductType = 'Slab' | 'Single' | 'Sealed' | 'Other' | 'Unreviewed';
+export type ProductType =
+  | 'Slab' | 'Single' | 'Sealed'
+  | 'Sneakers' | 'Apparel' | 'Accessories' | 'Electronics' | 'Collectibles' | 'Other'
+  | 'Unreviewed';
 
 export interface TypeSummary {
   order: ProductType[];

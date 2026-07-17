@@ -69,7 +69,7 @@ router.patch('/:id', (req, res) => {
   if (!product_type || !PRODUCT_TYPES.includes(product_type as any)) {
     return res.status(400).json({ error: `product_type must be one of: ${PRODUCT_TYPES.join(', ')}` });
   }
-  const info = db.prepare(`UPDATE whatnot_purchases SET product_type = ? WHERE acquisition_line_id = ?`)
+  const info = db.prepare(`UPDATE whatnot_purchases SET product_type = ?, product_type_source = 'manual' WHERE acquisition_line_id = ?`)
     .run(product_type, req.params.id);
   if (info.changes === 0) return res.status(404).json({ error: 'not found' });
   res.json(db.prepare('SELECT * FROM whatnot_purchases WHERE acquisition_line_id = ?').get(req.params.id));

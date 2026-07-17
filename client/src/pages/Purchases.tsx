@@ -14,11 +14,20 @@ interface Facets {
   business_vertical: { value: string; n: number }[];
 }
 
-const TYPE_ORDER: ProductType[] = ['Slab', 'Single', 'Sealed', 'Other', 'Unreviewed'];
+const TYPE_ORDER: ProductType[] = [
+  'Slab', 'Single', 'Sealed',
+  'Sneakers', 'Apparel', 'Accessories', 'Electronics', 'Collectibles', 'Other',
+  'Unreviewed',
+];
 const TYPE_STYLES: Record<string, string> = {
   Slab: 'bg-accent/15 text-accent',
   Single: 'bg-good/15 text-good',
   Sealed: 'bg-warn/15 text-warn',
+  Sneakers: 'bg-surface-2 text-ink-secondary',
+  Apparel: 'bg-surface-2 text-ink-secondary',
+  Accessories: 'bg-surface-2 text-ink-secondary',
+  Electronics: 'bg-surface-2 text-ink-secondary',
+  Collectibles: 'bg-surface-2 text-ink-secondary',
   Other: 'bg-surface-2 text-ink-secondary',
   Unreviewed: 'bg-critical/12 text-critical',
 };
