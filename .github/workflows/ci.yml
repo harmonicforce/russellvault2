@@ -1,0 +1,87 @@
+name: CI
+
+# Repository checks only. This workflow never deploys, never touches Railway,
+# Supabase, or any production data, and never writes to a database. It runs
+# deterministic clean installs, typecheck, lint, build, tests, and dependency
+# audits across all three dependency roots (root, client, server).
+
+on:
+  push:
+    branches-ignore:
+      - Beginner
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # --- Deterministic clean install for every dependency root ---
+      - name: Clean install (root)
+        run: npm ci
+      - name: Clean install (client)
+        run: npm ci --prefix client
+      - name: Clean install (server)
+        run: npm ci --prefix server
+
+      # --- Static checks ---
+      - name: Lint (client)
+        run: npm run lint --prefix client
+      - name: Typecheck (server)
+        run: npm run typecheck --prefix server
+      - name: Typecheck (client)
+        run: npm run typecheck --prefix client
+
+      # --- Build both roots (server build is a strict typecheck; it runs via tsx) ---
+      - name: Build (client)
+        run: npm run build --prefix client
+      - name: Build (server)
+        run: npm run build --prefix server
+
+      # --- Tests ---
+      - name: Test (server)
+        run: npm run test --prefix server
+      - name: Test (client)
+        run: npm run test --prefix client
+
+      # --- Production dependency audits (BLOCKING on high/critical) ---
+      # A high or critical PRODUCTION advisory fails the job. Dev-only advisories
+      # do not fail these steps because --omit=dev excludes them.
+      - name: Audit production deps (root)
+        run: npm audit --omit=dev --audit-level=high
+      - name: Audit production deps (client)
+        run: npm audit --prefix client --omit=dev --audit-level=high
+      - name: Audit production deps (server)
+        run: npm audit --prefix server --omit=dev --audit-level=high
+
+  # --- Full audits (dev + prod), reported but NON-BLOCKING ---
+  # Development advisories are surfaced here and must be read separately; they do
+  # not override the production high/critical block enforced in build-and-verify.
+  dev-advisory-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - run: npm ci --prefix client
+      - run: npm ci --prefix server
+      - name: Full audit (root)
+        continue-on-error: true
+        run: npm audit --audit-level=low
+      - name: Full audit (client)
+        continue-on-error: true
+        run: npm audit --prefix client --audit-level=low
+      - name: Full audit (server)
+        continue-on-error: true
+        run: npm audit --prefix server --audit-level=low
