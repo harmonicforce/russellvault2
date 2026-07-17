@@ -252,9 +252,9 @@ export function migrateProductType() {
   // fill in rows that were never classified.
   const rows = db.prepare(
     versionChanged
-      ? `SELECT acquisition_line_id, product_name, business_vertical
+      ? `SELECT acquisition_line_id, product_name, business_vertical, seller
            FROM whatnot_purchases WHERE COALESCE(product_type_source, 'auto') <> 'manual'`
-      : `SELECT acquisition_line_id, product_name, business_vertical
+      : `SELECT acquisition_line_id, product_name, business_vertical, seller
            FROM whatnot_purchases WHERE product_type IS NULL OR product_type = ''`,
   ).all() as any[];
 

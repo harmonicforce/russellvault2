@@ -8,7 +8,7 @@
 // Bump CLASSIFIER_VERSION whenever this logic changes; the startup migration
 // re-tags auto-classified rows on a version change but never touches a row the
 // owner edited by hand.
-export const CLASSIFIER_VERSION = 3;
+export const CLASSIFIER_VERSION = 4;
 
 export type ProductType =
   | 'Slab' | 'Single' | 'Sealed'
@@ -29,7 +29,16 @@ const STRONG_MYSTERY = /mystery|wheel|\bspin\b|\brazz\b|raffle|jackpot/i;
 const GRADER = /\b(psa|bgs|cgc|sgc|tag|ace|hga|gma)\s*\.?\s*(?:10|9\.5|9|8\.5|8|7|6|5|4|3|2|1|black|gold|pristine|gem)\b/i;
 const SLAB_WORD = /\bslabs?\b/i;
 const SEALED = /booster pack|booster box|booster bundle|\bboosters?\b|\betbs?\b|elite trainer|\bupc\b|ultra[- ]premium|build\s*(&|and)\s*battle|\bsealed\b|sleeved|\btin\b|blister|collection box|premium collection|\bpacks?\b|\bbundle\b/i;
-const SINGLE = /\bsingles?\b|\bnm-?lp\b|\bnm\b|near mint/i;
+const SINGLE = /\bsingles?\b|\bnm-?lp\b|\bnm\b|near mint|\bjumbo\b/i;
+
+// Seller specializations the owner has explicitly confirmed. Used ONLY as a
+// last resort for a line that's otherwise Unreviewed (its own item text was
+// inconclusive) — it never overrides a type the item itself makes clear.
+// This is owner-asserted ground truth, not auto-derived from the data.
+const SELLER_TYPE: Record<string, ProductType> = {
+  topshelfcollects: 'Single',   // singles seller (e.g. "fearow #42")
+  loosepacks: 'Sealed',         // packs seller (e.g. "Silver Temp", "Journey Together")
+};
 
 const VERTICAL_MAP: Record<string, ProductType> = {
   'Sneakers / footwear': 'Sneakers',
@@ -46,6 +55,7 @@ export interface ClassifiablePurchase {
   acquisition_line_id?: string;
   product_name?: string | null;
   business_vertical?: string | null;
+  seller?: string | null;
 }
 
 // The delivered item is usually after the seller's stream name, e.g.
@@ -88,5 +98,12 @@ export function classifyPurchase(
 
   // Otherwise fall back to a signal anywhere in the title (e.g. a "NM/LP"
   // condition or "PACKS" that sits in the prefix).
-  return cardSignal(t) ?? 'Unreviewed';
+  const fromTitle = cardSignal(t);
+  if (fromTitle) return fromTitle;
+
+  // Last resort: an owner-confirmed seller specialization.
+  const bySeller = row.seller ? SELLER_TYPE[row.seller] : undefined;
+  if (bySeller) return bySeller;
+
+  return 'Unreviewed';
 }
