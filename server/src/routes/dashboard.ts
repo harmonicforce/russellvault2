@@ -18,6 +18,9 @@ router.get('/', (_req, res) => {
     FROM inventory_lots
   `).get() as any;
 
+  // Excludes flagged rows (e.g. personal food/consumable purchases) so these
+  // business totals match pre-Phase-0 behavior; the rows themselves are
+  // preserved (see server/src/db.ts flagFoodPurchases), not deleted.
   const purchases = db.prepare(`
     SELECT
       COUNT(*) as lineCount,
@@ -26,7 +29,7 @@ router.get('/', (_req, res) => {
       SUM(CASE WHEN reconciliation_status = 'Unmatched' THEN 1 ELSE 0 END) as unmatchedCount,
       SUM(CASE WHEN reconciliation_status = 'Fully Matched' THEN 1 ELSE 0 END) as fullyMatchedCount,
       SUM(CASE WHEN reconciliation_status = 'Partially Matched' THEN 1 ELSE 0 END) as partiallyMatchedCount
-    FROM whatnot_purchases
+    FROM whatnot_purchases WHERE COALESCE(is_excluded, 0) = 0
   `).get() as any;
 
   const links = db.prepare(`

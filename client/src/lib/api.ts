@@ -183,3 +183,8 @@ export interface Sale {
 export interface Lookups {
   [key: string]: string[];
 }
+
+export interface HealthStatus {
+  ok: boolean;
+  readOnly: boolean;
+}

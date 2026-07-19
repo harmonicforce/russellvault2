@@ -83,7 +83,9 @@ export function initSchema() {
       remaining_quantity REAL,
       confirmed_allocated_cost REAL DEFAULT 0,
       remaining_cost REAL,
-      reconciliation_status TEXT DEFAULT 'Unmatched'
+      reconciliation_status TEXT DEFAULT 'Unmatched',
+      is_excluded INTEGER DEFAULT 0,
+      exclusion_reason TEXT
     );
 
     CREATE TABLE IF NOT EXISTS cost_links (
@@ -212,20 +214,25 @@ function setMeta(key: string, value: string) {
               ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value);
 }
 
-// One-time removal of the food/candy lines Jeff and the owner ate at home —
-// never business inventory. Guarded so it runs once and never nukes a food
-// item added deliberately later. Skips any line that's referenced by a cost
-// link or sale, just in case.
-function cleanupFoodPurchases() {
-  if (meta('food_cleanup_done') === '1') return;
+// Non-destructive replacement for the old startup DELETE. The food/candy
+// lines Jeff and the owner ate at home are not business inventory, but the
+// source rows are evidence and must never be removed from the database —
+// silently deleting imported source rows was the exact stop-loss bug this
+// flag exists to close. Instead, mark them excluded; every read that should
+// present a "business" view filters on is_excluded = 0, while the row (and
+// the original 2,149-row count) is preserved permanently and remains
+// queryable directly. Idempotent and safe to run every boot: it only ever
+// flags rows that are food and not yet flagged, so it also catches food rows
+// from a future import without needing a one-time guard.
+function flagFoodPurchases() {
   const info = db.prepare(
-    `DELETE FROM whatnot_purchases
-       WHERE business_vertical = 'Food / consumables'
-         AND acquisition_line_id NOT IN (SELECT acquisition_line_id FROM cost_links WHERE acquisition_line_id IS NOT NULL)
-         AND acquisition_line_id NOT IN (SELECT inventory_lot_id FROM sales WHERE inventory_lot_id IS NOT NULL)`,
+    `UPDATE whatnot_purchases
+        SET is_excluded = 1,
+            exclusion_reason = 'Personal food/consumable purchase — excluded from business reconciliation, row preserved'
+      WHERE business_vertical = 'Food / consumables'
+        AND COALESCE(is_excluded, 0) = 0`,
   ).run();
-  setMeta('food_cleanup_done', '1');
-  if (info.changes > 0) console.log(`removed ${info.changes} personal food/candy purchases`);
+  if (info.changes > 0) console.log(`flagged ${info.changes} personal food/candy purchases as excluded (rows preserved)`);
 }
 
 // Adds and maintains the settled Slab/Single/Sealed/… tag on every purchase.
@@ -244,8 +251,14 @@ export function migrateProductType() {
   if (!hasColumn('whatnot_purchases', 'product_type_source')) {
     db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN product_type_source TEXT`);
   }
+  if (!hasColumn('whatnot_purchases', 'is_excluded')) {
+    db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN is_excluded INTEGER DEFAULT 0`);
+  }
+  if (!hasColumn('whatnot_purchases', 'exclusion_reason')) {
+    db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN exclusion_reason TEXT`);
+  }
 
-  cleanupFoodPurchases();
+  flagFoodPurchases();
 
   const versionChanged = meta('classifier_version') !== String(CLASSIFIER_VERSION);
   // On a version bump re-tag everything except owner-edited rows; otherwise just

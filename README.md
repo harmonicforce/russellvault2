@@ -16,11 +16,14 @@ This is a **working prototype, not the authoritative system of record.**
 - **The SQLite app is non-authoritative.** Financial facts must not be trusted
   from it; the approved target model (a separate PostgreSQL model) is built in
   later phases.
-- **Startup data deletion still exists** — `server/src/db.ts` runs a
-  `DELETE FROM whatnot_purchases` for food rows at boot. This is a documented
-  **Phase 1** stop-loss item, not fixed here.
+- **Startup data deletion is fixed** — `server/src/db.ts` no longer deletes
+  imported source rows. Food/candy purchases are flagged (`is_excluded`), not
+  removed; see `docs/architecture.md`.
+- **Production writes are read-only by default** — set `ALLOW_LEGACY_WRITES=true`
+  on the server to re-enable them; see `docs/architecture.md`.
 - **Unsafe financial writes remain a Phase 1 concern**, and money/quantities are
-  stored as SQLite `REAL` rather than integer cents.
+  stored as SQLite `REAL` rather than integer cents (though request-level
+  validation now rejects non-integer quantities).
 - The GitHub **default branch (`Beginner`) is wrong** — it has no app. The
   application lives on `claude/ui-better-spreadsheet-cjhwjb`. Correcting the
   default/deployed branch is **deployment-affecting** and gated behind **G0A**.

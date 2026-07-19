@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { nextId } from '../ids.js';
+import { ValidationError, requirePositiveInteger, sendValidationError } from '../validation.js';
 
 const router = Router();
 
@@ -31,14 +32,19 @@ router.get('/', (req, res) => {
   res.json({ rows, total, page: pg, pageSize: ps });
 });
 
-router.post('/', (req, res) => {
-  const b = req.body || {};
-  if (!b.inventory_lot_id) return res.status(400).json({ error: 'inventory_lot_id is required' });
+// Core creation logic, exported so regression tests can exercise it directly.
+export function createListing(body: any) {
+  const b = body || {};
+  if (!b.inventory_lot_id) throw new ValidationError('inventory_lot_id is required');
   const lot = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(b.inventory_lot_id) as any;
-  if (!lot) return res.status(404).json({ error: 'inventory lot not found' });
+  if (!lot) throw new ValidationError('inventory lot not found', 404);
+
+  const qtyToList = requirePositiveInteger(
+    b.quantity_to_list != null ? b.quantity_to_list : (Number(lot.available_quantity) || 1),
+    'quantity_to_list',
+  );
 
   const listingId = nextId('ebay_listings', 'listing_id', 'RV-LST-');
-  const qtyToList = b.quantity_to_list != null ? Number(b.quantity_to_list) : Number(lot.available_quantity) || 1;
 
   db.prepare(`
     INSERT INTO ebay_listings (
@@ -75,8 +81,17 @@ router.post('/', (req, res) => {
 
   db.prepare(`UPDATE inventory_lots SET listing_status = 'Has draft', updated_at = datetime('now') WHERE inventory_lot_id = ?`).run(b.inventory_lot_id);
 
-  const row = db.prepare('SELECT * FROM ebay_listings WHERE listing_id = ?').get(listingId);
-  res.status(201).json(row);
+  return db.prepare('SELECT * FROM ebay_listings WHERE listing_id = ?').get(listingId);
+}
+
+router.post('/', (req, res) => {
+  try {
+    const row = createListing(req.body);
+    res.status(201).json(row);
+  } catch (err) {
+    if (sendValidationError(res, err)) return;
+    throw err;
+  }
 });
 
 const EDITABLE = [
@@ -86,27 +101,40 @@ const EDITABLE = [
   'listing_status', 'owner_notes', 'quantity_to_list',
 ];
 
-router.patch('/:id', (req, res) => {
-  const existing = db.prepare('SELECT * FROM ebay_listings WHERE listing_id = ?').get(req.params.id) as any;
-  if (!existing) return res.status(404).json({ error: 'not found' });
+export function updateListing(id: string, body: any) {
+  const existing = db.prepare('SELECT * FROM ebay_listings WHERE listing_id = ?').get(id) as any;
+  if (!existing) throw new ValidationError('not found', 404);
   const updates: Record<string, any> = {};
-  for (const f of EDITABLE) if (f in req.body) updates[f] = req.body[f];
-  if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'no editable fields provided' });
+  for (const f of EDITABLE) if (f in body) updates[f] = body[f];
+  if (Object.keys(updates).length === 0) throw new ValidationError('no editable fields provided');
+
+  if ('quantity_to_list' in updates) {
+    updates.quantity_to_list = requirePositiveInteger(updates.quantity_to_list, 'quantity_to_list');
+  }
 
   if (updates.listing_status === 'Active' && !updates.listed_date && !existing.listed_date) {
     updates.listed_date = new Date().toISOString().slice(0, 10);
   }
 
   const setSql = Object.keys(updates).map((k) => `${k} = @${k}`).join(', ');
-  db.prepare(`UPDATE ebay_listings SET ${setSql}, updated_at = datetime('now') WHERE listing_id = @id`).run({ ...updates, id: req.params.id });
+  db.prepare(`UPDATE ebay_listings SET ${setSql}, updated_at = datetime('now') WHERE listing_id = @id`).run({ ...updates, id });
 
   if (updates.listing_status) {
     db.prepare(`UPDATE inventory_lots SET listing_status = @status, updated_at = datetime('now') WHERE inventory_lot_id = @lotId`)
       .run({ status: updates.listing_status, lotId: existing.inventory_lot_id });
   }
 
-  const row = db.prepare('SELECT * FROM ebay_listings WHERE listing_id = ?').get(req.params.id);
-  res.json(row);
+  return db.prepare('SELECT * FROM ebay_listings WHERE listing_id = ?').get(id);
+}
+
+router.patch('/:id', (req, res) => {
+  try {
+    const row = updateListing(req.params.id, req.body);
+    res.json(row);
+  } catch (err) {
+    if (sendValidationError(res, err)) return;
+    throw err;
+  }
 });
 
 export default router;

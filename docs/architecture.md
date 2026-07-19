@@ -11,15 +11,39 @@ deployment, or data authority.
   prototype. It must not be treated as the system of record for financial facts.
   The approved target data model (see the Phase 3 architecture / audit) is a
   separate PostgreSQL model that later phases build.
-- **Startup data deletion still exists.** `server/src/db.ts` runs
-  `migrateProductType()` at boot, which calls `cleanupFoodPurchases()` and issues
-  `DELETE FROM whatnot_purchases` for food/consumable rows. This is a known
-  **Phase 1** stop-loss item; it is *documented*, not fixed, in Phase 0.
+- **Startup data deletion is fixed (Phase "p0-legacy-stop-loss").** `server/src/db.ts`
+  no longer runs a `DELETE` against imported source rows at boot. The food/candy
+  cleanup (`flagFoodPurchases`) now sets a non-destructive `is_excluded` /
+  `exclusion_reason` flag instead — every original `whatnot_purchases` row is
+  preserved permanently. Business-facing reads (the purchases list, dashboard
+  totals, facets) filter `is_excluded = 0` by default; pass
+  `?includeExcluded=true` on `GET /api/purchases` to see flagged rows, or query
+  the row directly by ID — they were never removed.
+- **Legacy writes are disabled by default in production.** See "Legacy-write
+  guard" below. This does not change local development.
 - **Unsafe financial writes remain a Phase 1 concern.** Cost-basis and related
-  writes are not yet guarded to the standard the target model requires.
+  writes now reject invalid quantities/costs and run allocation
+  creation/confirmation + rollup recomputation in a single transaction (see
+  `server/src/routes/costLinks.ts`), but the underlying money-cents migration
+  has not happened.
 - **Money and quantities are stored as SQLite `REAL`.** The target model uses
   integer cents; the legacy `REAL` storage is another reason the legacy app is
-  non-authoritative.
+  non-authoritative. Request-level validation now rejects non-integer
+  *quantities* (inventory, allocation, listing, sale), but stored money fields
+  are still `REAL`.
+
+## Legacy-write guard
+
+In production (`NODE_ENV=production`), all non-GET `/api/*` requests are
+rejected with `403 { error, readOnly: true }` unless the server-only env var
+`ALLOW_LEGACY_WRITES=true` is set. This is deliberate: the point is to make the
+prototype incapable of accepting further legacy writes while the relational
+shadow system is built, without an explicit owner opt-in. Reads are never
+blocked. Outside production (local dev, tests, CI) writes are always enabled —
+this guard does not change local workflows. There is no client-side switch and
+no secret in client code: the client only ever learns the current state from
+`GET /api/health` (`{ ok, readOnly }`) and shows a non-dismissible banner when
+`readOnly` is `true`. See `server/src/legacyWriteGuard.ts`.
 
 ## Repository / branch reality
 

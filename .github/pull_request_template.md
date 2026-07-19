@@ -32,9 +32,11 @@ root-only run does not count as client or server coverage.
 
 ## Known non-authoritative / Phase 1 risks (acknowledge, do not "fix" here)
 
-- [ ] I understand the SQLite app is **non-authoritative** and that startup data
-      deletion (`cleanupFoodPurchases` → `DELETE FROM whatnot_purchases`) and
-      unsafe financial writes remain **Phase 1** issues.
+- [ ] I understand the SQLite app is **non-authoritative**. Startup data
+      deletion was fixed in `claude/p0-legacy-stop-loss` (source rows are now
+      flagged, never deleted) and production writes are now disabled by
+      default (see `docs/architecture.md`); the underlying money-cents
+      migration and full relational shadow system remain **Phase 1+** issues.
 
 ## Rollback
 

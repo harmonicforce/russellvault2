@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { nextId } from '../ids.js';
+import { ValidationError, requirePositiveInteger, sendValidationError } from '../validation.js';
 
 const router = Router();
 
@@ -69,12 +70,17 @@ router.get('/:id', (req, res) => {
   res.json({ ...row, links, listings, sales });
 });
 
-router.post('/', (req, res) => {
+// Core creation logic, exported so regression tests can exercise it directly.
+export function createInventoryLot(body: any) {
+  const b = body || {};
+  // Previously `Number(b.quantity) || 0`: a missing, zero, negative, or
+  // fractional quantity was silently accepted as 0 (or, for a negative
+  // input, passed through unchanged since a negative number is truthy).
+  const quantity = requirePositiveInteger(b.quantity, 'quantity');
+
   const lotId = nextId('inventory_lots', 'inventory_lot_id', 'RV-N-');
   const sku = `T${lotId}`;
   const childId = lotId.replace('RV-N-', 'RV-ITEM-N-');
-  const b = req.body || {};
-  const quantity = Number(b.quantity) || 0;
 
   db.prepare(`
     INSERT INTO inventory_lots (
@@ -128,8 +134,17 @@ router.post('/', (req, res) => {
     available_quantity: quantity,
   });
 
-  const row = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(lotId);
-  res.status(201).json(row);
+  return db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(lotId);
+}
+
+router.post('/', (req, res) => {
+  try {
+    const row = createInventoryLot(req.body);
+    res.status(201).json(row);
+  } catch (err) {
+    if (sendValidationError(res, err)) return;
+    throw err;
+  }
 });
 
 const EDITABLE_FIELDS = [
@@ -141,27 +156,40 @@ const EDITABLE_FIELDS = [
   'recorded_unit_value', 'owner_notes',
 ];
 
-router.patch('/:id', (req, res) => {
-  const existing = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(req.params.id) as any;
-  if (!existing) return res.status(404).json({ error: 'not found' });
+export function updateInventoryLot(id: string, body: any) {
+  const existing = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(id) as any;
+  if (!existing) throw new ValidationError('not found', 404);
 
   const updates: Record<string, any> = {};
   for (const f of EDITABLE_FIELDS) {
-    if (f in req.body) updates[f] = req.body[f];
+    if (f in body) updates[f] = body[f];
   }
-  if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'no editable fields provided' });
-
-  const setSql = Object.keys(updates).map((k) => `${k} = @${k}`).join(', ');
-  db.prepare(`UPDATE inventory_lots SET ${setSql}, updated_at = datetime('now') WHERE inventory_lot_id = @id`).run({ ...updates, id: req.params.id });
+  if (Object.keys(updates).length === 0) throw new ValidationError('no editable fields provided');
 
   if ('quantity' in updates) {
-    const row = db.prepare('SELECT quantity, sold_quantity FROM inventory_lots WHERE inventory_lot_id = ?').get(req.params.id) as any;
-    const avail = Math.max(0, (Number(row.quantity) || 0) - (Number(row.sold_quantity) || 0));
-    db.prepare('UPDATE inventory_lots SET available_quantity = ? WHERE inventory_lot_id = ?').run(avail, req.params.id);
+    updates.quantity = requirePositiveInteger(updates.quantity, 'quantity');
   }
 
-  const row = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(req.params.id);
-  res.json(row);
+  const setSql = Object.keys(updates).map((k) => `${k} = @${k}`).join(', ');
+  db.prepare(`UPDATE inventory_lots SET ${setSql}, updated_at = datetime('now') WHERE inventory_lot_id = @id`).run({ ...updates, id });
+
+  if ('quantity' in updates) {
+    const row = db.prepare('SELECT quantity, sold_quantity FROM inventory_lots WHERE inventory_lot_id = ?').get(id) as any;
+    const avail = Math.max(0, (Number(row.quantity) || 0) - (Number(row.sold_quantity) || 0));
+    db.prepare('UPDATE inventory_lots SET available_quantity = ? WHERE inventory_lot_id = ?').run(avail, id);
+  }
+
+  return db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(id);
+}
+
+router.patch('/:id', (req, res) => {
+  try {
+    const row = updateInventoryLot(req.params.id, req.body);
+    res.json(row);
+  } catch (err) {
+    if (sendValidationError(res, err)) return;
+    throw err;
+  }
 });
 
 export default router;
