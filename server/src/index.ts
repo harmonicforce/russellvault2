@@ -15,6 +15,7 @@ import salesRouter from './routes/sales.js';
 import dashboardRouter from './routes/dashboard.js';
 import checksRouter from './routes/checks.js';
 import lookupsRouter from './routes/lookups.js';
+import provenanceRouter from './routes/provenance.js';
 
 seedIfEmpty();
 migrateProductType();
@@ -32,6 +33,9 @@ app.use('/api/sales', salesRouter);
 app.use('/api/dashboard', dashboardRouter);
 app.use('/api/checks', checksRouter);
 app.use('/api/lookups', lookupsRouter);
+// Phase 3 staging provenance. Inert (every route 404s) unless
+// SHADOW_IMPORT=repository-fixtures is set. Never seeds or imports on startup.
+app.use('/api/provenance', provenanceRouter);
 
 // readOnly reflects the legacy-write guard's live state — never a secret,
 // just the boolean the client needs to render its read-only banner.

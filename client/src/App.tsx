@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingBag, Link2, Tag, DollarSign, ShieldCheck, Vault,
+  FileSearch,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
@@ -11,6 +12,8 @@ import Sales from './pages/Sales';
 import Checks from './pages/Checks';
 import ReadOnlyBanner from './components/ReadOnlyBanner';
 import AuthShell from './components/AuthShell';
+import ImportReview from './pages/ImportReview';
+import { isProvenanceUiEnabled } from './lib/provenanceConfig';
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -21,6 +24,21 @@ const NAV = [
   { to: '/sales', label: 'Sales', icon: DollarSign },
   { to: '/checks', label: 'Health Checks', icon: ShieldCheck },
 ];
+
+// The staging import-review surface appears only when the Phase 3 flag AND the
+// shadow auth configuration are both present. With either absent — the
+// deployed default — there is no nav entry and no route, so the legacy SQLite
+// experience is byte-for-byte what it was before Phase 3.
+const PROVENANCE_ENABLED = isProvenanceUiEnabled(
+  import.meta.env as unknown as Record<string, string | undefined>
+);
+
+const PROVENANCE_NAV = {
+  to: '/import-review',
+  label: 'Import Review',
+  icon: FileSearch,
+  end: false,
+};
 
 export default function App() {
   return (
@@ -37,7 +55,7 @@ export default function App() {
             </div>
           </div>
           <nav className="flex-1 overflow-y-auto py-3 px-2 flex flex-col gap-0.5">
-            {NAV.map((item) => (
+            {[...NAV, ...(PROVENANCE_ENABLED ? [PROVENANCE_NAV] : [])].map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
@@ -69,6 +87,9 @@ export default function App() {
             <Route path="/listings" element={<Listings />} />
             <Route path="/sales" element={<Sales />} />
             <Route path="/checks" element={<Checks />} />
+            {PROVENANCE_ENABLED && (
+              <Route path="/import-review" element={<ImportReview />} />
+            )}
           </Routes>
         </main>
       </div>
