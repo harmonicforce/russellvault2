@@ -39,13 +39,52 @@ function recomputePurchaseRollup(acquisitionLineId: string) {
     .run(agg.qty, remainingQty, agg.cost, remainingCost, status, acquisitionLineId);
 }
 
-// A Candidate allocation is just a proposal and never counts against physical
-// capacity (multiple candidates may legitimately compete for the same
-// evidence). Only a Confirmed allocation is a real commitment, so capacity is
-// enforced at confirmation time against the sums of every OTHER Confirmed
-// allocation for the same purchase line and inventory lot.
 const COST_EPSILON = 1e-6;
 
+// Individual, per-row bound: every Candidate or Confirmed allocation — on its
+// own, regardless of any other row — must be physically possible against its
+// own source purchase and target lot. A Candidate is still just a proposal
+// and never counts against CUMULATIVE capacity shared with other rows
+// (multiple candidates may legitimately compete for the same evidence — see
+// assertConfirmWithinCapacity below), but an individual allocation claiming
+// more than its source purchase holds, or more than its target lot could
+// possibly fit, is not a valid proposal at all and must be rejected outright.
+function assertWithinIndividualBounds(params: {
+  lot: any;
+  purchase: any;
+  allocatedQuantity: number;
+  allocatedCost: number;
+}) {
+  const { lot, purchase, allocatedQuantity, allocatedCost } = params;
+  const sourceQty = Number(purchase.quantity_purchased) || 0;
+  const sourceCost = Number(purchase.total_paid) || 0;
+  const targetCapacity = Number(lot.quantity) || 0;
+
+  if (allocatedQuantity > sourceQty) {
+    throw new ValidationError(
+      `allocated_quantity ${allocatedQuantity} exceeds purchase ${purchase.acquisition_line_id}'s purchased quantity of ${sourceQty}`,
+      409,
+    );
+  }
+  if (allocatedCost > sourceCost + COST_EPSILON) {
+    throw new ValidationError(
+      `allocated_cost ${allocatedCost} exceeds purchase ${purchase.acquisition_line_id}'s total_paid of ${sourceCost}`,
+      409,
+    );
+  }
+  if (allocatedQuantity > targetCapacity) {
+    throw new ValidationError(
+      `allocated_quantity ${allocatedQuantity} exceeds inventory lot ${lot.inventory_lot_id}'s quantity of ${targetCapacity}`,
+      409,
+    );
+  }
+}
+
+// Confirmed allocations additionally share CUMULATIVE capacity: the sum of
+// every Confirmed allocation for the same purchase line, or the same
+// inventory lot, must not exceed that purchase's/lot's capacity. Capacity is
+// enforced at confirmation time against the sums of every OTHER Confirmed
+// allocation for the same purchase line and inventory lot.
 function assertConfirmWithinCapacity(params: {
   lot: any;
   purchase: any;
@@ -155,6 +194,10 @@ export function createCostLink(body: any) {
     );
     const status = b.allocation_status === 'Confirmed' ? 'Confirmed' : 'Candidate';
 
+    // Every Candidate or Confirmed allocation must individually fit its
+    // source purchase and target lot, even before any cumulative check.
+    assertWithinIndividualBounds({ lot, purchase, allocatedQuantity, allocatedCost });
+
     if (status === 'Confirmed') {
       assertConfirmWithinCapacity({ lot, purchase, allocatedQuantity, allocatedCost });
     }
@@ -244,23 +287,30 @@ export function updateCostLink(id: string, body: any) {
     }
 
     // Only re-check capacity when a capacity-relevant field is actually
-    // changing (becoming Confirmed, or a quantity/cost edit on an already-
-    // Confirmed row). An edit to owner_notes or similar on a row that is
-    // already Confirmed — including legacy data confirmed before this check
-    // existed — must not be blocked just because it happens to be Confirmed.
+    // changing (becoming/staying Candidate or Confirmed with a new quantity,
+    // cost, or status). An edit to owner_notes or similar on a row whose
+    // quantity/cost/status are untouched — including legacy data confirmed
+    // before these checks existed — must not be blocked by them.
     const capacityRelevantChange = 'allocation_status' in updates || 'allocated_quantity' in updates || 'allocated_cost' in updates;
-    if (finalStatus === 'Confirmed' && capacityRelevantChange) {
+    if (finalStatus !== 'Rejected' && capacityRelevantChange) {
       const lot = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(existing.inventory_lot_id) as any;
       const purchase = db.prepare('SELECT * FROM whatnot_purchases WHERE acquisition_line_id = ?').get(existing.acquisition_line_id) as any;
       if (!lot) throw new ValidationError('inventory lot not found', 404);
       if (!purchase) throw new ValidationError('purchase line not found', 404);
-      assertConfirmWithinCapacity({
-        lot,
-        purchase,
-        allocatedQuantity: finalQuantity,
-        allocatedCost: finalCost,
-        excludeAllocationId: id,
-      });
+
+      // Every Candidate or Confirmed allocation must individually fit its
+      // source purchase and target lot, regardless of any other row.
+      assertWithinIndividualBounds({ lot, purchase, allocatedQuantity: finalQuantity, allocatedCost: finalCost });
+
+      if (finalStatus === 'Confirmed') {
+        assertConfirmWithinCapacity({
+          lot,
+          purchase,
+          allocatedQuantity: finalQuantity,
+          allocatedCost: finalCost,
+          excludeAllocationId: id,
+        });
+      }
     }
 
     const setSql = Object.keys(updates).map((k) => `${k} = @${k}`).join(', ');

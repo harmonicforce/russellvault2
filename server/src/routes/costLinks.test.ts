@@ -55,7 +55,7 @@ describe('createCostLink', () => {
         inventory_lot_id: 'LOT-4', acquisition_line_id: 'PUR-4',
         allocated_quantity: 10, allocated_cost: 50, allocation_status: 'Confirmed',
       }),
-    ).toThrow(/exceeding its purchased quantity/);
+    ).toThrow(/exceeds purchase PUR-4's purchased quantity/); // caught by the individual per-row bound
 
     // Atomicity: the rejected confirm left no cost_link row and no rollup mutation.
     const links = db.prepare('SELECT * FROM cost_links WHERE acquisition_line_id = ?').all('PUR-4');
@@ -73,7 +73,7 @@ describe('createCostLink', () => {
         inventory_lot_id: 'LOT-4b', acquisition_line_id: 'PUR-4b',
         allocated_quantity: 5, allocated_cost: 999, allocation_status: 'Confirmed',
       }),
-    ).toThrow(/exceeding its total_paid/);
+    ).toThrow(/exceeds purchase PUR-4b's total_paid/); // caught by the individual per-row bound
   });
 
   it('OLD BUG: confirming an allocation exceeding the target inventory lot capacity used to succeed silently — now rejected', () => {
@@ -84,7 +84,72 @@ describe('createCostLink', () => {
         inventory_lot_id: 'LOT-5', acquisition_line_id: 'PUR-5',
         allocated_quantity: 10, allocated_cost: 10, allocation_status: 'Confirmed',
       }),
-    ).toThrow(/exceeding its quantity/);
+    ).toThrow(/exceeds inventory lot LOT-5's quantity/); // caught by the individual per-row bound
+  });
+
+  it('CUMULATIVE (Confirmed-only): two individually-valid Confirmed allocations against the same purchase are rejected once their sum exceeds it', () => {
+    seedPurchase('PUR-4c', 5, 50); // purchase has only 5 units total
+    seedLot('LOT-4c-1', 10);
+    seedLot('LOT-4c-2', 10);
+    const a = createCostLink({
+      inventory_lot_id: 'LOT-4c-1', acquisition_line_id: 'PUR-4c',
+      allocated_quantity: 3, allocated_cost: 30, allocation_status: 'Confirmed',
+    }) as any;
+    expect(a.allocation_status).toBe('Confirmed'); // 3 <= 5, individually and cumulatively fine
+    // A second allocation of 3 against the same purchase is individually fine
+    // (3 <= 5) but cumulatively over (3 + 3 = 6 > 5) — must be rejected, and
+    // must not leave a partial row or mutate rollups.
+    expect(() =>
+      createCostLink({
+        inventory_lot_id: 'LOT-4c-2', acquisition_line_id: 'PUR-4c',
+        allocated_quantity: 3, allocated_cost: 30, allocation_status: 'Confirmed',
+      }),
+    ).toThrow(/would push confirmed allocations for purchase PUR-4c/);
+    const links = db.prepare('SELECT * FROM cost_links WHERE inventory_lot_id = ?').all('LOT-4c-2');
+    expect(links).toHaveLength(0);
+    const purchase = db.prepare('SELECT * FROM whatnot_purchases WHERE acquisition_line_id = ?').get('PUR-4c') as any;
+    expect(purchase.confirmed_allocated_quantity).toBe(3); // unchanged from allocation A only
+  });
+
+  it('rejects a Candidate whose allocated_quantity exceeds the source purchase quantity — no row inserted, no rollup change', () => {
+    seedLot('LOT-5b', 100);
+    seedPurchase('PUR-5b', 5, 50); // purchase only has 5 units
+    expect(() =>
+      createCostLink({ inventory_lot_id: 'LOT-5b', acquisition_line_id: 'PUR-5b', allocated_quantity: 10, allocated_cost: 10 }),
+    ).toThrow(/exceeds purchase PUR-5b's purchased quantity/);
+
+    const links = db.prepare('SELECT * FROM cost_links WHERE acquisition_line_id = ?').all('PUR-5b');
+    expect(links).toHaveLength(0);
+    const purchase = db.prepare('SELECT * FROM whatnot_purchases WHERE acquisition_line_id = ?').get('PUR-5b') as any;
+    expect(purchase.reconciliation_status).toBe('Unmatched');
+    expect(purchase.confirmed_allocated_quantity).toBe(0);
+  });
+
+  it('rejects a Candidate whose allocated_cost exceeds the source purchase total_paid — no row inserted, no rollup change', () => {
+    seedLot('LOT-5c', 100);
+    seedPurchase('PUR-5c', 10, 20); // only $20 paid
+    expect(() =>
+      createCostLink({ inventory_lot_id: 'LOT-5c', acquisition_line_id: 'PUR-5c', allocated_quantity: 5, allocated_cost: 999 }),
+    ).toThrow(/exceeds purchase PUR-5c's total_paid/);
+
+    const links = db.prepare('SELECT * FROM cost_links WHERE acquisition_line_id = ?').all('PUR-5c');
+    expect(links).toHaveLength(0);
+    const purchase = db.prepare('SELECT * FROM whatnot_purchases WHERE acquisition_line_id = ?').get('PUR-5c') as any;
+    expect(purchase.confirmed_allocated_cost).toBe(0);
+  });
+
+  it('rejects a Candidate whose allocated_quantity exceeds the target inventory lot capacity — no row inserted, no rollup change', () => {
+    seedLot('LOT-5d', 2); // lot only holds 2 units
+    seedPurchase('PUR-5d', 100, 1000);
+    expect(() =>
+      createCostLink({ inventory_lot_id: 'LOT-5d', acquisition_line_id: 'PUR-5d', allocated_quantity: 10, allocated_cost: 10 }),
+    ).toThrow(/exceeds inventory lot LOT-5d's quantity/);
+
+    const links = db.prepare('SELECT * FROM cost_links WHERE inventory_lot_id = ?').all('LOT-5d');
+    expect(links).toHaveLength(0);
+    const lot = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get('LOT-5d') as any;
+    expect(lot.cost_status).toBe('Uncosted');
+    expect(lot.confirmed_allocated_quantity).toBe(0);
   });
 
   it('allows a Confirmed allocation within capacity and updates rollups atomically', () => {
@@ -122,14 +187,27 @@ describe('createCostLink', () => {
 });
 
 describe('updateCostLink', () => {
-  it('OLD BUG: confirming a Candidate via PATCH used to skip capacity checks — now rejected', () => {
+  it('rejects a PATCH that raises an already-Candidate allocated_quantity above the lot capacity — individual bound applies on update too', () => {
     seedLot('LOT-9', 3);
     seedPurchase('PUR-9', 100, 1000); // purchase capacity is generous; only the lot is small
-    const row = createCostLink({ inventory_lot_id: 'LOT-9', acquisition_line_id: 'PUR-9', allocated_quantity: 10, allocated_cost: 10 }) as any;
-    // Candidate creation with an over-large quantity is allowed (not yet a commitment)...
+    const row = createCostLink({ inventory_lot_id: 'LOT-9', acquisition_line_id: 'PUR-9', allocated_quantity: 2, allocated_cost: 2 }) as any;
     expect(row.allocation_status).toBe('Candidate');
-    // ...but confirming it must be rejected since it exceeds the lot's capacity of 3.
-    expect(() => updateCostLink(row.allocation_id, { allocation_status: 'Confirmed' })).toThrow(/exceeding its quantity/);
+    expect(() => updateCostLink(row.allocation_id, { allocated_quantity: 10 })).toThrow(/exceeds inventory lot LOT-9's quantity/);
+    const unchanged = db.prepare('SELECT allocated_quantity FROM cost_links WHERE allocation_id = ?').get(row.allocation_id) as any;
+    expect(unchanged.allocated_quantity).toBe(2); // no partial write
+  });
+
+  it('PATCH-confirming a Candidate that individually fits but would exceed CUMULATIVE lot capacity with another Confirmed row is still rejected', () => {
+    seedLot('LOT-9b', 5);
+    seedPurchase('PUR-9b-1', 100, 1000);
+    seedPurchase('PUR-9b-2', 100, 1000);
+    // Each candidate individually fits the lot's capacity of 5 on its own...
+    const a = createCostLink({ inventory_lot_id: 'LOT-9b', acquisition_line_id: 'PUR-9b-1', allocated_quantity: 3, allocated_cost: 3, allocation_status: 'Confirmed' }) as any;
+    const b = createCostLink({ inventory_lot_id: 'LOT-9b', acquisition_line_id: 'PUR-9b-2', allocated_quantity: 3, allocated_cost: 3 }) as any;
+    expect(a.allocation_status).toBe('Confirmed');
+    expect(b.allocation_status).toBe('Candidate');
+    // ...but confirming both together (3 + 3 = 6) exceeds the shared lot capacity of 5.
+    expect(() => updateCostLink(b.allocation_id, { allocation_status: 'Confirmed' })).toThrow(/exceeding its quantity/);
   });
 
   it('OLD BUG: remaining_quantity/remaining_cost used to clamp to zero, hiding over-allocation — now left negative and visible', () => {

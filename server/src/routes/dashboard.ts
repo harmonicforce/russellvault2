@@ -3,7 +3,9 @@ import { db } from '../db.js';
 
 const router = Router();
 
-router.get('/', (_req, res) => {
+// Core query logic, exported so a regression test can exercise it directly
+// against an in-memory database without going through HTTP.
+export function getDashboard() {
   const inv = db.prepare(`
     SELECT
       COUNT(*) as lotCount,
@@ -63,7 +65,11 @@ router.get('/', (_req, res) => {
   const checks = db.prepare(`SELECT status, COUNT(*) as n FROM checks GROUP BY status`).all() as any[];
 
   const recentSales = db.prepare(`SELECT * FROM sales ORDER BY created_at DESC LIMIT 5`).all();
-  const recentPurchases = db.prepare(`SELECT * FROM whatnot_purchases ORDER BY processed_date DESC LIMIT 5`).all();
+  // Matches the same default business-view filter already applied to the
+  // purchases totals above, the purchases list, type-summary, and facets.
+  const recentPurchases = db.prepare(
+    `SELECT * FROM whatnot_purchases WHERE COALESCE(is_excluded, 0) = 0 ORDER BY processed_date DESC LIMIT 5`,
+  ).all();
 
   const topVerticals = db.prepare(`
     SELECT business_vertical, COUNT(*) as lotCount, COALESCE(SUM(recorded_unit_value * quantity),0) as value
@@ -71,7 +77,11 @@ router.get('/', (_req, res) => {
     GROUP BY business_vertical ORDER BY value DESC LIMIT 8
   `).all();
 
-  res.json({ inventory: inv, purchases, links, listings, sales, checks, recentSales, recentPurchases, topVerticals });
+  return { inventory: inv, purchases, links, listings, sales, checks, recentSales, recentPurchases, topVerticals };
+}
+
+router.get('/', (_req, res) => {
+  res.json(getDashboard());
 });
 
 export default router;

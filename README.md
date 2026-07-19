@@ -20,9 +20,12 @@ This is a **working prototype, not the authoritative system of record.**
   longer deletes imported source rows. Food/candy purchases are flagged
   (`is_excluded`), not removed. Note: the repository seed has 2,149
   `whatnot_purchases` rows, but the verified production Railway backup has
-  2,119 — the old code already deleted 30 food/candy rows from production
-  before this fix; this fix does not retroactively restore them. See
-  `docs/architecture.md`.
+  2,119 — a 30-row difference consistent with the old code having deleted rows
+  from production, but the backup has **not** been reconciled row-for-row
+  against the seed, so it cannot be said the backup is missing exactly those
+  30 food/candy rows. No restoration is performed here; see
+  `docs/architecture.md` for the exact reconciliation procedure required
+  before any restoration.
 - **Production writes are read-only by default** — set `ALLOW_LEGACY_WRITES=true`
   on the server to re-enable them; see `docs/architecture.md`.
 - **Unsafe financial writes remain a concern for later target-model phases**,

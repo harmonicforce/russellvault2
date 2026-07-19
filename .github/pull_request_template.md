@@ -34,12 +34,15 @@ root-only run does not count as client or server coverage.
 
 - [ ] I understand the SQLite app is **non-authoritative**. Startup data
       deletion was fixed going forward in `claude/p0-legacy-stop-loss` (source
-      rows are now flagged, never deleted — this does not retroactively
-      restore the 30 rows already removed from production before the fix) and
-      production writes are now disabled by default (see
-      `docs/architecture.md`); the underlying money-cents migration and full
-      relational shadow system remain concerns for **later target-model
-      phases**.
+      rows are now flagged, never deleted). The repository seed (2,149 rows)
+      and the verified production backup (2,119 rows) differ by 30, but that
+      difference has **not** been reconciled row-for-row — no restoration is
+      performed by this fix, and the seed may only become a restoration
+      source after exact `acquisition_line_id`/content reconciliation via a
+      separate, backup-protected, owner-reviewed procedure. Production writes
+      are now disabled by default (see `docs/architecture.md`); the underlying
+      money-cents migration and full relational shadow system remain concerns
+      for **later target-model phases**.
 
 ## Rollback
 

@@ -19,18 +19,27 @@ deployment, or data authority.
   reads (the purchases list, dashboard totals, facets) filter `is_excluded = 0`
   by default; pass `?includeExcluded=true` on `GET /api/purchases` to see
   flagged rows, or query the row directly by ID.
-  **Repository seed vs. production history — these are not the same number:**
+  **Repository seed vs. production history — these are not the same number,
+  and the two are NOT reconciled row-for-row:**
   the repository seed (`server/seed/whatnot_purchases.json`, used by fresh
   installs and by `server/src/seed.test.ts`) has **2,149** rows; booting
   against it flags 30 as excluded and deletes none (2,149 in, 2,149 out). The
   **verified production Railway backup**, collected and checked by the owner
-  before the Phase 0 merge, has **2,119** `whatnot_purchases` rows — the old
-  destructive `DELETE` already removed those same 30 food/candy rows from
-  production at some point before this fix existed. This fix stops any further
-  deletion; it does **not** retroactively restore the 30 rows already removed
-  from production. Restoring them (from a verified backup, without touching
-  the live database directly) is carried forward as a separate,
-  backup-protected, idempotent, owner-reviewed action — out of scope here.
+  before the Phase 0 merge, has **2,119** `whatnot_purchases` rows — a
+  difference of 30 from the seed count. That count difference is consistent
+  with the old destructive `DELETE` having removed rows from production at
+  some point before this fix existed, but **which specific rows differ between
+  the seed and the backup has not been verified** — the backup has not been
+  reconciled against the seed by `acquisition_line_id` or row content, so it
+  cannot be asserted that the backup is missing exactly the same 30
+  food/candy rows the seed's `flagFoodPurchases` would flag. This fix stops
+  any further deletion; it does **not** restore anything. Any restoration
+  requires the source to be independently adjudicated first — the 2,149-row
+  repository seed may be used as a restoration source only after an exact
+  `acquisition_line_id` and content reconciliation against the production
+  backup, carried out as a separate, backup-protected, idempotent,
+  owner-reviewed procedure. No restoration is performed in this repository
+  work, and none is performed against a live database.
 - **Legacy writes are disabled by default in production.** See "Legacy-write
   guard" below. This does not change local development.
 - **Unsafe financial writes remain a concern for later target-model phases.**
