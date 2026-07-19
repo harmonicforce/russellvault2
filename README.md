@@ -62,6 +62,12 @@ for the Gate G0A backup/deploy preflight.
   lives at `server/data/vault.db` and is seeded once from `server/seed/*.json`.
 - `client/` — Vite + React + TypeScript + Tailwind v4, TanStack Query for data
   fetching, react-router for navigation.
+- `supabase/` + `scripts/db/` — Phase 2 **local shadow foundation**: a newly
+  created, non-authoritative PostgreSQL/Supabase schema (workspaces, RLS,
+  SECURITY DEFINER functions, private storage policies) with pgTAP tests
+  (`npm run db:reset` / `npm run db:test`). Local-only; the deployed app still
+  runs entirely on SQLite, and the client auth shell is off unless explicitly
+  flagged on. See `docs/supabase-shadow-foundation.md`.
 
 ## Running it
 

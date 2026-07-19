@@ -10,6 +10,7 @@ import Listings from './pages/Listings';
 import Sales from './pages/Sales';
 import Checks from './pages/Checks';
 import ReadOnlyBanner from './components/ReadOnlyBanner';
+import AuthShell from './components/AuthShell';
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -23,6 +24,7 @@ const NAV = [
 
 export default function App() {
   return (
+    <AuthShell>
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-0 text-ink">
       <ReadOnlyBanner />
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -71,5 +73,6 @@ export default function App() {
         </main>
       </div>
     </div>
+    </AuthShell>
   );
 }
