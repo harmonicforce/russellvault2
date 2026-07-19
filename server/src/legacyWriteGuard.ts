@@ -1,9 +1,9 @@
-// Phase 0 stop-loss: this Express/SQLite prototype is not the authoritative
+// Legacy stop-loss: this Express/SQLite prototype is not the authoritative
 // data model (see docs/architecture.md) and its direct writes are exactly the
-// operations Phase 1+ is replacing. In production, writes are OFF by default;
-// an operator must explicitly opt in on the server. There is no client-side
-// switch and no secret shipped to the browser — the client only ever learns
-// the current boolean state via GET /api/health.
+// operations later target-model phases are replacing. In production, writes
+// are OFF by default; an operator must explicitly opt in on the server. There
+// is no client-side switch and no secret shipped to the browser — the client
+// only ever learns the current boolean state via GET /api/health.
 import type { NextFunction, Request, Response } from 'express';
 
 const isProduction = process.env.NODE_ENV === 'production';

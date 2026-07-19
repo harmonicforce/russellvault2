@@ -219,11 +219,14 @@ function setMeta(key: string, value: string) {
 // source rows are evidence and must never be removed from the database —
 // silently deleting imported source rows was the exact stop-loss bug this
 // flag exists to close. Instead, mark them excluded; every read that should
-// present a "business" view filters on is_excluded = 0, while the row (and
-// the original 2,149-row count) is preserved permanently and remains
-// queryable directly. Idempotent and safe to run every boot: it only ever
-// flags rows that are food and not yet flagged, so it also catches food rows
-// from a future import without needing a one-time guard.
+// present a "business" view filters on is_excluded = 0, while the row itself
+// is preserved permanently and remains queryable directly. This only stops
+// deletion going forward — it does not restore rows the old DELETE already
+// removed from a database before this fix was applied (see
+// docs/architecture.md for the repository-seed-vs-production-history note).
+// Idempotent and safe to run every boot: it only ever flags rows that are
+// food and not yet flagged, so it also catches food rows from a future
+// import without needing a one-time guard.
 function flagFoodPurchases() {
   const info = db.prepare(
     `UPDATE whatnot_purchases

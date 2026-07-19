@@ -30,13 +30,16 @@ root-only run does not count as client or server coverage.
 - [ ] Reminder: a later **Phase 13** timed restore rehearsal is still required
       before broad cutover.
 
-## Known non-authoritative / Phase 1 risks (acknowledge, do not "fix" here)
+## Known non-authoritative / target-model risks (acknowledge, do not "fix" here)
 
 - [ ] I understand the SQLite app is **non-authoritative**. Startup data
-      deletion was fixed in `claude/p0-legacy-stop-loss` (source rows are now
-      flagged, never deleted) and production writes are now disabled by
-      default (see `docs/architecture.md`); the underlying money-cents
-      migration and full relational shadow system remain **Phase 1+** issues.
+      deletion was fixed going forward in `claude/p0-legacy-stop-loss` (source
+      rows are now flagged, never deleted — this does not retroactively
+      restore the 30 rows already removed from production before the fix) and
+      production writes are now disabled by default (see
+      `docs/architecture.md`); the underlying money-cents migration and full
+      relational shadow system remain concerns for **later target-model
+      phases**.
 
 ## Rollback
 

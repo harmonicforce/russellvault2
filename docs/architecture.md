@@ -11,21 +11,33 @@ deployment, or data authority.
   prototype. It must not be treated as the system of record for financial facts.
   The approved target data model (see the Phase 3 architecture / audit) is a
   separate PostgreSQL model that later phases build.
-- **Startup data deletion is fixed (Phase "p0-legacy-stop-loss").** `server/src/db.ts`
-  no longer runs a `DELETE` against imported source rows at boot. The food/candy
-  cleanup (`flagFoodPurchases`) now sets a non-destructive `is_excluded` /
-  `exclusion_reason` flag instead — every original `whatnot_purchases` row is
-  preserved permanently. Business-facing reads (the purchases list, dashboard
-  totals, facets) filter `is_excluded = 0` by default; pass
-  `?includeExcluded=true` on `GET /api/purchases` to see flagged rows, or query
-  the row directly by ID — they were never removed.
+- **Startup data deletion is fixed going forward (branch `claude/p0-legacy-stop-loss`).**
+  `server/src/db.ts` no longer runs a `DELETE` against imported source rows at
+  boot. The food/candy cleanup (`flagFoodPurchases`) now sets a non-destructive
+  `is_excluded` / `exclusion_reason` flag instead — from this fix onward, every
+  original `whatnot_purchases` row is preserved permanently. Business-facing
+  reads (the purchases list, dashboard totals, facets) filter `is_excluded = 0`
+  by default; pass `?includeExcluded=true` on `GET /api/purchases` to see
+  flagged rows, or query the row directly by ID.
+  **Repository seed vs. production history — these are not the same number:**
+  the repository seed (`server/seed/whatnot_purchases.json`, used by fresh
+  installs and by `server/src/seed.test.ts`) has **2,149** rows; booting
+  against it flags 30 as excluded and deletes none (2,149 in, 2,149 out). The
+  **verified production Railway backup**, collected and checked by the owner
+  before the Phase 0 merge, has **2,119** `whatnot_purchases` rows — the old
+  destructive `DELETE` already removed those same 30 food/candy rows from
+  production at some point before this fix existed. This fix stops any further
+  deletion; it does **not** retroactively restore the 30 rows already removed
+  from production. Restoring them (from a verified backup, without touching
+  the live database directly) is carried forward as a separate,
+  backup-protected, idempotent, owner-reviewed action — out of scope here.
 - **Legacy writes are disabled by default in production.** See "Legacy-write
   guard" below. This does not change local development.
-- **Unsafe financial writes remain a Phase 1 concern.** Cost-basis and related
-  writes now reject invalid quantities/costs and run allocation
-  creation/confirmation + rollup recomputation in a single transaction (see
-  `server/src/routes/costLinks.ts`), but the underlying money-cents migration
-  has not happened.
+- **Unsafe financial writes remain a concern for later target-model phases.**
+  Cost-basis and related writes now reject invalid quantities/costs and run
+  allocation creation/confirmation + rollup recomputation in a single
+  transaction (see `server/src/routes/costLinks.ts`), but the underlying
+  money-cents migration has not happened.
 - **Money and quantities are stored as SQLite `REAL`.** The target model uses
   integer cents; the legacy `REAL` storage is another reason the legacy app is
   non-authoritative. Request-level validation now rejects non-integer
@@ -58,8 +70,13 @@ no secret in client code: the client only ever learns the current state from
 | Phase 0 baseline branch | `claude/p0-repository-baseline` (from the application head above) |
 
 The default branch is wrong (it has no app). Correcting the default/deployed
-branch is a **deployment-affecting action** and is gated behind **G0A** (see the
-Railway preflight runbook). Do not change it as part of Phase 0.
+branch is a **deployment-affecting action**. **Gate G0A is READY** — the owner
+collected and verified the Railway backup evidence (see the Railway preflight
+runbook and manifest) before the Phase 0 merge; this Claude session has no
+Railway access and did not independently verify that evidence, and this
+document only records the owner's attestation. G0A being READY does not by
+itself change the default branch or deploy anything — that remains a distinct,
+separate owner-approved action, not performed by this PR or any prior one.
 
 ## Application stack
 
@@ -100,16 +117,21 @@ npm ci --prefix server
   backup (`.backup`) or stop the writer and capture the WAL/SHM state. See
   `docs/runbooks/railway-backup-deploy-preflight.md`.
 
-## Deployment (Railway) — and what Phase 0 does NOT do
+## Deployment (Railway) — and what this repository work does NOT do
 
 `railway.json` defines a single-service deploy (`npm run build` → `npm run
 start`, healthcheck `/api/health`). The server also serves the built client in
 production, so the whole app runs on one port.
 
-Phase 0 makes **no** deployment-affecting change. It does not deploy, redeploy,
-restart, change Railway config, or change the default/deployed branch. All of
-those are blocked until **Gate G0A** is `READY` (owner-provided Railway backup
-evidence).
+Neither the Phase 0 baseline nor the `claude/p0-legacy-stop-loss` work makes
+**any** deployment-affecting change. Neither deploys, redeploys, restarts,
+changes Railway config, or changes the default/deployed branch. **Gate G0A is
+READY** (owner-collected and verified Railway backup evidence, completed
+before the Phase 0 merge — see the Railway preflight runbook); this Claude
+session has no Railway access and performed no deployment action regardless of
+gate status. G0A being READY clears that specific gate for a future
+deployment-affecting change — it does not itself trigger one, and any such
+change remains a separate step the owner takes deliberately.
 
 ### Verifying the deployed commit SHA
 

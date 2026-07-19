@@ -16,17 +16,23 @@ This is a **working prototype, not the authoritative system of record.**
 - **The SQLite app is non-authoritative.** Financial facts must not be trusted
   from it; the approved target model (a separate PostgreSQL model) is built in
   later phases.
-- **Startup data deletion is fixed** — `server/src/db.ts` no longer deletes
-  imported source rows. Food/candy purchases are flagged (`is_excluded`), not
-  removed; see `docs/architecture.md`.
+- **Startup data deletion is fixed going forward** — `server/src/db.ts` no
+  longer deletes imported source rows. Food/candy purchases are flagged
+  (`is_excluded`), not removed. Note: the repository seed has 2,149
+  `whatnot_purchases` rows, but the verified production Railway backup has
+  2,119 — the old code already deleted 30 food/candy rows from production
+  before this fix; this fix does not retroactively restore them. See
+  `docs/architecture.md`.
 - **Production writes are read-only by default** — set `ALLOW_LEGACY_WRITES=true`
   on the server to re-enable them; see `docs/architecture.md`.
-- **Unsafe financial writes remain a Phase 1 concern**, and money/quantities are
-  stored as SQLite `REAL` rather than integer cents (though request-level
-  validation now rejects non-integer quantities).
+- **Unsafe financial writes remain a concern for later target-model phases**,
+  and money/quantities are stored as SQLite `REAL` rather than integer cents
+  (though request-level validation now rejects non-integer quantities).
 - The GitHub **default branch (`Beginner`) is wrong** — it has no app. The
   application lives on `claude/ui-better-spreadsheet-cjhwjb`. Correcting the
-  default/deployed branch is **deployment-affecting** and gated behind **G0A**.
+  default/deployed branch is **deployment-affecting**; Gate G0A is **READY**
+  (owner-verified Railway evidence), but changing the default branch is a
+  separate owner-approved deployment action, not performed by any PR to date.
 
 See [`docs/architecture.md`](docs/architecture.md) for repository/branch reality
 and data paths, and
