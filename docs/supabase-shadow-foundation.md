@@ -7,11 +7,13 @@
   policies, storage policies, or database functions of any kind. Nothing here
   "migrated", "hardened", or "preserved" earlier PostgreSQL objects, because
   none existed.
-- **No remote Supabase project was linked, inspected, or modified.** Every
-  migration and test in this phase ran only against a local PostgreSQL
-  database on the development machine. `supabase/config.toml` contains no
-  remote project reference, and no URL, key, token, or secret is committed
-  anywhere.
+- **No remote Supabase project was linked, inspected, or modified.** All
+  execution in this phase was local and non-remote: plain PostgreSQL plus the
+  auth/storage shim on the development machine and in CI, and a real
+  Docker-local Supabase stack in CI. No remote Supabase project and no
+  production environment was involved at any point. `supabase/config.toml`
+  contains no remote project reference, and no URL, key, token, or secret is
+  committed anywhere.
 - **No production owner or workspace was assumed.** The schema defines the
   workspace/membership model; it seeds no users, no workspaces, and no data.
 - **The shadow database is non-authoritative.** The deployed application

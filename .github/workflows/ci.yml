@@ -1,9 +1,13 @@
 name: CI
 
-# Repository checks only. This workflow never deploys, never touches Railway,
-# Supabase, or any production data, and never writes to a database. It runs
-# deterministic clean installs, typecheck, lint, build, tests, and dependency
-# audits across all three dependency roots (root, client, server).
+# Repository checks only. This workflow never deploys and never touches any
+# remote Supabase project, Railway, production data, or any persistent
+# external database. It DOES create and write disposable databases that live
+# and die inside the runner — a local PostgreSQL database and a Docker-local
+# Supabase stack — solely to execute the repository's own database tests.
+# It runs deterministic clean installs, typecheck, lint, build, tests, and
+# dependency audits across all three dependency roots (root, client, server),
+# plus the shadow-database security suite.
 
 on:
   push:
