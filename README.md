@@ -9,6 +9,27 @@ Seeded with the real data from `Russell_Vault_Operationsmost_capable.xlsx`:
 1,487 inventory lots, 2,149 Whatnot purchase lines, 287 cost-basis link
 candidates, and 20 eBay listings.
 
+## ⚠️ Project status & safety
+
+This is a **working prototype, not the authoritative system of record.**
+
+- **The SQLite app is non-authoritative.** Financial facts must not be trusted
+  from it; the approved target model (a separate PostgreSQL model) is built in
+  later phases.
+- **Startup data deletion still exists** — `server/src/db.ts` runs a
+  `DELETE FROM whatnot_purchases` for food rows at boot. This is a documented
+  **Phase 1** stop-loss item, not fixed here.
+- **Unsafe financial writes remain a Phase 1 concern**, and money/quantities are
+  stored as SQLite `REAL` rather than integer cents.
+- The GitHub **default branch (`Beginner`) is wrong** — it has no app. The
+  application lives on `claude/ui-better-spreadsheet-cjhwjb`. Correcting the
+  default/deployed branch is **deployment-affecting** and gated behind **G0A**.
+
+See [`docs/architecture.md`](docs/architecture.md) for repository/branch reality
+and data paths, and
+[`docs/runbooks/railway-backup-deploy-preflight.md`](docs/runbooks/railway-backup-deploy-preflight.md)
+for the Gate G0A backup/deploy preflight.
+
 ## What it does
 
 - **Dashboard** — daily-glance KPIs, inventory value by vertical, reconciliation health.
@@ -41,6 +62,44 @@ Open http://localhost:5173. The Vite dev server proxies `/api` to the Express
 backend. The SQLite database is created and seeded automatically on first run
 of the server (`server/data/vault.db`, gitignored) — delete it to reseed
 from scratch.
+
+## Development, CI, and the three dependency roots
+
+This monorepo has **three independent dependency trees** — root (`/`), `client/`,
+and `server/` — each with its own `package.json` and lockfile. A root-only
+install or audit does **not** cover client or server. Install and check all three:
+
+```bash
+npm ci && npm ci --prefix client && npm ci --prefix server
+npm run lint          # client (oxlint); server is covered by strict typecheck
+npm run typecheck     # server (tsc --noEmit) + client (tsc -b)
+npm run build:ci      # build client + typecheck-build server
+npm test              # server + client (vitest)
+
+# Dependency audits (run per root):
+npm audit --omit=dev --audit-level=high            # production (blocking)
+npm audit --prefix client --omit=dev --audit-level=high
+npm audit --prefix server --omit=dev --audit-level=high
+npm audit --audit-level=low                        # full (dev advisories, reported)
+```
+
+CI (`.github/workflows/ci.yml`, Node 20) runs all of the above on push/PR. It
+never deploys, touches Railway/Supabase, or writes to a database.
+
+### Verify the deployed commit
+
+The server exposes `GET /api/version` reporting the deployed commit SHA (from
+`RAILWAY_GIT_COMMIT_SHA` / `GIT_COMMIT_SHA`) and Node version — no secrets. Use
+it to confirm which commit is actually running.
+
+### Verify a SQLite backup (read-only)
+
+```bash
+npm run verify:backup -- /path/to/vault-backup.db     # SHA-256, integrity_check, table counts
+```
+
+This opens the file read-only and never mutates it. See the
+[G0A preflight runbook](docs/runbooks/railway-backup-deploy-preflight.md).
 
 ## Running it on a Chromebook (Linux / Crostini)
 

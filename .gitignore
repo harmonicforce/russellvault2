@@ -9,3 +9,22 @@ dist/
 *_by_seller.csv
 review_*.csv
 /server/data/
+
+# Env files — never commit real values; .env.example placeholders are tracked
+.env
+.env.*
+*.env
+!.env.example
+
+# SQLite databases and WAL/SHM state — never commit live or backup databases
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Backups and G0A preflight evidence (filled manifests, retrieved backups)
+backups/
+preflight-evidence/
+*.backup
+

@@ -32,6 +32,18 @@ app.use('/api/lookups', lookupsRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// Read-only build/version info to confirm which commit is actually deployed.
+// Reports only a git SHA + Node version — never any secret. Railway provides
+// RAILWAY_GIT_COMMIT_SHA automatically; GIT_COMMIT_SHA is a manual override.
+const startedAtUtc = new Date().toISOString();
+app.get('/api/version', (_req, res) => {
+  res.json({
+    sha: process.env.GIT_COMMIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
+    node: process.version,
+    startedAtUtc,
+  });
+});
+
 // In production (e.g. Railway) the API also serves the built client so the
 // whole app runs as a single service on one port. The client build is
 // produced by `npm run build --prefix client` into client/dist.
