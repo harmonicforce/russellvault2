@@ -167,7 +167,11 @@ Coverage comes in three distinct tiers — do not conflate them:
    from empty via `supabase db reset --local`, and runs the same pgTAP suite
    against that database via `supabase test db --local` — real Supabase
    `auth`/`storage` schemas and roles, no shim. Local only: no link, ref,
-   remote URL, or credentials.
+   remote URL, or credentials. One known divergence: the stack's storage
+   service blocks **all** direct SQL deletes on `storage.objects` (deletion
+   goes through the Storage API), so the three DELETE-policy assertions
+   detect that and skip there with a note — they execute fully in tier 1,
+   and the DELETE policies still govern the Storage API's own deletion path.
 3. **Untested: the HTTP layer.** GoTrue token issuance, PostgREST request
    handling, and Storage API signed-URL behavior are exercised by neither
    tier and remain unverified; that belongs to a later phase driving the

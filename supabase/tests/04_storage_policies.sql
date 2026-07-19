@@ -40,6 +40,19 @@ exception when insufficient_privilege then
   return 0;
 end $$;
 
+-- The real Supabase storage service installs a protection trigger that blocks
+-- ALL direct SQL deletes on storage.objects ("Use the Storage API instead"),
+-- for every role, before RLS is even consulted. Where that trigger is active
+-- the DELETE-policy assertions below cannot be exercised via SQL and are
+-- skipped with a note; they run fully in the plain-postgres tier.
+create function pg_temp.direct_delete_allowed() returns boolean language plpgsql as $$
+begin
+  delete from storage.objects where false; -- statement triggers fire on 0 rows
+  return true;
+exception when others then
+  return false;
+end $$;
+
 -- Fixtures --------------------------------------------------------------------
 select is((to_regclass('storage.objects') is not null), true, 'storage schema is present for this test run');
 
@@ -144,7 +157,12 @@ select lives_ok(
      where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back-renamed.jpg' $$,
   'rename back for subsequent assertions');
 
+select pg_temp.logout();
+select pg_temp.direct_delete_allowed() as allow_del \gset
+
 -- Operator cannot delete evidence (owner-only).
+\if :allow_del
+select pg_temp.login('22222222-2222-2222-2222-222222222222');
 delete from storage.objects
   where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/front.jpg';
 select pg_temp.logout();
@@ -152,6 +170,9 @@ select is(
   (select count(*)::int from storage.objects
    where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/front.jpg'),
   1, 'operator delete had no effect (evidence deletion is owner-only)');
+\else
+select skip('storage service blocks all direct SQL deletes here; delete policies are exercised in the plain-postgres tier', 1);
+\endif
 
 -- Cross-workspace reads and writes are impossible ------------------------------
 select pg_temp.login('44444444-4444-4444-4444-444444444444');
@@ -166,6 +187,7 @@ select is(
   'workspace A objects were untouched by workspace B owner');
 
 -- Owner may delete evidence in her own workspace -------------------------------
+\if :allow_del
 select pg_temp.login('11111111-1111-1111-1111-111111111111');
 delete from storage.objects
   where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back.jpg';
@@ -177,6 +199,9 @@ select pg_temp.logout();
 select is(
   (select count(*)::int from storage.objects where name like 'bbbbbbbb%'), 1,
   'owner of A cannot delete workspace B evidence');
+\else
+select skip('storage service blocks all direct SQL deletes here; delete policies are exercised in the plain-postgres tier', 2);
+\endif
 
 select * from finish();
 rollback;
