@@ -59,6 +59,10 @@ begin
       )
   $pol$;
 
+  -- UPDATE re-applies the complete path validation from INSERT: the new name
+  -- must be a well-formed <workspace>/<item>/<filename> path inside a
+  -- workspace where the caller is owner/operator, so an object can never be
+  -- renamed into a malformed or foreign path.
   execute $pol$
     create policy intake_evidence_update on storage.objects
       for update to authenticated
@@ -69,6 +73,7 @@ begin
       with check (
         bucket_id = 'intake-evidence'
         and app.member_role(app.storage_path_workspace(name)) in ('owner', 'operator')
+        and name ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
       )
   $pol$;
 

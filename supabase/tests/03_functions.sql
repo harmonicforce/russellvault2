@@ -229,5 +229,27 @@ select throws_ok(
   '42501', null, 'owner of A cannot configure workspace B');
 select pg_temp.logout();
 
+-- Anti-enumeration: a foreign group and a nonexistent group produce
+-- byte-identical errors from both group functions, so a caller cannot use
+-- them to probe whether an id exists in another workspace.
+select pg_temp.login('44444444-4444-4444-4444-444444444444');
+select throws_ok(
+  $$ select public.expand_intake_group('a6e00a01-0000-4000-8000-000000000001') $$,
+  '42501', 'intake group not found or not authorized',
+  'expand: foreign existing group message');
+select throws_ok(
+  $$ select public.expand_intake_group('99999999-9999-4999-8999-999999999999') $$,
+  '42501', 'intake group not found or not authorized',
+  'expand: nonexistent group message is identical');
+select throws_ok(
+  $$ select public.delete_intake_group_safe('a6e00a01-0000-4000-8000-000000000001') $$,
+  '42501', 'intake group not found or not authorized',
+  'delete: foreign existing group message');
+select throws_ok(
+  $$ select public.delete_intake_group_safe('99999999-9999-4999-8999-999999999999') $$,
+  '42501', 'intake group not found or not authorized',
+  'delete: nonexistent group message is identical');
+select pg_temp.logout();
+
 select * from finish();
 rollback;

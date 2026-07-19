@@ -116,6 +116,34 @@ select throws_ok(
        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/loose-file.jpg') $$,
   '42501', null, 'paths must include an item folder');
 
+-- UPDATE re-applies full path validation: an operator cannot rename an
+-- object out of the required <workspace>/<item>/<filename> structure or into
+-- a foreign workspace.
+select throws_ok(
+  $$ update storage.objects set name = 'garbage-path.jpg'
+     where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back.jpg' $$,
+  '42501', null, 'rename to a malformed path is rejected');
+select throws_ok(
+  $$ update storage.objects set name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/no-item-segment.jpg'
+     where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back.jpg' $$,
+  '42501', null, 'rename to a path without an item segment is rejected');
+select throws_ok(
+  $$ update storage.objects set name = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/a17e0a01-0000-4000-8000-000000000001/stolen.jpg'
+     where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back.jpg' $$,
+  '42501', null, 'rename into a foreign workspace path is rejected');
+select throws_ok(
+  $$ update storage.objects set name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/extra/depth.jpg'
+     where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back.jpg' $$,
+  '42501', null, 'rename with extra path segments is rejected');
+select lives_ok(
+  $$ update storage.objects set name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back-renamed.jpg'
+     where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back.jpg' $$,
+  'a well-formed same-workspace rename is allowed');
+select lives_ok(
+  $$ update storage.objects set name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back.jpg'
+     where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/back-renamed.jpg' $$,
+  'rename back for subsequent assertions');
+
 -- Operator cannot delete evidence (owner-only).
 delete from storage.objects
   where name = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/a17e0a01-0000-4000-8000-000000000001/front.jpg';

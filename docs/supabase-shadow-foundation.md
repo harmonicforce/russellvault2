@@ -59,6 +59,12 @@ scripts/db/
    `app.next_sku`), all with fixed empty `search_path`, internal
    authentication/membership/role checks, input validation, and
    least-privilege grants (`authenticated` only; `anon` and `PUBLIC` revoked).
+   The group functions authorize **inside the row lookup**: the membership
+   predicate is part of the WHERE clause of the `FOR UPDATE` query, so an
+   unauthorized caller never reads or locks another workspace's row, and
+   nonexistent vs. unauthorized ids produce byte-identical errors
+   (`supabase/tests/05_function_locking.sql` proves both properties with a
+   real second session).
 5. `20260719000500_storage_policies.sql` — private-storage policy conventions
    for the `intake-evidence` bucket: paths must be
    `<workspace_id>/<item_id>/<filename>`, reads require workspace membership,
@@ -107,31 +113,65 @@ npm run db:reset   # drop + recreate the LOCAL russellvault_shadow DB, apply mig
 npm run db:test    # db:reset, then run every pgTAP file in supabase/tests
 ```
 
-Both scripts refuse non-local `PGHOST` values, so they cannot be pointed at a
-remote database. `SHADOW_DB_NAME` overrides the database name.
+Connection safety: every psql invocation goes through `scripts/db/guard.mjs`,
+which refuses or neutralizes **every** libpq setting that could redirect a
+connection off the local machine — non-local `PGHOST`, non-loopback
+`PGHOSTADDR`, and any `PGSERVICE`/`PGSERVICEFILE`/`PGSYSCONFDIR` service-file
+indirection — and passes the validated host/socket explicitly to psql.
+`SHADOW_DB_NAME` overrides the database name and is validated as a strict
+lowercase PostgreSQL identifier before any command is constructed (it is the
+only value ever interpolated into SQL, always identifier-quoted).
+`scripts/db/guard.test.mjs` (run by `npm test` and CI) proves remote hosts,
+`PGHOSTADDR`, service definitions, and malformed/injection-shaped database
+names are refused before any database command runs.
 
-Optionally, with Docker available, the pinned Supabase CLI can drive the same
-migrations through a full local Supabase stack:
-`SHADOW_DB_RUNNER=supabase-cli npm run db:reset`. The pin lives in
+With Docker available, `SHADOW_DB_RUNNER=supabase-cli` switches **both**
+scripts to the pinned CLI end-to-end: `db:reset` runs
+`supabase db reset --local` (applies all five migrations to the local stack
+database) and `db:test` then runs `supabase test db --local`, which executes
+the same pgTAP suite **against that same stack database**. The pin lives in
 `supabase/cli-version` (currently 2.109.1) and is the repository-controlled
-version used by any `npx supabase@$(cat supabase/cli-version)` invocation.
+version used by every `npx supabase@$(cat supabase/cli-version)` invocation.
+The stack must be started first (`npx supabase@$(cat supabase/cli-version)
+start`); no link, project ref, or credentials are involved at any point.
+
+### Node runtime contract
+
+The repository supports **Node 20+** (root `engines.node >= 20`, CI runs
+Node 20). `@supabase/supabase-js` is pinned **exactly** to `2.109.0` — the
+newest release whose complete installed dependency chain declares
+`node >= 20` (the 2.110.x line moved to `node >= 22`). `npm ci` at root,
+client, and server was verified clean under Node v20.19.5 with zero
+`EBADENGINE` warnings from the Supabase chain. Do not bump this pin past
+2.109.x without an explicit owner decision to raise the runtime baseline.
+(Pre-existing, unrelated: the root dev-only `concurrently@10` declares
+`node >= 22`; it predates Phase 2 and only affects the local `npm run dev`
+convenience wrapper.)
 
 ### What the SQL tests did and did not exercise
 
-The pgTAP suite ran against **plain local PostgreSQL 15**, not a running
-Supabase stack (Docker is unavailable in the build environment).
-`scripts/db/shim/000_supabase_shim.sql` recreates the minimal Supabase
-surface the schema depends on — `anon`/`authenticated`/`service_role` roles,
-`auth.users`, `auth.uid()`, and a minimal `storage.buckets`/`storage.objects`
-with RLS — and tests impersonate users by setting JWT-claim settings and
-switching roles, which is the same mechanism Supabase's own RLS testing uses.
+Coverage comes in three distinct tiers — do not conflate them:
 
-This means the tests **do** prove the SQL-level security model: RLS policies,
-grants, constraints, and function authorization behave as asserted for anon,
-non-members, viewers, operators, and owners across workspaces. They do **not**
-exercise Supabase's HTTP layer (GoTrue token issuance, PostgREST, the Storage
-API's signed URLs) — that verification belongs to a later phase with a real
-local stack.
+1. **Plain PostgreSQL + shim (this machine, and the CI
+   `shadow-db-postgres-shim` job).** The pgTAP suite runs against plain
+   PostgreSQL 15 with `scripts/db/shim/000_supabase_shim.sql` emulating the
+   minimal Supabase surface (`anon`/`authenticated`/`service_role` roles,
+   `auth.users`, `auth.uid()`, minimal `storage.buckets`/`storage.objects`
+   with RLS). Tests impersonate users via JWT-claim settings and role
+   switching — the same mechanism Supabase's own RLS testing uses. This
+   proves the SQL-level security model (RLS policies, grants, constraints,
+   SECURITY DEFINER authorization, locking order) but is **not Supabase
+   parity**.
+2. **Real local Supabase stack (the CI `shadow-db-supabase-stack` job).**
+   The pinned CLI starts a Docker-local stack, applies all five migrations
+   from empty via `supabase db reset --local`, and runs the same pgTAP suite
+   against that database via `supabase test db --local` — real Supabase
+   `auth`/`storage` schemas and roles, no shim. Local only: no link, ref,
+   remote URL, or credentials.
+3. **Untested: the HTTP layer.** GoTrue token issuance, PostgREST request
+   handling, and Storage API signed-URL behavior are exercised by neither
+   tier and remain unverified; that belongs to a later phase driving the
+   stack over HTTP.
 
 ## Client integration (feature-flagged)
 

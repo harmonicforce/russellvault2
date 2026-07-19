@@ -102,8 +102,14 @@ grant execute on function public.mint_sku(uuid) to authenticated;
 -- expand_intake_group ----------------------------------------------------------
 -- Expands a pending intake group into quantity_expected draft items, minting a
 -- SKU for each. Owner/operator only, and only within the caller's workspace.
--- Transaction-safe: the group row is locked, so concurrent expansion attempts
--- serialize and the second one fails on the status check.
+-- Authorization is part of the row lookup itself: the membership predicate is
+-- evaluated in the WHERE clause, so a row that the caller is not authorized
+-- for is never returned — and FOR UPDATE only locks rows that satisfy the
+-- WHERE clause, so an unauthorized caller never locks (or even reads into a
+-- variable) another workspace's row. Nonexistent and unauthorized groups
+-- produce byte-identical errors. Transaction-safe: for authorized callers the
+-- group row is locked, so concurrent expansion attempts serialize and the
+-- second one fails on the status check.
 create function public.expand_intake_group(p_group_id uuid)
 returns uuid[]
 language plpgsql
@@ -118,6 +124,10 @@ declare
   v_id uuid;
   i integer;
 begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    raise exception 'authentication required' using errcode = '42501';
+  end if;
   if p_group_id is null then
     raise exception 'intake group id is required' using errcode = '22023';
   end if;
@@ -125,18 +135,18 @@ begin
   select g.* into v_group
   from public.intake_groups g
   where g.id = p_group_id
-  for update;
+    and exists (
+      select 1
+      from public.workspace_members m
+      where m.workspace_id = g.workspace_id
+        and m.user_id = v_uid
+        and m.role in ('owner', 'operator')
+    )
+  for update of g;
 
   if not found then
     raise exception 'intake group not found or not authorized' using errcode = '42501';
   end if;
-
-  begin
-    v_uid := app.assert_workspace_role(v_group.workspace_id, array['owner', 'operator']::public.workspace_role[]);
-  exception when insufficient_privilege then
-    -- Same message for "exists but foreign" as for "does not exist".
-    raise exception 'intake group not found or not authorized' using errcode = '42501';
-  end;
 
   if v_group.status <> 'pending' then
     raise exception 'intake group % is not pending (status: %)', v_group.public_id, v_group.status
@@ -179,7 +189,10 @@ grant execute on function public.expand_intake_group(uuid) to authenticated;
 
 -- delete_intake_group_safe -----------------------------------------------------
 -- Deletes an intake group only when no items reference it. Owner/operator
--- only, within the caller's workspace. Never cascades to evidence.
+-- only, within the caller's workspace. Never cascades to evidence. Same
+-- authorize-in-the-lookup construction as expand_intake_group: the membership
+-- predicate is part of the WHERE clause, so an unauthorized caller never
+-- reads or locks a foreign row, and nonexistent/unauthorized are identical.
 create function public.delete_intake_group_safe(p_group_id uuid)
 returns void
 language plpgsql
@@ -187,9 +200,14 @@ security definer
 set search_path = ''
 as $$
 declare
+  v_uid uuid;
   v_group public.intake_groups%rowtype;
   v_item_count bigint;
 begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    raise exception 'authentication required' using errcode = '42501';
+  end if;
   if p_group_id is null then
     raise exception 'intake group id is required' using errcode = '22023';
   end if;
@@ -197,17 +215,18 @@ begin
   select g.* into v_group
   from public.intake_groups g
   where g.id = p_group_id
-  for update;
+    and exists (
+      select 1
+      from public.workspace_members m
+      where m.workspace_id = g.workspace_id
+        and m.user_id = v_uid
+        and m.role in ('owner', 'operator')
+    )
+  for update of g;
 
   if not found then
     raise exception 'intake group not found or not authorized' using errcode = '42501';
   end if;
-
-  begin
-    perform app.assert_workspace_role(v_group.workspace_id, array['owner', 'operator']::public.workspace_role[]);
-  exception when insufficient_privilege then
-    raise exception 'intake group not found or not authorized' using errcode = '42501';
-  end;
 
   select count(*) into v_item_count
   from public.items i

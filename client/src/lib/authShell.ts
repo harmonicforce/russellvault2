@@ -38,10 +38,15 @@ export interface AuthShellClient {
     signOut(): Promise<{ error: { message: string } | null }>;
   };
   from(table: 'workspace_members'): {
-    select(columns: 'workspace_id, role'): PromiseLike<{
-      data: Membership[] | null;
-      error: { message: string } | null;
-    }>;
+    select(columns: 'workspace_id, role'): {
+      eq(
+        column: 'user_id',
+        value: string
+      ): PromiseLike<{
+        data: Membership[] | null;
+        error: { message: string } | null;
+      }>;
+    };
   };
 }
 
@@ -77,11 +82,13 @@ export function createAuthShellController(
     if (!data.session) return emit({ kind: 'signed-out' });
 
     const email = data.session.user.email ?? null;
-    // RLS restricts this query to the caller's own membership rows; an empty
-    // result means the account exists but has no workspace access.
+    // Filter to the SESSION USER's rows explicitly. RLS lets a member read
+    // their whole workspace roster, so without this filter other members'
+    // rows would be misread as the caller's own memberships.
     const { data: memberships, error: membershipError } = await supabase
       .from('workspace_members')
-      .select('workspace_id, role');
+      .select('workspace_id, role')
+      .eq('user_id', data.session.user.id);
     if (membershipError) {
       return emit({ kind: 'signed-out', error: membershipError.message });
     }

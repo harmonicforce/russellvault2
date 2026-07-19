@@ -125,6 +125,11 @@ security definer
 set search_path = ''
 as $$
 begin
+  -- When the workspace row itself is already gone, this delete is the ON
+  -- DELETE CASCADE from deleting the workspace — nothing left to protect.
+  if not exists (select 1 from public.workspaces w where w.id = old.workspace_id) then
+    return coalesce(new, old);
+  end if;
   if old.role = 'owner'
      and (tg_op = 'DELETE' or new.role <> 'owner' or new.workspace_id <> old.workspace_id) then
     if not exists (

@@ -8,9 +8,13 @@ import {
 import { getShadowAuthConfig } from './shadowConfig';
 import { activeDataBackend, DATA_BACKENDS, SHADOW_WRITES_ENABLED } from './dataAdapter';
 
+type RosterRow = Membership & { user_id: string };
+
 interface FakeOptions {
   session?: { user: { id: string; email?: string | null } } | null;
-  memberships?: Membership[];
+  // Full roster visible through RLS — may contain OTHER members' rows; the
+  // shell must filter to the session user itself.
+  roster?: RosterRow[];
   signInError?: string;
   membershipError?: string;
 }
@@ -38,12 +42,19 @@ function fakeClient(options: FakeOptions): AuthShellClient {
     },
     from() {
       return {
-        select: () =>
-          Promise.resolve(
-            options.membershipError
-              ? { data: null, error: { message: options.membershipError } }
-              : { data: options.memberships ?? [], error: null }
-          ),
+        select: () => ({
+          eq: (_column: 'user_id', value: string) =>
+            Promise.resolve(
+              options.membershipError
+                ? { data: null, error: { message: options.membershipError } }
+                : {
+                    data: (options.roster ?? [])
+                      .filter((row) => row.user_id === value)
+                      .map(({ workspace_id, role }) => ({ workspace_id, role })),
+                    error: null,
+                  }
+            ),
+        }),
       };
     },
   };
@@ -112,21 +123,49 @@ describe('auth shell states', () => {
     expect(state).toEqual({ kind: 'signed-out', error: 'Invalid login credentials' });
   });
 
-  it('authenticated member: exposes email and memberships', async () => {
-    const memberships: Membership[] = [{ workspace_id: 'ws-1', role: 'operator' }];
+  it('authenticated member: exposes email and only the caller\'s memberships', async () => {
     const { onState } = collector();
     const controller = createAuthShellController(
-      fakeClient({ session: { user: { id: 'u1', email: 'op@vault.test' } }, memberships }),
+      fakeClient({
+        session: { user: { id: 'u1', email: 'op@vault.test' } },
+        roster: [
+          { workspace_id: 'ws-1', role: 'operator', user_id: 'u1' },
+          { workspace_id: 'ws-1', role: 'owner', user_id: 'other-owner' },
+          { workspace_id: 'ws-1', role: 'viewer', user_id: 'other-viewer' },
+        ],
+      }),
       onState
     );
     const state = await controller.initialize();
-    expect(state).toEqual({ kind: 'member', email: 'op@vault.test', memberships });
+    expect(state).toEqual({
+      kind: 'member',
+      email: 'op@vault.test',
+      memberships: [{ workspace_id: 'ws-1', role: 'operator' }],
+    });
+  });
+
+  it('other members\' roster rows are never returned as the caller\'s memberships', async () => {
+    // The caller has NO membership, but shares RLS visibility with a roster
+    // that has rows for other users — the shell must still deny.
+    const { onState } = collector();
+    const controller = createAuthShellController(
+      fakeClient({
+        session: { user: { id: 'u2', email: 'stranger@vault.test' } },
+        roster: [
+          { workspace_id: 'ws-1', role: 'owner', user_id: 'u1' },
+          { workspace_id: 'ws-2', role: 'operator', user_id: 'u3' },
+        ],
+      }),
+      onState
+    );
+    const state = await controller.initialize();
+    expect(state).toEqual({ kind: 'no-membership', email: 'stranger@vault.test' });
   });
 
   it('authenticated non-member: denied with no-membership state', async () => {
     const { onState } = collector();
     const controller = createAuthShellController(
-      fakeClient({ session: { user: { id: 'u2', email: 'stranger@vault.test' } }, memberships: [] }),
+      fakeClient({ session: { user: { id: 'u2', email: 'stranger@vault.test' } }, roster: [] }),
       onState
     );
     const state = await controller.initialize();
@@ -136,7 +175,7 @@ describe('auth shell states', () => {
   it('sign-in then membership resolution reaches member state', async () => {
     const { states, onState } = collector();
     const controller = createAuthShellController(
-      fakeClient({ session: null, memberships: [{ workspace_id: 'ws-1', role: 'viewer' }] }),
+      fakeClient({ session: null, roster: [{ workspace_id: 'ws-1', role: 'viewer', user_id: 'u1' }] }),
       onState
     );
     const state = await controller.signIn('a@b.c', 'pw');
@@ -147,7 +186,7 @@ describe('auth shell states', () => {
   it('sign-out returns to signed-out', async () => {
     const { onState } = collector();
     const controller = createAuthShellController(
-      fakeClient({ session: { user: { id: 'u1' } }, memberships: [{ workspace_id: 'w', role: 'owner' }] }),
+      fakeClient({ session: { user: { id: 'u1' } }, roster: [{ workspace_id: 'w', role: 'owner', user_id: 'u1' }] }),
       onState
     );
     await controller.initialize();

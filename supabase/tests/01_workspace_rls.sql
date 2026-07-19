@@ -192,5 +192,17 @@ select is(
   'Workspace A (renamed)',
   'zoe cannot mutate workspace A');
 
+-- An owner can delete their own (empty) workspace: the membership cascade is
+-- exempt from last-owner protection once the workspace row itself is gone.
+select pg_temp.login('55555555-5555-5555-5555-555555555555');
+select lives_ok(
+  $$ delete from public.workspaces where id = 'cccccccc-cccc-cccc-cccc-cccccccccccc' $$,
+  'owner deletes his own empty workspace');
+select pg_temp.logout();
+select is(
+  (select count(*)::int from public.workspace_members
+   where workspace_id = 'cccccccc-cccc-cccc-cccc-cccccccccccc'),
+  0, 'memberships cascade away with the deleted workspace');
+
 select * from finish();
 rollback;

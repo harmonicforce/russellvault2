@@ -37,3 +37,6 @@ enable_confirmations = false
 [storage]
 enabled = true
 file_size_limit = "50MiB"
+
+[analytics]
+enabled = false
