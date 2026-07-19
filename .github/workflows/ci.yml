@@ -1,9 +1,13 @@
 name: CI
 
-# Repository checks only. This workflow never deploys, never touches Railway,
-# Supabase, or any production data, and never writes to a database. It runs
-# deterministic clean installs, typecheck, lint, build, tests, and dependency
-# audits across all three dependency roots (root, client, server).
+# Repository checks only. This workflow never deploys and never touches any
+# remote Supabase project, Railway, production data, or any persistent
+# external database. It DOES create and write disposable databases that live
+# and die inside the runner — a local PostgreSQL database and a Docker-local
+# Supabase stack — solely to execute the repository's own database tests.
+# It runs deterministic clean installs, typecheck, lint, build, tests, and
+# dependency audits across all three dependency roots (root, client, server),
+# plus the shadow-database security suite.
 
 on:
   push:
@@ -52,6 +56,8 @@ jobs:
         run: npm run test --prefix server
       - name: Test (client)
         run: npm run test --prefix client
+      - name: Test (shadow-db connection guard)
+        run: node --test scripts/db/guard.test.mjs
 
       # --- Production dependency audits (BLOCKING on high/critical) ---
       # A high or critical PRODUCTION advisory fails the job. Dev-only advisories
@@ -62,6 +68,59 @@ jobs:
         run: npm audit --prefix client --omit=dev --audit-level=high
       - name: Audit production deps (server)
         run: npm audit --prefix server --omit=dev --audit-level=high
+
+  # --- Shadow DB security suite on a REAL local Supabase stack ---
+  # Runs the pinned Supabase CLI against a Docker-local stack only: no link,
+  # no project ref, no remote URL, no credentials, no production data. The
+  # stack is started from empty, all five migrations are applied by
+  # `supabase db reset --local`, the full pgTAP suite runs against that same
+  # database via `supabase test db --local`, and the stack is stopped.
+  shadow-db-supabase-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Read pinned Supabase CLI version
+        id: cli
+        run: echo "version=$(cat supabase/cli-version)" >> "$GITHUB_OUTPUT"
+      - name: Start local Supabase stack (pinned CLI, local only)
+        run: npx --yes supabase@${{ steps.cli.outputs.version }} start -x studio,imgproxy
+      - name: Reset shadow DB from empty via pinned CLI
+        run: SHADOW_DB_RUNNER=supabase-cli npm run db:reset
+      - name: Run pgTAP suite inside the local stack
+        run: SHADOW_DB_RUNNER=supabase-cli npm run db:test
+      - name: Stop local stack
+        if: always()
+        run: npx --yes supabase@${{ steps.cli.outputs.version }} stop
+
+  # --- Shadow DB security suite on plain PostgreSQL + shim (fast supplement) ---
+  # NOT Supabase parity: this uses scripts/db/shim to emulate the auth/storage
+  # surface on the runner's plain PostgreSQL. The supabase-stack job above is
+  # the authoritative database check.
+  shadow-db-postgres-shim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install pgTAP and contrib for the runner's PostgreSQL
+        run: |
+          PGVER=$(psql --version | grep -oE '[0-9]+' | head -1)
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-${PGVER}-pgtap" postgresql-contrib
+      - name: Start PostgreSQL and create a superuser for the runner
+        run: |
+          sudo systemctl start postgresql.service
+          sudo -u postgres createuser -s "$USER"
+      - name: Reset shadow DB from empty (shim runner)
+        run: npm run db:reset
+      - name: Run pgTAP suite (shim runner)
+        run: npm run db:test
 
   # --- Full audits (dev + prod), reported but NON-BLOCKING ---
   # Development advisories are surfaced here and must be read separately; they do

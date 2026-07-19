@@ -1,0 +1,42 @@
+# Local Supabase configuration for the Phase 2 shadow foundation.
+#
+# LOCAL-ONLY. This project is a non-authoritative shadow pilot. This file must
+# never contain a remote project reference, URL, key, or secret. Do not run
+# `supabase link`, `supabase db push`, or any other remote command against this
+# repository. See docs/supabase-shadow-foundation.md.
+
+project_id = "russellvault2-shadow"
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage"]
+extra_search_path = ["public"]
+max_rows = 1000
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:5173"
+additional_redirect_urls = ["http://127.0.0.1:5173"]
+jwt_expiry = 3600
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+
+[storage]
+enabled = true
+file_size_limit = "50MiB"
+
+[analytics]
+enabled = false

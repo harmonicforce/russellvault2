@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.109.0",
     "@tanstack/react-query": "^5.101.2",
     "lucide-react": "^1.24.0",
     "react": "^19.2.7",
