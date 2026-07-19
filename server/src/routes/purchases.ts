@@ -11,12 +11,20 @@ const SORTABLE = new Set([
 
 router.get('/', (req, res) => {
   const {
-    q, seller, reconciliationStatus, businessVertical, productType,
+    q, seller, reconciliationStatus, businessVertical, productType, includeExcluded,
     sort = 'processed_date', order = 'desc', page = '1', pageSize = '50',
   } = req.query as Record<string, string>;
 
   const where: string[] = [];
   const params: Record<string, any> = {};
+
+  // Rows flagged excluded (e.g. personal food/consumable purchases, see
+  // server/src/db.ts flagFoodPurchases) are preserved permanently but hidden
+  // from the default business-reconciliation view. Pass includeExcluded=true
+  // to see them — they were never deleted and remain directly reachable.
+  if (includeExcluded !== 'true') {
+    where.push(`COALESCE(is_excluded, 0) = 0`);
+  }
 
   if (q) {
     where.push(`(product_name LIKE @q OR acquisition_line_id LIKE @q OR seller LIKE @q OR order_id LIKE @q OR reference_number LIKE @q)`);
@@ -49,7 +57,8 @@ router.get('/type-summary', (_req, res) => {
   const rows = db.prepare(
     `SELECT COALESCE(product_type, 'Unreviewed') AS product_type,
             COUNT(*) AS lines, COALESCE(SUM(total_paid), 0) AS total
-       FROM whatnot_purchases GROUP BY COALESCE(product_type, 'Unreviewed')`,
+       FROM whatnot_purchases WHERE COALESCE(is_excluded, 0) = 0
+       GROUP BY COALESCE(product_type, 'Unreviewed')`,
   ).all() as any[];
   const byType = Object.fromEntries(rows.map((r) => [r.product_type, r]));
   const grand = rows.reduce((s, r) => s + (r.total || 0), 0);
@@ -77,7 +86,7 @@ router.patch('/:id', (req, res) => {
 
 router.get('/facets', (_req, res) => {
   const facet = (col: string) =>
-    (db.prepare(`SELECT ${col} as value, COUNT(*) as n FROM whatnot_purchases WHERE ${col} IS NOT NULL AND ${col} != '' GROUP BY ${col} ORDER BY n DESC LIMIT 200`).all() as any[]);
+    (db.prepare(`SELECT ${col} as value, COUNT(*) as n FROM whatnot_purchases WHERE ${col} IS NOT NULL AND ${col} != '' AND COALESCE(is_excluded, 0) = 0 GROUP BY ${col} ORDER BY n DESC LIMIT 200`).all() as any[]);
   res.json({
     seller: facet('seller'),
     reconciliation_status: facet('reconciliation_status'),

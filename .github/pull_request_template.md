@@ -30,11 +30,19 @@ root-only run does not count as client or server coverage.
 - [ ] Reminder: a later **Phase 13** timed restore rehearsal is still required
       before broad cutover.
 
-## Known non-authoritative / Phase 1 risks (acknowledge, do not "fix" here)
+## Known non-authoritative / target-model risks (acknowledge, do not "fix" here)
 
-- [ ] I understand the SQLite app is **non-authoritative** and that startup data
-      deletion (`cleanupFoodPurchases` → `DELETE FROM whatnot_purchases`) and
-      unsafe financial writes remain **Phase 1** issues.
+- [ ] I understand the SQLite app is **non-authoritative**. Startup data
+      deletion was fixed going forward in `claude/p0-legacy-stop-loss` (source
+      rows are now flagged, never deleted). The repository seed (2,149 rows)
+      and the verified production backup (2,119 rows) differ by 30, but that
+      difference has **not** been reconciled row-for-row — no restoration is
+      performed by this fix, and the seed may only become a restoration
+      source after exact `acquisition_line_id`/content reconciliation via a
+      separate, backup-protected, owner-reviewed procedure. Production writes
+      are now disabled by default (see `docs/architecture.md`); the underlying
+      money-cents migration and full relational shadow system remain concerns
+      for **later target-model phases**.
 
 ## Rollback
 

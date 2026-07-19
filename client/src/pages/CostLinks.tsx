@@ -18,7 +18,9 @@ export default function CostLinks() {
   const [selectedPurchase, setSelectedPurchase] = useState<WhatnotPurchase | null>(null);
   const [allocQty, setAllocQty] = useState('');
   const [allocCost, setAllocCost] = useState('');
-  const [asConfirmed, setAsConfirmed] = useState(true);
+  // Candidate is the only default — an allocation must be reviewed and
+  // explicitly confirmed, never auto-confirmed by a pre-checked box.
+  const [asConfirmed, setAsConfirmed] = useState(false);
 
   const { data: lotResults } = useQuery({
     queryKey: ['link-lot-search', debouncedLot],

@@ -3,7 +3,9 @@ import { db } from '../db.js';
 
 const router = Router();
 
-router.get('/', (_req, res) => {
+// Core query logic, exported so a regression test can exercise it directly
+// against an in-memory database without going through HTTP.
+export function getDashboard() {
   const inv = db.prepare(`
     SELECT
       COUNT(*) as lotCount,
@@ -18,6 +20,9 @@ router.get('/', (_req, res) => {
     FROM inventory_lots
   `).get() as any;
 
+  // Excludes flagged rows (e.g. personal food/consumable purchases) so these
+  // business totals match pre-Phase-0 behavior; the rows themselves are
+  // preserved (see server/src/db.ts flagFoodPurchases), not deleted.
   const purchases = db.prepare(`
     SELECT
       COUNT(*) as lineCount,
@@ -26,7 +31,7 @@ router.get('/', (_req, res) => {
       SUM(CASE WHEN reconciliation_status = 'Unmatched' THEN 1 ELSE 0 END) as unmatchedCount,
       SUM(CASE WHEN reconciliation_status = 'Fully Matched' THEN 1 ELSE 0 END) as fullyMatchedCount,
       SUM(CASE WHEN reconciliation_status = 'Partially Matched' THEN 1 ELSE 0 END) as partiallyMatchedCount
-    FROM whatnot_purchases
+    FROM whatnot_purchases WHERE COALESCE(is_excluded, 0) = 0
   `).get() as any;
 
   const links = db.prepare(`
@@ -60,7 +65,11 @@ router.get('/', (_req, res) => {
   const checks = db.prepare(`SELECT status, COUNT(*) as n FROM checks GROUP BY status`).all() as any[];
 
   const recentSales = db.prepare(`SELECT * FROM sales ORDER BY created_at DESC LIMIT 5`).all();
-  const recentPurchases = db.prepare(`SELECT * FROM whatnot_purchases ORDER BY processed_date DESC LIMIT 5`).all();
+  // Matches the same default business-view filter already applied to the
+  // purchases totals above, the purchases list, type-summary, and facets.
+  const recentPurchases = db.prepare(
+    `SELECT * FROM whatnot_purchases WHERE COALESCE(is_excluded, 0) = 0 ORDER BY processed_date DESC LIMIT 5`,
+  ).all();
 
   const topVerticals = db.prepare(`
     SELECT business_vertical, COUNT(*) as lotCount, COALESCE(SUM(recorded_unit_value * quantity),0) as value
@@ -68,7 +77,11 @@ router.get('/', (_req, res) => {
     GROUP BY business_vertical ORDER BY value DESC LIMIT 8
   `).all();
 
-  res.json({ inventory: inv, purchases, links, listings, sales, checks, recentSales, recentPurchases, topVerticals });
+  return { inventory: inv, purchases, links, listings, sales, checks, recentSales, recentPurchases, topVerticals };
+}
+
+router.get('/', (_req, res) => {
+  res.json(getDashboard());
 });
 
 export default router;

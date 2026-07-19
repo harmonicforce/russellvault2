@@ -16,14 +16,26 @@ This is a **working prototype, not the authoritative system of record.**
 - **The SQLite app is non-authoritative.** Financial facts must not be trusted
   from it; the approved target model (a separate PostgreSQL model) is built in
   later phases.
-- **Startup data deletion still exists** — `server/src/db.ts` runs a
-  `DELETE FROM whatnot_purchases` for food rows at boot. This is a documented
-  **Phase 1** stop-loss item, not fixed here.
-- **Unsafe financial writes remain a Phase 1 concern**, and money/quantities are
-  stored as SQLite `REAL` rather than integer cents.
+- **Startup data deletion is fixed going forward** — `server/src/db.ts` no
+  longer deletes imported source rows. Food/candy purchases are flagged
+  (`is_excluded`), not removed. Note: the repository seed has 2,149
+  `whatnot_purchases` rows, but the verified production Railway backup has
+  2,119 — a 30-row difference consistent with the old code having deleted rows
+  from production, but the backup has **not** been reconciled row-for-row
+  against the seed, so it cannot be said the backup is missing exactly those
+  30 food/candy rows. No restoration is performed here; see
+  `docs/architecture.md` for the exact reconciliation procedure required
+  before any restoration.
+- **Production writes are read-only by default** — set `ALLOW_LEGACY_WRITES=true`
+  on the server to re-enable them; see `docs/architecture.md`.
+- **Unsafe financial writes remain a concern for later target-model phases**,
+  and money/quantities are stored as SQLite `REAL` rather than integer cents
+  (though request-level validation now rejects non-integer quantities).
 - The GitHub **default branch (`Beginner`) is wrong** — it has no app. The
   application lives on `claude/ui-better-spreadsheet-cjhwjb`. Correcting the
-  default/deployed branch is **deployment-affecting** and gated behind **G0A**.
+  default/deployed branch is **deployment-affecting**; Gate G0A is **READY**
+  (owner-verified Railway evidence), but changing the default branch is a
+  separate owner-approved deployment action, not performed by any PR to date.
 
 See [`docs/architecture.md`](docs/architecture.md) for repository/branch reality
 and data paths, and
