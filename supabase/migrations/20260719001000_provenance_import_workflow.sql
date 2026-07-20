@@ -308,6 +308,12 @@ revoke all on function app.open_job_for_caller(uuid, uuid) from public;
 -- transactionally rather than silently dropped by ON CONFLICT DO NOTHING —
 -- source_records is append-only (migration 7), so there is no way to correct
 -- a mismatched row in place; the caller must resolve the conflict and retry.
+--
+-- WITHIN one batch, a source_row_index may appear at most once, full stop —
+-- even two byte-identical copies of the same row are rejected. ON CONFLICT DO
+-- NOTHING only arbitrates between the batch and what is already stored; it
+-- does nothing to resolve two rows racing for the same index INSIDE a single
+-- INSERT, so that shape is validated explicitly, before anything is inserted.
 create function public.stage_source_records(
   p_import_job_id uuid,
   p_records jsonb
@@ -324,10 +330,31 @@ declare
   v_inserted integer;
   v_total integer;
   v_conflict_index integer;
+  v_batch_dup_index integer;
 begin
   v_uid := app.require_uid();
   v_batch := app.assert_batch_size(p_records, 500);
   v_job := app.open_job_for_caller(p_import_job_id, v_uid);
+
+  -- Within-batch shape validation: no source_row_index may repeat in a single
+  -- submitted batch, regardless of whether the repeated payloads agree.
+  with incoming as (
+    select (r->>'source_row_index')::integer as source_row_index
+    from jsonb_array_elements(p_records) as r
+  )
+  select min(d.source_row_index) into v_batch_dup_index
+  from (
+    select source_row_index from incoming
+    group by source_row_index having count(*) > 1
+  ) d;
+
+  if v_batch_dup_index is not null then
+    raise exception
+      'batch contains source_row_index % more than once; each source_row_index '
+      'may appear at most once per submitted batch',
+      v_batch_dup_index
+      using errcode = '23514';
+  end if;
 
   with incoming as (
     select
@@ -429,6 +456,12 @@ grant execute on function public.stage_source_records(uuid, jsonb) to authentica
 -- ON CONFLICT DO NOTHING and leave the caller believing its row was
 -- recorded — so it is rejected transactionally instead, and the original
 -- immutable source association is never mutated.
+--
+-- WITHIN one batch, the natural key (scope, identifier_type, identifier_value)
+-- may appear at most once for this job/source system — even when every
+-- occurrence names the same source row. ON CONFLICT DO NOTHING cannot
+-- arbitrate between two rows racing for the same natural key INSIDE a single
+-- INSERT, so that shape is validated explicitly first.
 create function public.stage_external_identifiers(
   p_import_job_id uuid,
   p_identifiers jsonb
@@ -445,10 +478,45 @@ declare
   v_inserted integer;
   v_unresolved integer;
   v_conflict_index integer;
+  v_dup_scope text;
+  v_dup_type text;
+  v_dup_value text;
+  v_dup_indexes integer[];
 begin
   v_uid := app.require_uid();
   v_batch := app.assert_batch_size(p_identifiers, 500);
   v_job := app.open_job_for_caller(p_import_job_id, v_uid);
+
+  -- Within-batch shape validation: the scoped natural key may not repeat in a
+  -- single submitted batch, whether or not the repeats name the same row.
+  with incoming as (
+    select
+      (r->>'source_row_index')::integer as source_row_index,
+      r->>'scope' as scope,
+      r->>'identifier_type' as identifier_type,
+      r->>'identifier_value' as identifier_value
+    from jsonb_array_elements(p_identifiers) as r
+  )
+  select d.scope, d.identifier_type, d.identifier_value, d.row_indexes
+  into v_dup_scope, v_dup_type, v_dup_value, v_dup_indexes
+  from (
+    select scope, identifier_type, identifier_value,
+           array_agg(source_row_index order by source_row_index) as row_indexes
+    from incoming
+    group by scope, identifier_type, identifier_value
+    having count(*) > 1
+    order by scope, identifier_type, identifier_value
+    limit 1
+  ) d;
+
+  if v_dup_scope is not null then
+    raise exception
+      'batch contains the scoped identifier %/%/% more than once, referencing '
+      'source row index(es) %; each scoped identifier may appear at most once '
+      'per submitted batch',
+      v_dup_scope, v_dup_type, v_dup_value, v_dup_indexes
+      using errcode = '23514';
+  end if;
 
   -- Ordering guard: every identifier must resolve to an already-persisted raw
   -- record of this job.

@@ -329,6 +329,94 @@ select is(
   3,
   'a fully content-identical retry still leaves exactly three rows staged');
 
+-- Duplicate source_row_index WITHIN a single submitted batch is refused, even when ---------------
+-- ON CONFLICT DO NOTHING would otherwise be asked to arbitrate between two rows
+-- racing for the same index inside one INSERT. This is distinct from the
+-- cross-call retry idempotency proven above.
+
+-- Two IDENTICAL entries at the same index in one batch -------------------------------------------
+select throws_ok(
+  format($$select public.stage_source_records(%L, jsonb_build_array(
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":5}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb),
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":5}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb)))$$,
+    pg_temp.get('job'), pg_temp.h('r0'), pg_temp.h('r0')),
+  '23514', null,
+  'two byte-identical entries at the same source_row_index in one batch are rejected');
+
+-- Two DIFFERING entries at the same index in one batch --------------------------------------------
+select throws_ok(
+  format($$select public.stage_source_records(%L, jsonb_build_array(
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":5}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb),
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":999}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb)))$$,
+    pg_temp.get('job'), pg_temp.h('r0'), pg_temp.h('r0-batchdup')),
+  '23514', null,
+  'two differing entries at the same source_row_index in one batch are rejected');
+
+-- A mixed batch: one duplicate pair PLUS one otherwise-valid new row inserts nothing --------------
+select is(
+  (select count(*)::int from public.source_records where import_job_id = pg_temp.get('job')),
+  3,
+  'before the duplicate-pair-plus-new-row batch: still exactly three rows staged');
+
+select throws_ok(
+  format($$select public.stage_source_records(%L, jsonb_build_array(
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":5}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb),
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":5}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb),
+     jsonb_build_object(
+       'source_row_index', 50, 'raw_payload', '{"new":true}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{}'::jsonb)))$$,
+    pg_temp.get('job'), pg_temp.h('r0'), pg_temp.h('r0'), pg_temp.h('r50')),
+  '23514', null,
+  'a batch with one duplicate pair plus one valid new row rejects the entire batch');
+
+select is(
+  (select count(*)::int from public.source_records where import_job_id = pg_temp.get('job')),
+  3,
+  'the rejected duplicate-plus-new-row batch inserted nothing: row count unchanged');
+
+select is(
+  (select count(*)::int from public.source_records
+   where import_job_id = pg_temp.get('job') and source_row_index = 50),
+  0,
+  'the valid new row alongside the duplicate pair was not inserted');
+
+-- A later, SEPARATE call retrying already-stored content is still a safe no-op after this patch ---
+select is(
+  (select (public.stage_source_records(pg_temp.get('job'), jsonb_build_array(
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":5}'::jsonb,
+       'normalized_hash', pg_temp.h('r0'), 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb)
+   ))->>'inserted')::int),
+  0,
+  'a later separate-call retry of an already-stored row remains a safe no-op');
+
 -- Staging more rows than declared is refused ---------------------------------------------------
 select throws_ok(
   format($$select public.stage_source_records(%L, jsonb_build_array(
@@ -435,6 +523,60 @@ select is(
    where source_system_id = pg_temp.get('sys')),
   3,
   'the conflicting retry inserted no new identifier rows');
+
+-- Duplicate natural key WITHIN a single submitted identifier batch is refused --------------------
+-- Same-row and different-row duplicates are both a batch-shape error, not a
+-- retry: ON CONFLICT DO NOTHING cannot arbitrate between two rows racing for
+-- the same natural key inside one INSERT.
+
+-- Same natural key, SAME source row, twice in one batch ------------------------------------------
+select throws_ok(
+  format($$select public.stage_external_identifiers(%L,
+     '[{"source_row_index":0,"scope":"checks.dup","identifier_type":"check_id","identifier_value":"DUP-1"},
+       {"source_row_index":0,"scope":"checks.dup","identifier_type":"check_id","identifier_value":"DUP-1"}]'::jsonb)$$,
+    pg_temp.get('job')),
+  '23514', null,
+  'two identifiers with the same natural key AND the same source row in one batch are rejected');
+
+-- Same natural key, DIFFERENT source rows, in one batch -------------------------------------------
+select throws_ok(
+  format($$select public.stage_external_identifiers(%L,
+     '[{"source_row_index":0,"scope":"checks.dup","identifier_type":"check_id","identifier_value":"DUP-2"},
+       {"source_row_index":2,"scope":"checks.dup","identifier_type":"check_id","identifier_value":"DUP-2"}]'::jsonb)$$,
+    pg_temp.get('job')),
+  '23514', null,
+  'two identifiers with the same natural key but DIFFERENT source rows in one batch are rejected');
+
+-- A mixed identifier batch: one duplicate pair PLUS one otherwise-valid new identifier ------------
+-- inserts nothing.
+select throws_ok(
+  format($$select public.stage_external_identifiers(%L,
+     '[{"source_row_index":0,"scope":"checks.dup","identifier_type":"check_id","identifier_value":"DUP-3"},
+       {"source_row_index":0,"scope":"checks.dup","identifier_type":"check_id","identifier_value":"DUP-3"},
+       {"source_row_index":2,"scope":"checks.newscope","identifier_type":"check_id","identifier_value":"FRESH-1"}]'::jsonb)$$,
+    pg_temp.get('job')),
+  '23514', null,
+  'a mixed identifier batch with one duplicate pair plus one valid new identifier rejects the entire batch');
+
+select is(
+  (select count(*)::int from public.external_identifiers
+   where source_system_id = pg_temp.get('sys')),
+  3,
+  'the rejected mixed identifier batch inserted nothing: identifier count unchanged');
+
+select is(
+  (select count(*)::int from public.external_identifiers
+   where scope = 'checks.newscope' and identifier_value = 'FRESH-1'),
+  0,
+  'the valid new identifier alongside the duplicate pair was not inserted');
+
+-- A later, SEPARATE call retrying an already-recorded identifier is still a safe no-op ------------
+select is(
+  (select (public.stage_external_identifiers(pg_temp.get('job'),
+     '[{"source_row_index":0,"scope":"checks.op","identifier_type":"check_id","identifier_value":"OP-001"}]'::jsonb
+   )->>'inserted')::int),
+  0,
+  'a later separate-call retry of an already-recorded identifier remains a safe no-op');
 
 select is(
   (select (public.stage_import_derivatives(pg_temp.get('job'),
