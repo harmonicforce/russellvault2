@@ -755,5 +755,43 @@ $$;
 revoke all on function public.fail_import_job(uuid, text, text) from public, anon;
 grant execute on function public.fail_import_job(uuid, text, text) to authenticated;
 
+-- Least privilege for service_role on the governed entry points ---------------------------
+-- Same class of gap as the table grants: a hosted Supabase project configures
+-- DEFAULT PRIVILEGES on the public schema that grant EXECUTE on new functions
+-- to anon, authenticated and service_role. Each function above revokes from
+-- `public` and `anon` and grants `authenticated`, but service_role would
+-- otherwise silently retain EXECUTE.
+--
+-- In practice a service-role JWT carries no `sub`, so auth.uid() is null and
+-- every one of these functions refuses with 'authentication required' before
+-- doing anything. This revoke removes the reliance on that second-order
+-- argument and makes the restriction explicit and testable.
+--
+-- The app schema needs no equivalent: service_role is never granted USAGE on
+-- it, so the internal helpers are unreachable regardless of any EXECUTE grant.
+do $$
+declare
+  v_signature text;
+begin
+  if not exists (select 1 from pg_roles where rolname = 'service_role') then
+    return;
+  end if;
+
+  for v_signature in
+    select format('%I.%I(%s)', n.nspname, p.proname, pg_get_function_identity_arguments(p.oid))
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname in (
+        'register_source_system', 'begin_import_job', 'stage_source_records',
+        'stage_external_identifiers', 'stage_import_derivatives',
+        'finalize_import_job', 'fail_import_job',
+        'confirm_source_crosswalk', 'reject_source_crosswalk',
+        'supersede_source_crosswalk', 'resolve_data_quality_issue')
+  loop
+    execute format('revoke all on function %s from service_role', v_signature);
+  end loop;
+end $$;
+
 insert into public.schema_migrations_log (migration_name)
 values ('20260719001000_provenance_import_workflow');

@@ -187,6 +187,29 @@ select is(
   'service_role holds no privilege at all on any provenance table, not even SELECT'
 );
 
+-- ...and cannot execute any governed entry point either ---------------------------
+select is(
+  (select coalesce(string_agg(distinct p.proname, ', ' order by p.proname), '')
+   from pg_proc p
+   join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public'
+     and p.proname in (
+       'register_source_system', 'begin_import_job', 'stage_source_records',
+       'stage_external_identifiers', 'stage_import_derivatives',
+       'finalize_import_job', 'fail_import_job',
+       'confirm_source_crosswalk', 'reject_source_crosswalk',
+       'supersede_source_crosswalk', 'resolve_data_quality_issue')
+     and has_function_privilege('service_role', p.oid, 'execute')),
+  '',
+  'service_role cannot execute any governed provenance entry point'
+);
+
+-- service_role has no route into the internal helper schema -------------------------
+select ok(
+  not has_schema_privilege('service_role', 'app', 'usage'),
+  'service_role has no USAGE on the app schema, so the internal helpers are unreachable'
+);
+
 -- Only SELECT policies exist anywhere in this schema ----------------------------
 select is(
   (select coalesce(string_agg(distinct cmd, ',' order by cmd), '')
