@@ -96,15 +96,20 @@ select is(
   'no always-true RLS policy exists in public'
 );
 
--- Migration log recorded all five migrations ----------------------------------
+-- Migration log recorded all five Phase 2 migrations ---------------------------
+-- Scoped to the Phase 2 prefix range so later phases can append their own
+-- migrations without weakening this check. The exact Phase 2 set, in order,
+-- must remain present and unmodified. Phase 3's migrations are asserted
+-- separately in 06_provenance_structure.sql.
 select results_eq(
-  $$ select migration_name from public.schema_migrations_log order by migration_name $$,
+  $$ select migration_name from public.schema_migrations_log
+     where migration_name < '20260719000600' order by migration_name $$,
   $$ values ('20260719000100_workspace_foundation'),
             ('20260719000200_intake_shadow_schema'),
             ('20260719000300_intake_rls_policies'),
             ('20260719000400_intake_functions'),
             ('20260719000500_storage_policies') $$,
-  'all five migrations are logged'
+  'all five Phase 2 migrations are logged and unmodified'
 );
 
 select * from finish();

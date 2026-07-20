@@ -15,6 +15,7 @@ import salesRouter from './routes/sales.js';
 import dashboardRouter from './routes/dashboard.js';
 import checksRouter from './routes/checks.js';
 import lookupsRouter from './routes/lookups.js';
+import provenanceRouter from './routes/provenance.js';
 
 seedIfEmpty();
 migrateProductType();
@@ -22,6 +23,24 @@ migrateProductType();
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
+// Phase 3 staging provenance is mounted BEFORE the legacy write guard, and is
+// deliberately not subject to it.
+//
+// The guard exists to stop direct writes to the legacy SQLite database. The
+// provenance routes never touch SQLite: their planning endpoints only read
+// allowlisted repository fixtures, and their commit path writes exclusively to
+// the shadow Postgres database under the caller's own JWT. Forcing them behind
+// ALLOW_LEGACY_WRITES would mean an operator had to re-enable legacy SQLite
+// writes in production merely to review an import — exactly the coupling the
+// guard is meant to prevent.
+//
+// The trade is explicit and narrow: this router carries its own, stricter gate
+// (shadow flags for availability, then bearer token + workspace membership +
+// role for every request), and it remains 404 by default. Nothing here enables,
+// weakens, or bypasses any legacy SQLite write; `legacyWritesEnabled` is
+// untouched by provenance activity.
+app.use('/api/provenance', provenanceRouter);
+
 app.use('/api', legacyWriteGuard);
 
 app.use('/api/inventory', inventoryRouter);
