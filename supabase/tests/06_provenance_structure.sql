@@ -383,21 +383,23 @@ select ok(
   'the shared crosswalk review implementation is not granted to authenticated'
 );
 
--- Phase 3 creates NO canonical commerce-domain schema --------------------------------------------
+-- Neither Phase 3 nor Phase 4 creates any Phase-5 commerce-domain schema -------------------------
+-- (acquisition_* / channels / suppliers are Phase 4 deliverables and are asserted
+--  in 12_acquisition_structure.sql; this tripwire now guards the Phase 5 boundary.)
 select is(
   (select count(*)::int
    from information_schema.tables
    where table_schema = 'public'
-     and table_name ~ '(acquisition|cost_basis|costbasis|cogs|product|inventory|listing|sale|marketplace|purchase)'),
+     and table_name ~ '(cost_basis|costbasis|cogs|product|inventory|listing|sale|marketplace|purchase)'),
   0,
-  'no acquisition, cost-basis, COGS, product, inventory, listing, sale, or marketplace table exists'
+  'no cost-basis, COGS, product, inventory, listing, sale, marketplace, or purchase table exists'
 );
 
--- All four Phase 3 migrations recorded, and the five Phase 2 migrations intact -------------------
+-- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) migrations recorded, Phase 2/3 intact ------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  10,
-  'ten migrations are recorded: five from Phase 2 plus five from Phase 3'
+  15,
+  'fifteen migrations are recorded: five from Phase 2, five from Phase 3, five from Phase 4'
 );
 
 select results_eq(
@@ -412,8 +414,13 @@ select results_eq(
     ('20260719000700_provenance_append_only'),
     ('20260719000800_provenance_rls'),
     ('20260719000900_provenance_functions'),
-    ('20260719001000_provenance_import_workflow')$$,
-  'the five Phase 2 migrations are unmodified and five Phase 3 migrations follow them'
+    ('20260719001000_provenance_import_workflow'),
+    ('20260720000100_acquisition_schema'),
+    ('20260720000200_acquisition_append_only'),
+    ('20260720000300_acquisition_rls'),
+    ('20260720000400_acquisition_functions'),
+    ('20260720000500_acquisition_import_workflow')$$,
+  'the ten Phase 2/3 migrations are unmodified and the five Phase 4 migrations follow them'
 );
 
 select * from finish();
