@@ -1,9 +1,10 @@
 -- Phase 3 provenance — structural checks.
 --
 -- Every provenance table exists with UUID internal identity and workspace
--- scoping, RLS is enabled everywhere, no provenance table grants DELETE to any
--- application role, append-only tables grant no UPDATE either, anon has no
--- privilege anywhere, and the governed indexes/constraints are present.
+-- scoping, RLS is enabled everywhere, `authenticated` holds SELECT and nothing
+-- else (so the governed RPC path is the only write path), anon has no
+-- privilege anywhere, and the governed indexes/constraints/functions exist with
+-- least-privilege grants and a pinned empty search_path.
 begin;
 create extension if not exists pgtap;
 select no_plan();
@@ -111,54 +112,61 @@ select is(
   'anon and PUBLIC hold no privilege on any provenance table'
 );
 
--- No DELETE is granted anywhere: provenance is retained, never removed ----------
+-- THE CENTRAL GRANT GUARANTEE ------------------------------------------------
+-- `authenticated` holds SELECT and nothing else on every provenance table, so
+-- every direct INSERT/UPDATE/DELETE is refused at the grant layer before RLS is
+-- even consulted. This is what makes the governed RPC path exclusive.
+select is(
+  (select coalesce(string_agg(distinct privilege_type, ',' order by privilege_type), '')
+   from information_schema.role_table_grants
+   where table_schema = 'public'
+     and grantee = 'authenticated'
+     and table_name in (
+       'source_systems', 'import_jobs', 'source_records', 'external_identifiers',
+       'source_crosswalks', 'audit_events', 'data_quality_issues')),
+  'SELECT',
+  'authenticated holds SELECT and only SELECT on every provenance table'
+);
+
+-- Every provenance table is covered by that read grant (none accidentally open
+-- via a different route and none accidentally unreadable).
+select is(
+  (select count(distinct table_name)::int
+   from information_schema.role_table_grants
+   where table_schema = 'public'
+     and grantee = 'authenticated'
+     and privilege_type = 'SELECT'
+     and table_name in (
+       'source_systems', 'import_jobs', 'source_records', 'external_identifiers',
+       'source_crosswalks', 'audit_events', 'data_quality_issues')),
+  7,
+  'all seven provenance tables grant SELECT to authenticated'
+);
+
+-- No write privilege exists for ANY non-owner role -----------------------------
 select is(
   (select count(*)::int
    from information_schema.role_table_grants
    where table_schema = 'public'
-     and privilege_type = 'DELETE'
+     and privilege_type in ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
      and table_name in (
        'source_systems', 'import_jobs', 'source_records', 'external_identifiers',
        'source_crosswalks', 'audit_events', 'data_quality_issues')
      and grantee <> current_user),
   0,
-  'no application role is granted DELETE on any provenance table'
+  'no application role holds INSERT, UPDATE, DELETE, or TRUNCATE on any provenance table'
 );
 
--- Append-only tables grant no UPDATE either --------------------------------------
+-- Only SELECT policies exist anywhere in this schema ----------------------------
 select is(
-  (select count(*)::int
-   from information_schema.role_table_grants
-   where table_schema = 'public'
-     and privilege_type = 'UPDATE'
-     and table_name in ('source_records', 'audit_events')
-     and grantee <> current_user),
-  0,
-  'append-only tables grant UPDATE to no application role'
-);
-
--- ...and carry no UPDATE or DELETE policy at all -----------------------------------
-select is(
-  (select count(*)::int
-   from pg_policies
-   where schemaname = 'public'
-     and tablename in ('source_records', 'audit_events')
-     and cmd in ('UPDATE', 'DELETE')),
-  0,
-  'append-only tables have no UPDATE or DELETE policy'
-);
-
--- No provenance table has a DELETE policy -------------------------------------------
-select is(
-  (select count(*)::int
+  (select coalesce(string_agg(distinct cmd, ',' order by cmd), '')
    from pg_policies
    where schemaname = 'public'
      and tablename in (
        'source_systems', 'import_jobs', 'source_records', 'external_identifiers',
-       'source_crosswalks', 'audit_events', 'data_quality_issues')
-     and cmd = 'DELETE'),
-  0,
-  'no provenance table has a DELETE policy'
+       'source_crosswalks', 'audit_events', 'data_quality_issues')),
+  'SELECT',
+  'every provenance policy is SELECT-only; no INSERT, UPDATE, or DELETE policy exists'
 );
 
 -- No provenance policy is unconditionally true ---------------------------------------
@@ -216,6 +224,15 @@ select is(
   'partial unique index enforces at most one live confirmed crosswalk per record/type'
 );
 
+select is(
+  (select count(*)::int from pg_indexes
+   where schemaname = 'public'
+     and indexname in ('source_crosswalks_one_successor_uidx',
+                       'source_crosswalks_one_predecessor_uidx')),
+  2,
+  'partial unique indexes force supersession into linear chains'
+);
+
 -- Operational review indexes ---------------------------------------------------------------
 select is(
   (select count(*)::int
@@ -232,8 +249,22 @@ select is(
 );
 
 -- Governed functions exist with fixed safe search_path --------------------------------------
-select has_function('public'::name, 'commit_import_job'::name,
-  array['uuid', 'text'], 'commit_import_job exists');
+select has_function('public'::name, 'begin_import_job'::name,
+  array['uuid', 'uuid', 'text', 'text', 'text', 'text', 'text', 'text', 'integer', 'jsonb', 'text'],
+  'begin_import_job exists');
+select has_function('public'::name, 'stage_source_records'::name,
+  array['uuid', 'jsonb'], 'stage_source_records exists');
+select has_function('public'::name, 'stage_external_identifiers'::name,
+  array['uuid', 'jsonb'], 'stage_external_identifiers exists');
+select has_function('public'::name, 'stage_import_derivatives'::name,
+  array['uuid', 'jsonb', 'jsonb'], 'stage_import_derivatives exists');
+select has_function('public'::name, 'finalize_import_job'::name,
+  array['uuid', 'text', 'integer', 'integer', 'integer', 'integer'],
+  'finalize_import_job exists');
+select has_function('public'::name, 'fail_import_job'::name,
+  array['uuid', 'text', 'text'], 'fail_import_job exists');
+select has_function('public'::name, 'register_source_system'::name,
+  array['uuid', 'text', 'text', 'text', 'text', 'jsonb'], 'register_source_system exists');
 select has_function('public'::name, 'confirm_source_crosswalk'::name,
   array['uuid', 'text'], 'confirm_source_crosswalk exists');
 select has_function('public'::name, 'reject_source_crosswalk'::name,
@@ -249,12 +280,16 @@ select is(
    join pg_namespace n on n.oid = p.pronamespace
    where n.nspname in ('public', 'app')
      and p.proname in (
-       'commit_import_job', 'confirm_source_crosswalk', 'reject_source_crosswalk',
+       'begin_import_job', 'stage_source_records', 'stage_external_identifiers',
+       'stage_import_derivatives', 'finalize_import_job', 'fail_import_job',
+       'register_source_system', 'open_job_for_caller', 'assert_batch_size',
+       'require_uid', 'confirm_source_crosswalk', 'reject_source_crosswalk',
        'supersede_source_crosswalk', 'resolve_data_quality_issue',
        'review_source_crosswalk', 'log_audit_event', 'forbid_update_delete',
        'forbid_column_change', 'enforce_crosswalk_initial_state',
        'enforce_crosswalk_transition', 'enforce_import_job_status_flow',
-       'enforce_child_job_open', 'has_secret_like_key')
+       'enforce_child_job_open', 'enforce_supersession_coherence',
+       'has_secret_like_key')
      and not exists (
        select 1 from unnest(coalesce(p.proconfig, array[]::text[])) cfg
        where cfg in ('search_path=', 'search_path=""'))),
@@ -264,16 +299,26 @@ select is(
 
 -- Least privilege on the governed entry points ------------------------------------------------
 select ok(
-  not has_function_privilege('anon', 'public.commit_import_job(uuid, text)', 'execute'),
-  'anon cannot execute commit_import_job'
+  not has_function_privilege('anon',
+    'public.finalize_import_job(uuid, text, integer, integer, integer, integer)', 'execute'),
+  'anon cannot execute finalize_import_job'
 );
 select ok(
   not has_function_privilege('anon', 'public.confirm_source_crosswalk(uuid, text)', 'execute'),
   'anon cannot execute confirm_source_crosswalk'
 );
 select ok(
-  has_function_privilege('authenticated', 'public.commit_import_job(uuid, text)', 'execute'),
-  'authenticated may execute commit_import_job'
+  has_function_privilege('authenticated',
+    'public.finalize_import_job(uuid, text, integer, integer, integer, integer)', 'execute'),
+  'authenticated may execute finalize_import_job'
+);
+select ok(
+  not has_function_privilege('authenticated', 'app.open_job_for_caller(uuid, uuid)', 'execute'),
+  'the internal job resolver is not granted to authenticated'
+);
+select ok(
+  not has_function_privilege('authenticated', 'app.log_audit_event(uuid, text, text, uuid, uuid, text, uuid, uuid, uuid, jsonb)', 'execute'),
+  'the audit writer is not granted to authenticated'
 );
 
 -- The shared review implementation is not directly callable by any app role ---------------------
@@ -296,8 +341,8 @@ select is(
 -- All four Phase 3 migrations recorded, and the five Phase 2 migrations intact -------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  9,
-  'nine migrations are recorded: five from Phase 2 plus four from Phase 3'
+  10,
+  'ten migrations are recorded: five from Phase 2 plus five from Phase 3'
 );
 
 select results_eq(
@@ -311,8 +356,9 @@ select results_eq(
     ('20260719000600_provenance_schema'),
     ('20260719000700_provenance_append_only'),
     ('20260719000800_provenance_rls'),
-    ('20260719000900_provenance_functions')$$,
-  'the five Phase 2 migrations are unmodified and four Phase 3 migrations follow them'
+    ('20260719000900_provenance_functions'),
+    ('20260719001000_provenance_import_workflow')$$,
+  'the five Phase 2 migrations are unmodified and five Phase 3 migrations follow them'
 );
 
 select * from finish();

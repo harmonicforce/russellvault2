@@ -576,6 +576,50 @@ select throws_ok(
   'accepted plus issue rows can never exceed the source row count'
 );
 
+-- The child-job guard does not disclose a foreign job -------------------------------------------------------------
+-- app.enforce_child_job_open keys its lookup on BOTH the job id and the row's
+-- own workspace_id, so naming another workspace's job reports "does not exist
+-- in this workspace" — the same answer as a job that was never created. It
+-- never leaks that the job exists or what status it is in.
+insert into auth.users (id, email)
+values ('44444444-4444-4444-4444-444444444444', 'zoe@example.test');
+
+insert into public.workspaces (id, name, created_by)
+values ('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'Workspace B',
+        '44444444-4444-4444-4444-444444444444');
+
+insert into public.source_systems (id, workspace_id, public_id, kind, instance_label, created_by)
+values ('b5000000-0000-4000-8000-000000000001', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        'REPO_B', 'repository_fixture', 'repo seed B',
+        '44444444-4444-4444-4444-444444444444');
+
+-- A COMMITTED job in workspace B: if the guard leaked, the error would say so.
+insert into public.import_jobs (
+  id, workspace_id, public_id, source_system_id, source_label,
+  file_sha256, content_sha256, parser_version, mapping_version,
+  idempotency_key, mode, status, completed_at,
+  actor_user_id, actor_process, source_row_count
+) values (
+  'b6000000-0000-4000-8000-000000000001', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+  'JOB-B1', 'b5000000-0000-4000-8000-000000000001', 'whatnot_purchases.json',
+  repeat('b', 64), repeat('b', 64), '1.0.0', '1.0.0',
+  'idem-b-000000001', 'commit', 'committed', now(),
+  '44444444-4444-4444-4444-444444444444', 'provenance.import', 1
+);
+
+select throws_ok(
+  $$insert into public.source_records (
+      workspace_id, import_job_id, source_row_index, raw_payload, normalized_hash,
+      parse_status, parser_output, parser_version, mapping_version, created_by_process
+    ) values (
+      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'b6000000-0000-4000-8000-000000000001',
+      0, '{}'::jsonb, repeat('7', 64), 'parsed', '{}'::jsonb, '1.0.0', '1.0.0',
+      'provenance.import')$$,
+  '23503',
+  'import job does not exist in this workspace',
+  'the child-job guard reports a foreign job as nonexistent, disclosing neither its existence nor its status'
+);
+
 -- No canonical commerce entity was created by any of this ------------------------------------------------------
 select is(
   (select count(*)::int from public.items),

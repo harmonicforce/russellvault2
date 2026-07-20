@@ -1,31 +1,59 @@
 -- Phase 3 source/import provenance — migration 9: governed review functions.
 --
 -- Every public entry point here is SECURITY DEFINER with a fixed EMPTY
--- search_path (all references schema-qualified), performs authentication and
--- workspace-role authorization INTERNALLY before taking any lock, validates
--- its inputs, and is executable only by the authenticated role — never by
--- anon or PUBLIC. None can act across workspaces: the workspace is resolved
--- from the target row and then checked against the caller's own membership.
+-- search_path (all references schema-qualified), and is executable only by the
+-- authenticated role — never by anon or PUBLIC. Because migration 8 grants
+-- authenticated nothing but SELECT, these functions are the ONLY way any
+-- provenance row is ever written.
 --
--- Authorize-before-lock: each function reads the row's workspace WITHOUT a
--- lock, authorizes, and only then takes FOR UPDATE and re-reads. An
--- unauthorized caller therefore can never hold a lock on another workspace's
--- row, and cannot use lock-wait timing to probe for foreign row ids.
+-- AUTHORIZATION IS PART OF THE LOOKUP.
+-- No function reads or locks a target row and then checks permission
+-- afterwards. Instead every target is resolved by a query that JOINS
+-- workspace_members on the caller's auth.uid() and the permitted roles, so:
+--   * a row in another workspace is never read and never locked — it simply
+--     does not appear in the result set;
+--   * FOR UPDATE OF applies only to rows the join already proved authorized,
+--     so an unauthorized caller cannot take a lock or use lock-wait timing as
+--     an existence oracle;
+--   * "does not exist" and "not authorized" are reported with the SAME error
+--     text and SQLSTATE, so neither can be distinguished by probing.
 --
--- These functions are the ONLY path to confirmed, rejected, or superseded
--- crosswalk states and to issue resolution. Nothing here creates a canonical
--- acquisition, inventory, listing, sale, or cost-basis record — a confirmed
--- crosswalk records reviewed INTENT to map and nothing more.
+-- Nothing here creates a canonical acquisition, inventory, listing, sale, or
+-- cost-basis record. A confirmed crosswalk records reviewed INTENT to map and
+-- nothing more.
+
+-- Caller identity ------------------------------------------------------------
+create function app.require_uid()
+returns uuid
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  v_uid uuid;
+begin
+  v_uid := auth.uid();
+  if v_uid is null then
+    raise exception 'authentication required' using errcode = '42501';
+  end if;
+  return v_uid;
+end
+$$;
+
+revoke all on function app.require_uid() from public;
 
 -- Shared audit append ----------------------------------------------------------
--- No authorization of its own and no grants: callable only from the definer
--- entry points below, which authorize first.
+-- No authorization of its own and no grants: reachable only from the definer
+-- entry points below and in migration 10, which authorize first. This is the
+-- only path that writes audit_events at all — authenticated has no INSERT.
 create function app.log_audit_event(
   p_workspace_id uuid,
   p_event_type text,
   p_subject_table text,
   p_subject_id uuid,
   p_actor uuid,
+  p_actor_process text default 'provenance.review',
   p_import_job_id uuid default null,
   p_source_record_id uuid default null,
   p_crosswalk_id uuid default null,
@@ -47,7 +75,7 @@ begin
   values (
     p_workspace_id, p_event_type, p_subject_table, p_subject_id,
     p_import_job_id, p_source_record_id, p_crosswalk_id,
-    p_actor, 'provenance.review', coalesce(p_detail, '{}'::jsonb)
+    p_actor, p_actor_process, coalesce(p_detail, '{}'::jsonb)
   )
   returning id into v_id;
   return v_id;
@@ -55,124 +83,13 @@ end
 $$;
 
 revoke all on function app.log_audit_event(
-  uuid, text, text, uuid, uuid, uuid, uuid, uuid, jsonb
+  uuid, text, text, uuid, uuid, text, uuid, uuid, uuid, jsonb
 ) from public;
 
--- commit_import_job --------------------------------------------------------------
--- Commit REQUIRES an idempotency key and it must match the key the job was
--- created with. Re-committing an already-committed identity is refused with a
--- distinct, catchable error rather than silently producing a second import;
--- the partial unique index import_jobs_committed_identity_uidx is the
--- backstop if two commits race.
-create function public.commit_import_job(
-  p_import_job_id uuid,
-  p_idempotency_key text
-)
-returns uuid
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-  v_workspace uuid;
-  v_actor uuid;
-  v_job public.import_jobs%rowtype;
-  v_existing uuid;
-begin
-  if p_import_job_id is null then
-    raise exception 'import job id is required' using errcode = '22023';
-  end if;
-  -- Commit must require an idempotency key: absent or blank is refused before
-  -- anything else happens.
-  if p_idempotency_key is null or btrim(p_idempotency_key) = '' then
-    raise exception 'an idempotency key is required to commit an import'
-      using errcode = '22023';
-  end if;
-
-  -- Authorize BEFORE locking.
-  select j.workspace_id into v_workspace
-  from public.import_jobs j
-  where j.id = p_import_job_id;
-
-  if v_workspace is null then
-    raise exception 'import job not found or not authorized' using errcode = '42501';
-  end if;
-
-  v_actor := app.assert_workspace_role(v_workspace, array['owner', 'operator']::public.workspace_role[]);
-
-  select * into v_job
-  from public.import_jobs j
-  where j.id = p_import_job_id
-  for update;
-
-  if v_job.idempotency_key is distinct from p_idempotency_key then
-    raise exception 'idempotency key does not match this import job'
-      using errcode = '22023';
-  end if;
-
-  if v_job.mode <> 'commit' then
-    raise exception 'import job % is a preview and cannot be committed; run a commit import',
-      v_job.public_id
-      using errcode = 'check_violation';
-  end if;
-
-  if v_job.status = 'committed' then
-    raise exception 'import job % is already committed', v_job.public_id
-      using errcode = 'unique_violation';
-  end if;
-
-  if v_job.status <> 'preview' then
-    raise exception 'import job % is % and cannot be committed', v_job.public_id, v_job.status
-      using errcode = 'check_violation';
-  end if;
-
-  -- Explicit duplicate-identity refusal: same source system, same content
-  -- hash, same parser and mapping version, already committed.
-  select j.id into v_existing
-  from public.import_jobs j
-  where j.workspace_id = v_job.workspace_id
-    and j.source_system_id = v_job.source_system_id
-    and j.content_sha256 = v_job.content_sha256
-    and j.parser_version = v_job.parser_version
-    and j.mapping_version = v_job.mapping_version
-    and j.status = 'committed'
-  limit 1;
-
-  if v_existing is not null then
-    raise exception
-      'an identical import (same source, content hash %, parser %, mapping %) is already committed as %',
-      v_job.content_sha256, v_job.parser_version, v_job.mapping_version, v_existing
-      using errcode = 'unique_violation';
-  end if;
-
-  update public.import_jobs
-  set status = 'committed',
-      completed_at = now()
-  where id = p_import_job_id;
-
-  perform app.log_audit_event(
-    v_job.workspace_id, 'import_committed', 'import_jobs', p_import_job_id, v_actor,
-    p_import_job_id, null, null,
-    jsonb_build_object(
-      'content_sha256', v_job.content_sha256,
-      'parser_version', v_job.parser_version,
-      'mapping_version', v_job.mapping_version,
-      'source_row_count', v_job.source_row_count,
-      'accepted_row_count', v_job.accepted_row_count,
-      'issue_row_count', v_job.issue_row_count
-    )
-  );
-
-  return p_import_job_id;
-end
-$$;
-
-revoke all on function public.commit_import_job(uuid, text) from public, anon;
-grant execute on function public.commit_import_job(uuid, text) to authenticated;
-
 -- Crosswalk review ------------------------------------------------------------------
--- Shared implementation for confirm/reject. Confirmation is reachable ONLY
--- here, never by insert, and always records the acting reviewer.
+-- Shared implementation for confirm/reject. Never granted to any role; the two
+-- definer wrappers below are the only callers, so a caller cannot request an
+-- arbitrary target state.
 create function app.review_source_crosswalk(
   p_crosswalk_id uuid,
   p_state public.crosswalk_state,
@@ -184,8 +101,7 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_workspace uuid;
-  v_actor uuid;
+  v_uid uuid;
   v_row public.source_crosswalks%rowtype;
 begin
   if p_crosswalk_id is null then
@@ -195,30 +111,32 @@ begin
     raise exception 'review state must be confirmed or rejected' using errcode = '22023';
   end if;
 
-  select c.workspace_id into v_workspace
-  from public.source_crosswalks c
-  where c.id = p_crosswalk_id;
+  v_uid := app.require_uid();
 
-  if v_workspace is null then
+  -- Authorization is part of the lookup: a crosswalk outside the caller's
+  -- workspaces, or in a workspace where the caller lacks a write role, is
+  -- never returned and never locked.
+  select c.* into v_row
+  from public.source_crosswalks c
+  join public.workspace_members m
+    on m.workspace_id = c.workspace_id
+   and m.user_id = v_uid
+   and m.role = any (array['owner', 'operator']::public.workspace_role[])
+  where c.id = p_crosswalk_id
+  for update of c;
+
+  if v_row.id is null then
     raise exception 'crosswalk not found or not authorized' using errcode = '42501';
   end if;
 
-  v_actor := app.assert_workspace_role(v_workspace, array['owner', 'operator']::public.workspace_role[]);
-
-  select * into v_row
-  from public.source_crosswalks c
-  where c.id = p_crosswalk_id
-  for update;
-
   if v_row.review_state <> 'candidate' then
-    raise exception 'crosswalk % is already % and cannot be reviewed again',
-      p_crosswalk_id, v_row.review_state
+    raise exception 'crosswalk is already % and cannot be reviewed again', v_row.review_state
       using errcode = 'check_violation';
   end if;
 
   update public.source_crosswalks
   set review_state = p_state,
-      reviewed_by = v_actor,
+      reviewed_by = v_uid,
       reviewed_at = now(),
       review_note = p_note
   where id = p_crosswalk_id;
@@ -226,7 +144,7 @@ begin
   perform app.log_audit_event(
     v_row.workspace_id,
     case p_state when 'confirmed' then 'crosswalk_confirmed' else 'crosswalk_rejected' end,
-    'source_crosswalks', p_crosswalk_id, v_actor,
+    'source_crosswalks', p_crosswalk_id, v_uid, 'provenance.review',
     null, v_row.source_record_id, p_crosswalk_id,
     jsonb_build_object(
       'proposed_entity_type', v_row.proposed_entity_type,
@@ -243,9 +161,6 @@ $$;
 
 revoke all on function app.review_source_crosswalk(uuid, public.crosswalk_state, text) from public;
 
--- The shared implementation is never granted to any role: it is reachable only
--- through these two definer wrappers, so 'confirmed' cannot be requested for an
--- arbitrary state value by a caller.
 create function public.confirm_source_crosswalk(p_crosswalk_id uuid, p_note text default null)
 returns uuid
 language plpgsql
@@ -276,8 +191,15 @@ grant execute on function public.reject_source_crosswalk(uuid, text) to authenti
 
 -- Supersession ---------------------------------------------------------------------
 -- Replaces an existing mapping with a newer candidate WITHOUT erasing the
--- original: the old row becomes 'superseded' and both rows keep a link to each
--- other, so the full review history remains reconstructable.
+-- original. Both rows are resolved and locked by a SINGLE authorized query
+-- ordered by id, so:
+--   * the replacement is never read or locked until the join has proved it is
+--     in a workspace the caller may write to;
+--   * the two locks are always taken in the same deterministic order, so two
+--     concurrent supersessions of the same pair cannot deadlock.
+-- The coherence rules (same source record, same entity type, candidate state,
+-- no cycles) are enforced by app.enforce_supersession_coherence in migration 7,
+-- and linear-chain shape by the two partial unique indexes in migration 6.
 create function public.supersede_source_crosswalk(
   p_crosswalk_id uuid,
   p_replacement_id uuid,
@@ -289,8 +211,8 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_workspace uuid;
-  v_actor uuid;
+  v_uid uuid;
+  v_locked uuid[];
   v_old public.source_crosswalks%rowtype;
   v_new public.source_crosswalks%rowtype;
 begin
@@ -302,42 +224,43 @@ begin
     raise exception 'a crosswalk cannot supersede itself' using errcode = '22023';
   end if;
 
-  select c.workspace_id into v_workspace
-  from public.source_crosswalks c
-  where c.id = p_crosswalk_id;
+  v_uid := app.require_uid();
 
-  if v_workspace is null then
+  -- One authorized, deterministically ordered locking pass over both ids.
+  -- A row the caller may not write is filtered out by the join and is
+  -- therefore neither read nor locked.
+  select array_agg(t.id order by t.id) into v_locked
+  from (
+    select c.id
+    from public.source_crosswalks c
+    join public.workspace_members m
+      on m.workspace_id = c.workspace_id
+     and m.user_id = v_uid
+     and m.role = any (array['owner', 'operator']::public.workspace_role[])
+    where c.id in (p_crosswalk_id, p_replacement_id)
+    order by c.id
+    for update of c
+  ) t;
+
+  -- Both rows must have been authorized. Anything less is reported
+  -- identically to "does not exist".
+  if v_locked is null or array_length(v_locked, 1) <> 2 then
     raise exception 'crosswalk not found or not authorized' using errcode = '42501';
   end if;
 
-  v_actor := app.assert_workspace_role(v_workspace, array['owner', 'operator']::public.workspace_role[]);
+  select * into v_old from public.source_crosswalks where id = p_crosswalk_id;
+  select * into v_new from public.source_crosswalks where id = p_replacement_id;
 
-  -- Lock both rows in a deterministic order to avoid deadlocking against a
-  -- concurrent supersession of the same pair.
-  select * into v_old from public.source_crosswalks c
-  where c.id = least(p_crosswalk_id, p_replacement_id) for update;
-  select * into v_new from public.source_crosswalks c
-  where c.id = greatest(p_crosswalk_id, p_replacement_id) for update;
-
-  select * into v_old from public.source_crosswalks c where c.id = p_crosswalk_id;
-  select * into v_new from public.source_crosswalks c where c.id = p_replacement_id;
-
-  if v_new.id is null then
-    raise exception 'replacement crosswalk not found or not authorized' using errcode = '42501';
-  end if;
-  -- Same-workspace requirement: never supersede across workspaces.
-  if v_new.workspace_id <> v_old.workspace_id then
-    raise exception 'replacement crosswalk not found or not authorized' using errcode = '42501';
-  end if;
   if v_old.review_state = 'superseded' then
-    raise exception 'crosswalk % is already superseded', p_crosswalk_id
-      using errcode = 'check_violation';
+    raise exception 'crosswalk is already superseded' using errcode = 'check_violation';
   end if;
   if v_new.review_state <> 'candidate' then
     raise exception 'the replacement crosswalk must itself still be a candidate'
       using errcode = 'check_violation';
   end if;
 
+  -- These two updates fire the coherence trigger, which verifies same
+  -- workspace, same source record, same entity type, and no cycle.
   update public.source_crosswalks
   set review_state = 'superseded',
       superseded_by_id = p_replacement_id,
@@ -350,7 +273,8 @@ begin
   where id = p_replacement_id;
 
   perform app.log_audit_event(
-    v_old.workspace_id, 'crosswalk_superseded', 'source_crosswalks', p_crosswalk_id, v_actor,
+    v_old.workspace_id, 'crosswalk_superseded', 'source_crosswalks', p_crosswalk_id,
+    v_uid, 'provenance.review',
     null, v_old.source_record_id, p_crosswalk_id,
     jsonb_build_object(
       'superseded_by', p_replacement_id,
@@ -381,8 +305,7 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_workspace uuid;
-  v_actor uuid;
+  v_uid uuid;
   v_row public.data_quality_issues%rowtype;
   v_event text;
 begin
@@ -394,29 +317,28 @@ begin
       using errcode = '22023';
   end if;
 
-  select i.workspace_id into v_workspace
-  from public.data_quality_issues i
-  where i.id = p_issue_id;
+  v_uid := app.require_uid();
 
-  if v_workspace is null then
+  select i.* into v_row
+  from public.data_quality_issues i
+  join public.workspace_members m
+    on m.workspace_id = i.workspace_id
+   and m.user_id = v_uid
+   and m.role = any (array['owner', 'operator']::public.workspace_role[])
+  where i.id = p_issue_id
+  for update of i;
+
+  if v_row.id is null then
     raise exception 'issue not found or not authorized' using errcode = '42501';
   end if;
 
-  v_actor := app.assert_workspace_role(v_workspace, array['owner', 'operator']::public.workspace_role[]);
-
-  select * into v_row
-  from public.data_quality_issues i
-  where i.id = p_issue_id
-  for update;
-
   if v_row.status in ('resolved', 'wont_fix') then
-    raise exception 'issue % is already %', p_issue_id, v_row.status
-      using errcode = 'check_violation';
+    raise exception 'issue is already %', v_row.status using errcode = 'check_violation';
   end if;
 
   update public.data_quality_issues
   set status = p_status,
-      resolved_by = case when p_status = 'acknowledged' then null else v_actor end,
+      resolved_by = case when p_status = 'acknowledged' then null else v_uid end,
       resolved_at = case when p_status = 'acknowledged' then null else now() end,
       resolution_note = p_note
   where id = p_issue_id;
@@ -428,7 +350,8 @@ begin
   end;
 
   perform app.log_audit_event(
-    v_row.workspace_id, v_event, 'data_quality_issues', p_issue_id, v_actor,
+    v_row.workspace_id, v_event, 'data_quality_issues', p_issue_id, v_uid,
+    'provenance.review',
     v_row.import_job_id, v_row.source_record_id, null,
     jsonb_build_object('issue_type', v_row.issue_type, 'note', p_note)
   );

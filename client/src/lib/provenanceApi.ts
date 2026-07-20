@@ -1,24 +1,16 @@
-// Phase 3 provenance data access.
+// HTTP transport for the Phase 3 staging import-review interface.
 //
-// Two distinct sources, deliberately kept separate:
-//
-//   1. The repository-fixture ADAPTER (/api/provenance/*) — the deterministic,
-//      read-only transformation of files committed to this repository. It
-//      computes hashes and builds an import plan. It writes nothing.
-//
-//   2. The shadow SUPABASE database — where committed provenance actually
-//      lives. Every read and every review action here runs under the caller's
-//      own JWT, so the Phase 3 RLS policies and the governed SECURITY DEFINER
-//      functions are the authorization boundary. There is no service-role key
-//      in the client and no server-side bypass.
+// Every call goes to the server's /api/provenance surface carrying the caller's
+// own Supabase access token and an explicit workspace id. The server verifies
+// that token against the shadow project and resolves membership under the same
+// JWT; the database then enforces RLS and the governed RPCs. There is no
+// service-role key anywhere in this path and no privileged bypass.
 //
 // This module is NOT a data adapter for business records. It never reads or
 // writes inventory, purchases, listings, or sales; those remain exclusively on
 // the legacy SQLite REST path (see dataAdapter.ts). No dual-write exists.
 
-import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
-  Database,
   AuditEventRow,
   CrosswalkState,
   DataQualityIssueRow,
@@ -27,257 +19,129 @@ import type {
   SourceCrosswalkRow,
   SourceRecordRow,
 } from './database.types';
+import type {
+  CommitOutcome,
+  FixtureSummary,
+  PreviewSummary,
+  ProvenanceTransport,
+  SourceSystemSummary,
+} from './importReview';
 
-// --- Adapter (repository fixtures, read-only) -------------------------------
+/** Supplies the current access token, or null when signed out. */
+export type TokenProvider = () => Promise<string | null>;
 
-export interface FixtureSummary {
-  filename: string;
-  shape: string;
-  description: string;
-}
+async function request<T>(
+  getToken: TokenProvider,
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown
+): Promise<T> {
+  const token = await getToken();
+  if (!token) throw new Error('you are signed out; sign in to review imports');
 
-export interface ImportPlanSummary {
-  mode: 'preview' | 'commit';
-  sourceLabel: string;
-  fileSha256: string;
-  contentSha256: string;
-  parserVersion: string;
-  mappingVersion: string;
-  sourceRowCount: number;
-  acceptedRowCount: number;
-  issueRowCount: number;
-  sourceTotals: Record<string, number>;
-  crosswalkCandidateCount: number;
-  issueCount: number;
-  staging: true;
-  authoritative: false;
-  committed?: boolean;
-  idempotencyKey?: string | null;
-}
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  if (body !== undefined) headers['content-type'] = 'application/json';
 
-async function adapterRequest<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api/provenance${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    method,
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+
   if (!res.ok) {
-    const detail = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(detail.error ?? `request failed (${res.status})`);
+    const detail = (await res.json().catch(() => null)) as { error?: string } | null;
+    // The server and database are the authority on why something was refused;
+    // surface their message rather than inventing a local explanation.
+    throw new Error(detail?.error ?? `request failed (${res.status})`);
   }
   return (await res.json()) as T;
 }
 
-export function listFixtures() {
-  return adapterRequest<{
-    parserVersion: string;
-    mappingVersion: string;
-    fixtures: FixtureSummary[];
-  }>('/fixtures');
-}
+export function createProvenanceTransport(getToken: TokenProvider): ProvenanceTransport {
+  const get = <T>(path: string) => request<T>(getToken, 'GET', path);
+  const post = <T>(path: string, body: unknown) =>
+    request<T>(getToken, 'POST', path, body);
+  const ws = (workspaceId: string) => `workspaceId=${encodeURIComponent(workspaceId)}`;
 
-/** Preview an import. Creates and modifies nothing. */
-export function previewImport(filename: string) {
-  return adapterRequest<ImportPlanSummary>('/preview', { filename });
-}
+  return {
+    async listFixtures(workspaceId) {
+      const r = await get<{ fixtures: FixtureSummary[] }>(`/fixtures?${ws(workspaceId)}`);
+      return r.fixtures;
+    },
 
-export function previewRecords(filename: string, limit = 25, offset = 0) {
-  return adapterRequest<{
-    total: number;
-    records: Array<{
-      sourceRowIndex: number;
-      sourceRowKey: string | null;
-      rawPayload: unknown;
-      normalizedHash: string;
-      parseStatus: 'parsed' | 'malformed';
-      errors: Array<{ field: string; code: string; message: string }>;
-    }>;
-  }>('/preview/records', { filename, limit, offset });
-}
+    async listSourceSystems(workspaceId) {
+      const r = await get<{ sourceSystems: SourceSystemSummary[] }>(
+        `/source-systems?${ws(workspaceId)}`
+      );
+      return r.sourceSystems;
+    },
 
-export function previewIssues(filename: string) {
-  return adapterRequest<{
-    total: number;
-    issues: Array<{
-      issueType: string;
-      severity: string;
-      message: string;
-      detail: Record<string, unknown>;
-    }>;
-  }>('/preview/issues', { filename });
-}
+    async preview(workspaceId, filename) {
+      return post<PreviewSummary>('/preview', { workspaceId, filename });
+    },
 
-export function previewCrosswalks(filename: string) {
-  return adapterRequest<{
-    total: number;
-    crosswalks: Array<{
-      sourceRowIndex: number;
-      proposedEntityType: string;
-      proposedEntityKey: string;
-      matchMethod: string;
-      confidence: number;
-      reviewState: 'candidate';
-    }>;
-  }>('/preview/crosswalks', { filename });
-}
+    async commit(workspaceId, input) {
+      return post<CommitOutcome>('/commit', { workspaceId, ...input });
+    },
 
-/** Build a commit plan. The idempotency key is mandatory. */
-export function buildCommitPlan(filename: string, idempotencyKey: string) {
-  return adapterRequest<ImportPlanSummary>('/commit-plan', { filename, idempotencyKey });
-}
+    async listJobs(workspaceId) {
+      const r = await get<{ jobs: ImportJobRow[] }>(`/jobs?${ws(workspaceId)}`);
+      return r.jobs;
+    },
 
-// --- Stored provenance (shadow Supabase, RLS-enforced) ----------------------
+    async getJob(workspaceId, jobId) {
+      const r = await get<{ job: ImportJobRow }>(
+        `/jobs/${encodeURIComponent(jobId)}?${ws(workspaceId)}`
+      );
+      return r.job;
+    },
 
-type Client = SupabaseClient<Database>;
+    async listRecords(workspaceId, jobId, limit, offset) {
+      return get<{ total: number; records: SourceRecordRow[] }>(
+        `/jobs/${encodeURIComponent(jobId)}/records?${ws(workspaceId)}` +
+          `&limit=${limit}&offset=${offset}`
+      );
+    },
 
-function unwrap<T>(result: { data: T | null; error: { message: string } | null }): T {
-  if (result.error) throw new Error(result.error.message);
-  if (result.data === null) throw new Error('no data returned');
-  return result.data;
-}
+    async listIssues(workspaceId, jobId) {
+      const r = await get<{ issues: DataQualityIssueRow[] }>(
+        `/jobs/${encodeURIComponent(jobId)}/issues?${ws(workspaceId)}`
+      );
+      return r.issues;
+    },
 
-export async function listImportJobs(
-  client: Client,
-  workspaceId: string,
-  limit = 50
-): Promise<ImportJobRow[]> {
-  return unwrap(
-    await client.from('import_jobs')
-      .select('*')
-      .eq('workspace_id', workspaceId)
-      .order('started_at', { ascending: false })
-      .limit(limit)
-  );
-}
+    async listCrosswalks(workspaceId, states: CrosswalkState[]) {
+      const r = await get<{ crosswalks: SourceCrosswalkRow[] }>(
+        `/crosswalks?${ws(workspaceId)}&states=${states.join(',')}`
+      );
+      return r.crosswalks;
+    },
 
-export async function getImportJob(
-  client: Client,
-  jobId: string
-): Promise<ImportJobRow> {
-  const rows = unwrap<ImportJobRow[]>(
-    await client.from('import_jobs').select('*').eq('id', jobId).limit(1)
-  );
-  if (rows.length === 0) throw new Error('import job not found');
-  return rows[0];
-}
+    async listAuditEvents(workspaceId) {
+      const r = await get<{ auditEvents: AuditEventRow[] }>(
+        `/audit-events?${ws(workspaceId)}`
+      );
+      return r.auditEvents;
+    },
 
-export async function listSourceRecords(
-  client: Client,
-  jobId: string,
-  limit = 50,
-  offset = 0
-): Promise<SourceRecordRow[]> {
-  return unwrap(
-    await client.from('source_records')
-      .select('*')
-      .eq('import_job_id', jobId)
-      .order('source_row_index', { ascending: true })
-      .range(offset, offset + limit - 1)
-  );
-}
+    async confirmCrosswalk(workspaceId, id, note) {
+      await post(`/crosswalks/${encodeURIComponent(id)}/confirm`, { workspaceId, note });
+    },
 
-export async function listParseIssues(
-  client: Client,
-  jobId: string
-): Promise<DataQualityIssueRow[]> {
-  return unwrap(
-    await client.from('data_quality_issues')
-      .select('*')
-      .eq('import_job_id', jobId)
-      .order('created_at', { ascending: true })
-  );
-}
+    async rejectCrosswalk(workspaceId, id, note) {
+      await post(`/crosswalks/${encodeURIComponent(id)}/reject`, { workspaceId, note });
+    },
 
-export async function listCrosswalks(
-  client: Client,
-  workspaceId: string,
-  states: CrosswalkState[] = ['candidate', 'rejected', 'superseded']
-): Promise<SourceCrosswalkRow[]> {
-  return unwrap(
-    await client.from('source_crosswalks')
-      .select('*')
-      .eq('workspace_id', workspaceId)
-      .in('review_state', states)
-      .order('created_at', { ascending: false })
-  );
-}
+    async supersedeCrosswalk(workspaceId, id, replacementId, note) {
+      await post(`/crosswalks/${encodeURIComponent(id)}/supersede`, {
+        workspaceId,
+        replacementId,
+        note,
+      });
+    },
 
-export async function listAuditEvents(
-  client: Client,
-  workspaceId: string,
-  limit = 100
-): Promise<AuditEventRow[]> {
-  return unwrap(
-    await client.from('audit_events')
-      .select('*')
-      .eq('workspace_id', workspaceId)
-      .order('event_seq', { ascending: false })
-      .limit(limit)
-  );
-}
-
-// --- Governed review actions (RPC only) -------------------------------------
-// Each of these is a SECURITY DEFINER function that authorizes internally.
-// There is deliberately no direct-table-update path for any of them: the
-// review-state columns are not updatable from the client at all.
-
-async function rpc(client: Client, fn: string, args: Record<string, unknown>) {
-  const { data, error } = await client.rpc(fn as never, args as never);
-  if (error) throw new Error((error as { message: string }).message);
-  return data as string;
-}
-
-/** Commit requires the idempotency key the job was created with. */
-export function commitImportJob(
-  client: Client,
-  importJobId: string,
-  idempotencyKey: string
-) {
-  if (!idempotencyKey || idempotencyKey.trim().length < 8) {
-    throw new Error('commit requires an idempotency key of at least 8 characters');
-  }
-  return rpc(client, 'commit_import_job', {
-    p_import_job_id: importJobId,
-    p_idempotency_key: idempotencyKey,
-  });
-}
-
-export function confirmCrosswalk(client: Client, crosswalkId: string, note?: string) {
-  return rpc(client, 'confirm_source_crosswalk', {
-    p_crosswalk_id: crosswalkId,
-    p_note: note ?? null,
-  });
-}
-
-export function rejectCrosswalk(client: Client, crosswalkId: string, note?: string) {
-  return rpc(client, 'reject_source_crosswalk', {
-    p_crosswalk_id: crosswalkId,
-    p_note: note ?? null,
-  });
-}
-
-export function supersedeCrosswalk(
-  client: Client,
-  crosswalkId: string,
-  replacementId: string,
-  note?: string
-) {
-  return rpc(client, 'supersede_source_crosswalk', {
-    p_crosswalk_id: crosswalkId,
-    p_replacement_id: replacementId,
-    p_note: note ?? null,
-  });
-}
-
-export function resolveIssue(
-  client: Client,
-  issueId: string,
-  status: DataQualityStatus,
-  note?: string
-) {
-  return rpc(client, 'resolve_data_quality_issue', {
-    p_issue_id: issueId,
-    p_status: status,
-    p_note: note ?? null,
-  });
+    async resolveIssue(workspaceId, id, status: DataQualityStatus, note) {
+      await post(`/issues/${encodeURIComponent(id)}/resolve`, { workspaceId, status, note });
+    },
+  };
 }

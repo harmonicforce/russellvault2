@@ -51,19 +51,40 @@ const EXPECTED = [
 ] as const;
 
 describe('feature gating', () => {
+  const SHADOW_PROJECT = {
+    SUPABASE_URL: 'http://127.0.0.1:54321',
+    SUPABASE_ANON_KEY: 'anon-key',
+  };
+
   it('is disabled by default', () => {
     expect(getProvenanceConfig({})).toBeNull();
     expect(isProvenanceEnabled({})).toBe(false);
   });
 
   it('stays disabled for a partial or wrong flag value', () => {
-    expect(isProvenanceEnabled({ SHADOW_IMPORT: '' })).toBe(false);
-    expect(isProvenanceEnabled({ SHADOW_IMPORT: 'true' })).toBe(false);
-    expect(isProvenanceEnabled({ SHADOW_IMPORT: '1' })).toBe(false);
+    expect(isProvenanceEnabled({ ...SHADOW_PROJECT, SHADOW_IMPORT: '' })).toBe(false);
+    expect(isProvenanceEnabled({ ...SHADOW_PROJECT, SHADOW_IMPORT: 'true' })).toBe(false);
+    expect(isProvenanceEnabled({ ...SHADOW_PROJECT, SHADOW_IMPORT: '1' })).toBe(false);
   });
 
-  it('enables only on the explicit demo/import mode value', () => {
-    expect(isProvenanceEnabled({ SHADOW_IMPORT: 'repository-fixtures' })).toBe(true);
+  // The flag alone is not enough: without a shadow project there is no way to
+  // authenticate anyone, so the surface stays closed rather than degrading.
+  it('stays disabled without the shadow project settings', () => {
+    expect(isProvenanceEnabled({ SHADOW_IMPORT: 'repository-fixtures' })).toBe(false);
+    expect(isProvenanceEnabled({
+      SHADOW_IMPORT: 'repository-fixtures',
+      SUPABASE_URL: 'http://127.0.0.1:54321',
+    })).toBe(false);
+    expect(isProvenanceEnabled({
+      SHADOW_IMPORT: 'repository-fixtures',
+      SUPABASE_ANON_KEY: 'anon-key',
+    })).toBe(false);
+  });
+
+  it('enables only on the explicit demo/import mode plus a shadow project', () => {
+    expect(isProvenanceEnabled({
+      ...SHADOW_PROJECT, SHADOW_IMPORT: 'repository-fixtures',
+    })).toBe(true);
   });
 });
 

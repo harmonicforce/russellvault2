@@ -44,18 +44,47 @@
 -- Secret-free configuration guard --------------------------------------------
 -- source_systems describes *where* data came from. It must never hold
 -- credentials. This IMMUTABLE helper backs a CHECK constraint that rejects
--- obviously secret-bearing configuration keys at write time.
+-- secret-bearing configuration keys at write time.
+--
+-- RECURSIVE: it descends through nested objects AND arrays, so a secret cannot
+-- be smuggled in by burying it one level down (e.g. {"conn":{"password":"x"}}
+-- or {"servers":[{"api_key":"x"}]}). Only the KEY NAME is inspected; values are
+-- never examined, so this never depends on a value's shape.
 create function app.has_secret_like_key(p_config jsonb)
 returns boolean
-language sql
+language plpgsql
 immutable
 set search_path = ''
 as $$
-  select exists (
-    select 1
-    from jsonb_object_keys(p_config) as k
-    where lower(k) ~ '(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|bearer|session[_-]?key|dsn|conn(ection)?[_-]?string|service[_-]?role)'
-  )
+declare
+  v_key text;
+  v_value jsonb;
+  v_element jsonb;
+begin
+  if p_config is null then
+    return false;
+  end if;
+
+  if jsonb_typeof(p_config) = 'object' then
+    for v_key, v_value in select * from jsonb_each(p_config) loop
+      if lower(v_key) ~ '(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|bearer|session[_-]?key|dsn|conn(ection)?[_-]?string|service[_-]?role)' then
+        return true;
+      end if;
+      -- Descend: nested objects and arrays are checked too.
+      if app.has_secret_like_key(v_value) then
+        return true;
+      end if;
+    end loop;
+  elsif jsonb_typeof(p_config) = 'array' then
+    for v_element in select * from jsonb_array_elements(p_config) loop
+      if app.has_secret_like_key(v_element) then
+        return true;
+      end if;
+    end loop;
+  end if;
+
+  return false;
+end
 $$;
 
 revoke all on function app.has_secret_like_key(jsonb) from public;
@@ -367,6 +396,22 @@ create unique index source_crosswalks_one_confirmed_uidx
   on public.source_crosswalks (workspace_id, source_record_id, proposed_entity_type)
   where review_state = 'confirmed';
 
+-- Supersession must form LINEAR CHAINS, never a branching or converging graph:
+--   * a given replacement row succeeds at most one superseded row, and
+--   * a given superseded row has at most one successor.
+-- Together these forbid "one replacement row serving as the successor to
+-- multiple unrelated rows" and any fan-in/fan-out shape. Cycles and the
+-- same-record / same-entity-type requirements are enforced by the
+-- app.enforce_supersession_coherence trigger in migration 7, which can see
+-- both rows.
+create unique index source_crosswalks_one_successor_uidx
+  on public.source_crosswalks (superseded_by_id)
+  where superseded_by_id is not null;
+
+create unique index source_crosswalks_one_predecessor_uidx
+  on public.source_crosswalks (supersedes_id)
+  where supersedes_id is not null;
+
 -- audit_events ----------------------------------------------------------------
 -- APPEND-ONLY log of import, preview, commit, review, rejection, supersession,
 -- and issue-resolution actions. Never UPDATEd, never DELETEd (see migration 7).
@@ -378,6 +423,10 @@ create table public.audit_events (
   event_type text not null check (event_type in (
     'source_system_registered',
     'import_previewed',
+    -- A commit-mode job opened for staging. Emitted before any raw row is
+    -- written, so an interrupted upload still leaves a visible trail.
+    'import_started',
+    'import_records_staged',
     'import_committed',
     'import_failed',
     'source_record_ingested',

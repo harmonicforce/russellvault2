@@ -1,21 +1,26 @@
-// Phase 3 provenance API — restricted repository-fixture import surface.
+// Phase 3 provenance API — restricted, authenticated, workspace-scoped.
 //
-// SAFE BY DEFAULT: every route in this router returns 404 unless the
-// SHADOW_IMPORT=repository-fixtures flag is set. With the flag absent — the
-// deployed default — this router is inert, reads nothing, and the legacy
-// SQLite application behaves exactly as before.
+// AVAILABILITY vs AUTHORIZATION — these are separate and both enforced:
+//   * Availability: every route 404s unless SHADOW_IMPORT=repository-fixtures
+//     AND the shadow Supabase URL/anon key are configured. With the flags
+//     absent — the deployed default — this router is inert and the legacy
+//     SQLite application is unaffected.
+//   * Authorization: the flag grants nobody anything. EVERY route below
+//     additionally requires a valid caller bearer token and an explicit
+//     workspaceId, and resolves membership through the shadow Supabase client
+//     running under that same caller JWT (see provenance/auth.ts). No route is
+//     reachable anonymously, and no fixture metadata or raw payload is served
+//     to a non-member.
 //
-// SCOPE: these routes perform the deterministic, READ-ONLY transformation of
-// repository fixtures into an import plan. They deliberately do NOT write to
-// any database. Persistence of the plan into the shadow database, and every
-// read of committed provenance, happens through the shadow Supabase client
-// under the caller's own JWT, so PostgREST + the Phase 3 RLS policies are the
-// authorization boundary for stored rows (see client/src/lib/provenanceApi.ts).
-// That keeps a single, database-enforced permission model rather than a second
-// server-side one that could drift from it.
+// Permissions:
+//   requireMember   — any member including viewers: read-only surfaces.
+//   requireOperator — owner/operator: fixture previews, commits, review work.
+//   requireOwner    — owner only: source-system registration.
 //
-// Consequently nothing here can create a canonical acquisition or inventory
-// record; there is no such endpoint and no such table.
+// The server holds NO service-role key and no privileged database connection.
+// Stored provenance is read and written exclusively through the caller's JWT,
+// so RLS and the governed SECURITY DEFINER functions are the single
+// authorization model — there is no second one here to drift from it.
 
 import { Router } from 'express';
 import {
@@ -26,12 +31,19 @@ import {
 import { listFixtures } from '../provenance/fixtures.js';
 import { MAPPING_VERSION, PARSER_VERSION } from '../provenance/parsers.js';
 import { isProvenanceEnabled } from '../provenance/config.js';
+import {
+  requireMember,
+  requireOperator,
+  requireOwner,
+  type AuthedRequest,
+} from '../provenance/auth.js';
+import { commitImportPlan, CommitError } from '../provenance/commitDriver.js';
 
 const router = Router();
 
-// Gate every route. Responds 404 (not 403) so a disabled deployment does not
-// advertise that the surface exists at all.
-router.use((req, res, next) => {
+// Availability gate. 404 (not 403) so a disabled deployment does not advertise
+// that the surface exists at all.
+router.use((_req, res, next) => {
   if (!isProvenanceEnabled(process.env)) {
     res.status(404).json({ error: 'not found' });
     return;
@@ -39,13 +51,11 @@ router.use((req, res, next) => {
   next();
 });
 
-// Cap the response size for row-level endpoints so a 2,149-row fixture cannot
-// be dumped in a single response by accident.
 const MAX_PAGE = 200;
 
-function readLimit(value: unknown): number {
-  const n = Number(value ?? 50);
-  if (!Number.isFinite(n) || n <= 0) return 50;
+function readLimit(value: unknown, fallback = 50): number {
+  const n = Number(value ?? fallback);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
   return Math.min(Math.floor(n), MAX_PAGE);
 }
 
@@ -55,8 +65,26 @@ function readOffset(value: unknown): number {
   return Math.floor(n);
 }
 
-// Which fixtures may be imported, and the governed versions in force.
-router.get('/fixtures', (_req, res) => {
+function caller(req: AuthedRequest) {
+  if (!req.caller) throw new ProvenanceError('caller not resolved', 500);
+  return req.caller;
+}
+
+function asyncRoute(
+  handler: (req: AuthedRequest, res: import('express').Response) => Promise<void>
+) {
+  return (
+    req: AuthedRequest,
+    res: import('express').Response,
+    next: import('express').NextFunction
+  ) => {
+    handler(req, res).catch(next);
+  };
+}
+
+// --- Fixture metadata (members) ------------------------------------------------
+// Requires membership: a non-member learns nothing about what can be imported.
+router.get('/fixtures', requireMember, (_req, res) => {
   res.json({
     staging: true,
     authoritative: false,
@@ -70,10 +98,9 @@ router.get('/fixtures', (_req, res) => {
   });
 });
 
-// Preview: describes what an import WOULD record. Commits nothing, and cannot —
-// the plan it returns carries mode 'preview', which the database refuses to
-// promote to a committed job.
-router.post('/preview', (req, res) => {
+// --- Preview (operator/owner) ---------------------------------------------------
+// Computes what an import WOULD record. Persists nothing.
+router.post('/preview', requireOperator, (req, res) => {
   const filename = String(req.body?.filename ?? '');
   const plan = buildImportPlan({ filename, mode: 'preview' });
   res.json({
@@ -83,11 +110,9 @@ router.post('/preview', (req, res) => {
   });
 });
 
-// The rows a preview would record, paginated. Raw payloads are returned
-// verbatim so a reviewer sees exactly what the source contained.
-router.post('/preview/records', (req, res) => {
+router.post('/preview/records', requireOperator, (req, res) => {
   const filename = String(req.body?.filename ?? '');
-  const limit = readLimit(req.body?.limit);
+  const limit = readLimit(req.body?.limit, 25);
   const offset = readOffset(req.body?.offset);
   const plan = buildImportPlan({ filename, mode: 'preview' });
   res.json({
@@ -101,8 +126,7 @@ router.post('/preview/records', (req, res) => {
   });
 });
 
-// The data-quality issues a preview would open, with their retained payloads.
-router.post('/preview/issues', (req, res) => {
+router.post('/preview/issues', requireOperator, (req, res) => {
   const filename = String(req.body?.filename ?? '');
   const plan = buildImportPlan({ filename, mode: 'preview' });
   res.json({
@@ -113,9 +137,7 @@ router.post('/preview/issues', (req, res) => {
   });
 });
 
-// The crosswalk candidates a preview would propose. Every one is 'candidate';
-// this endpoint has no way to emit any other state.
-router.post('/preview/crosswalks', (req, res) => {
+router.post('/preview/crosswalks', requireOperator, (req, res) => {
   const filename = String(req.body?.filename ?? '');
   const plan = buildImportPlan({ filename, mode: 'preview' });
   res.json({
@@ -126,25 +148,246 @@ router.post('/preview/crosswalks', (req, res) => {
   });
 });
 
-// Build the commit plan. REQUIRES an idempotency key; the adapter refuses
-// without one, and commit_import_job() in the database refuses again when the
-// plan is actually persisted. This endpoint still writes nothing itself.
-router.post('/commit-plan', (req, res) => {
-  const filename = String(req.body?.filename ?? '');
-  const idempotencyKey =
-    typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : null;
-  const plan = buildImportPlan({ filename, mode: 'commit', idempotencyKey });
-  res.json({
-    ...summarizePlan(plan),
-    idempotencyKey: plan.idempotencyKey,
-    recordCount: plan.records.length,
-    note:
-      'Commit plan only. Persisting it runs under the caller\'s own credentials ' +
-      'and is subject to workspace RLS and the commit_import_job idempotency check.',
-  });
-});
+// --- Commit (operator/owner) -------------------------------------------------------
+// The real end-to-end persistence path: open a governed job, stage every exact
+// raw row in batches, stage identifiers, issues and candidate crosswalks, then
+// finalize transactionally. Runs entirely under the caller's JWT.
+router.post(
+  '/commit',
+  requireOperator,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const filename = String(req.body?.filename ?? '');
+    const sourceSystemId = String(req.body?.sourceSystemId ?? '');
+    const idempotencyKey =
+      typeof req.body?.idempotencyKey === 'string' ? req.body.idempotencyKey : null;
 
-// Structured errors; never leaks a filesystem path.
+    if (!sourceSystemId) {
+      throw new ProvenanceError('a sourceSystemId is required', 400);
+    }
+
+    // Refuses without a sufficient idempotency key, before reading any bytes.
+    const plan = buildImportPlan({ filename, mode: 'commit', idempotencyKey });
+
+    const outcome = await commitImportPlan(client, workspaceId, sourceSystemId, plan);
+    res.json({
+      staging: true,
+      authoritative: false,
+      ...outcome,
+      sourceLabel: plan.sourceLabel,
+      fileSha256: plan.fileSha256,
+      contentSha256: plan.contentSha256,
+      parserVersion: plan.parserVersion,
+      mappingVersion: plan.mappingVersion,
+    });
+  })
+);
+
+// --- Source systems -------------------------------------------------------------------
+router.get(
+  '/source-systems',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const { data, error } = await client
+      .from('source_systems')
+      .select('id, public_id, kind, instance_label, active, created_at')
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: true });
+    if (error) throw new ProvenanceError(error.message, 400);
+    res.json({ staging: true, sourceSystems: data ?? [] });
+  })
+);
+
+router.post(
+  '/source-systems',
+  requireOwner,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const { data, error } = await client.rpc('register_source_system' as never, {
+      p_workspace_id: workspaceId,
+      p_public_id: String(req.body?.publicId ?? ''),
+      p_kind: String(req.body?.kind ?? 'repository_fixture'),
+      p_instance_label: String(req.body?.instanceLabel ?? ''),
+      p_description: req.body?.description ?? null,
+      p_config: req.body?.config ?? {},
+    } as never);
+    if (error) throw new ProvenanceError(error.message, 400);
+    res.json({ staging: true, id: data });
+  })
+);
+
+// --- Stored provenance, read-only (members incl. viewers) ---------------------------------
+router.get(
+  '/jobs',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const { data, error } = await client
+      .from('import_jobs')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .order('started_at', { ascending: false })
+      .limit(readLimit(req.query.limit));
+    if (error) throw new ProvenanceError(error.message, 400);
+    res.json({ staging: true, authoritative: false, jobs: data ?? [] });
+  })
+);
+
+router.get(
+  '/jobs/:id',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const { data, error } = await client
+      .from('import_jobs')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .eq('id', req.params.id)
+      .limit(1);
+    if (error) throw new ProvenanceError(error.message, 400);
+    if (!data || data.length === 0) {
+      // Same answer for "absent" and "another workspace's".
+      throw new ProvenanceError('import job not found', 404);
+    }
+    res.json({ staging: true, authoritative: false, job: data[0] });
+  })
+);
+
+router.get(
+  '/jobs/:id/records',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const limit = readLimit(req.query.limit, 25);
+    const offset = readOffset(req.query.offset);
+    const { data, error, count } = await client
+      .from('source_records')
+      .select('*', { count: 'exact' })
+      .eq('workspace_id', workspaceId)
+      .eq('import_job_id', req.params.id)
+      .order('source_row_index', { ascending: true })
+      .range(offset, offset + limit - 1);
+    if (error) throw new ProvenanceError(error.message, 400);
+    res.json({
+      staging: true,
+      total: count ?? (data?.length ?? 0),
+      limit,
+      offset,
+      records: data ?? [],
+    });
+  })
+);
+
+router.get(
+  '/jobs/:id/issues',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const { data, error } = await client
+      .from('data_quality_issues')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .eq('import_job_id', req.params.id)
+      .order('created_at', { ascending: true });
+    if (error) throw new ProvenanceError(error.message, 400);
+    res.json({ staging: true, issues: data ?? [] });
+  })
+);
+
+router.get(
+  '/crosswalks',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const states =
+      typeof req.query.states === 'string'
+        ? req.query.states.split(',').filter(Boolean)
+        : ['candidate', 'rejected', 'superseded'];
+    const { data, error } = await client
+      .from('source_crosswalks')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .in('review_state', states)
+      .order('created_at', { ascending: false })
+      .limit(readLimit(req.query.limit));
+    if (error) throw new ProvenanceError(error.message, 400);
+    res.json({ staging: true, crosswalks: data ?? [] });
+  })
+);
+
+router.get(
+  '/audit-events',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const { data, error } = await client
+      .from('audit_events')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .order('event_seq', { ascending: false })
+      .limit(readLimit(req.query.limit, 100));
+    if (error) throw new ProvenanceError(error.message, 400);
+    res.json({ staging: true, appendOnly: true, auditEvents: data ?? [] });
+  })
+);
+
+// --- Governed review actions (operator/owner) -------------------------------------------------
+// Each of these is a single governed RPC. There is deliberately no direct-table
+// write anywhere in this file: the database grants the caller SELECT only.
+// Two explicit routes rather than one parameterised action: Express 5's router
+// no longer supports inline pattern groups, and naming each RPC at its own path
+// keeps the mapping from route to governed function unambiguous.
+function reviewRoute(action: 'confirm' | 'reject', fn: string) {
+  router.post(
+    `/crosswalks/:id/${action}`,
+    requireOperator,
+    asyncRoute(async (req, res) => {
+      const { client } = caller(req);
+      const { data, error } = await client.rpc(fn as never, {
+        p_crosswalk_id: req.params.id,
+        p_note: req.body?.note ?? null,
+      } as never);
+      if (error) throw new ProvenanceError(error.message, 409);
+      res.json({ staging: true, id: data, action });
+    })
+  );
+}
+
+reviewRoute('confirm', 'confirm_source_crosswalk');
+reviewRoute('reject', 'reject_source_crosswalk');
+
+router.post(
+  '/crosswalks/:id/supersede',
+  requireOperator,
+  asyncRoute(async (req, res) => {
+    const { client } = caller(req);
+    const { data, error } = await client.rpc('supersede_source_crosswalk' as never, {
+      p_crosswalk_id: req.params.id,
+      p_replacement_id: String(req.body?.replacementId ?? ''),
+      p_note: req.body?.note ?? null,
+    } as never);
+    if (error) throw new ProvenanceError(error.message, 409);
+    res.json({ staging: true, replacementId: data });
+  })
+);
+
+router.post(
+  '/issues/:id/resolve',
+  requireOperator,
+  asyncRoute(async (req, res) => {
+    const { client } = caller(req);
+    const { data, error } = await client.rpc('resolve_data_quality_issue' as never, {
+      p_issue_id: req.params.id,
+      p_status: String(req.body?.status ?? 'resolved'),
+      p_note: req.body?.note ?? null,
+    } as never);
+    if (error) throw new ProvenanceError(error.message, 409);
+    res.json({ staging: true, id: data });
+  })
+);
+
+// Structured errors; never leaks a filesystem path or a caller's input.
 router.use(
   (
     err: unknown,
@@ -154,6 +397,10 @@ router.use(
   ) => {
     if (err instanceof ProvenanceError) {
       res.status(err.status).json({ error: err.message });
+      return;
+    }
+    if (err instanceof CommitError) {
+      res.status(err.status).json({ error: err.message, importJobId: err.importJobId });
       return;
     }
     next(err);

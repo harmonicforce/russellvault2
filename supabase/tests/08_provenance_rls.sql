@@ -1,15 +1,20 @@
--- Phase 3 provenance — row-level security and role permissions.
+-- Phase 3 provenance — read authorization and role permissions.
 --
--- Proves: anonymous users get nothing; an authenticated non-member gets
--- nothing; viewers read but cannot commit, review, or resolve; operators do
--- ordinary preview/commit and candidate-review work in their own workspace
--- only; owners additionally administer the source-system registry; and user A
--- can neither read nor mutate workspace B.
+-- Under the SELECT-only grant model, this file's job is to prove READ
+-- authorization and the denial of every direct write, per role:
+--   anon        — sees nothing, can do nothing;
+--   non-member  — sees nothing, can do nothing;
+--   viewer      — reads the full review surface, writes nothing and can invoke
+--                 no governed review action;
+--   operator    — reads the same, and may invoke the review RPCs;
+--   owner       — as operator, plus the owner-only registry RPC.
+-- Cross-workspace isolation is asserted for reads and for every RPC.
+--
+-- The staged import workflow itself is covered in 10_provenance_workflow.sql.
 begin;
 create extension if not exists pgtap;
 select no_plan();
 
--- Impersonation helpers ---------------------------------------------------------
 create function pg_temp.login(p_uid uuid) returns void language plpgsql as $$
 begin
   perform set_config('request.jwt.claim.sub', p_uid::text, true);
@@ -32,9 +37,7 @@ begin
   perform set_config('request.jwt.claims', '', true);
 end $$;
 
--- Fixtures ------------------------------------------------------------------------
--- alice: owner of A. bob: operator in A. vera: viewer in A.
--- zoe: owner of B. mallory: authenticated but a member of nothing.
+-- Fixtures (written as the owning role, before any impersonation) --------------
 insert into auth.users (id, email) values
   ('11111111-1111-1111-1111-111111111111', 'alice@example.test'),
   ('22222222-2222-2222-2222-222222222222', 'bob@example.test'),
@@ -69,11 +72,11 @@ insert into public.import_jobs (
   ('a6000000-0000-4000-8000-000000000001', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
    'JOB-A1', 'a5000000-0000-4000-8000-000000000001', 'whatnot_purchases.json',
    repeat('a', 64), repeat('a', 64), '1.0.0', '1.0.0', 'idem-a-000000001', 'commit',
-   '11111111-1111-1111-1111-111111111111', 'provenance.import', 5),
+   '11111111-1111-1111-1111-111111111111', 'provenance.import', 1),
   ('b6000000-0000-4000-8000-000000000001', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
    'JOB-B1', 'b5000000-0000-4000-8000-000000000001', 'whatnot_purchases.json',
    repeat('b', 64), repeat('b', 64), '1.0.0', '1.0.0', 'idem-b-000000001', 'commit',
-   '44444444-4444-4444-4444-444444444444', 'provenance.import', 5);
+   '44444444-4444-4444-4444-444444444444', 'provenance.import', 1);
 
 insert into public.source_records (
   id, workspace_id, import_job_id, source_row_index, raw_payload,
@@ -104,47 +107,59 @@ insert into public.data_quality_issues (
 ) values
   ('ad000000-0000-4000-8000-000000000001', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
    'a6000000-0000-4000-8000-000000000001', 'a7000000-0000-4000-8000-000000000001',
-   'conflict', 'conflicting totals', 'provenance.import');
+   'conflict', 'conflicting totals', 'provenance.import'),
+  ('bd000000-0000-4000-8000-000000000001', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+   'b6000000-0000-4000-8000-000000000001', 'b7000000-0000-4000-8000-000000000001',
+   'conflict', 'workspace B issue', 'provenance.import');
+
+insert into public.external_identifiers (
+  workspace_id, source_system_id, scope, identifier_type, identifier_value,
+  source_record_id, created_by_process
+) values
+  ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'a5000000-0000-4000-8000-000000000001',
+   'whatnot.order', 'order_id', 'A-1', 'a7000000-0000-4000-8000-000000000001',
+   'provenance.import');
 
 insert into public.audit_events (
   workspace_id, event_type, subject_table, subject_id, import_job_id,
   actor_user_id, actor_process
 ) values
-  ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'import_previewed', 'import_jobs',
+  ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'import_started', 'import_jobs',
    'a6000000-0000-4000-8000-000000000001', 'a6000000-0000-4000-8000-000000000001',
    '11111111-1111-1111-1111-111111111111', 'provenance.import');
 
--- Anonymous users get nothing -------------------------------------------------------
+-- ANONYMOUS: nothing at all ------------------------------------------------------
 select pg_temp.login_anon();
 
-select throws_ok(
-  $$select count(*) from public.import_jobs$$, '42501', null,
+select throws_ok($$select count(*) from public.import_jobs$$, '42501', null,
   'anon cannot read import_jobs');
-select throws_ok(
-  $$select count(*) from public.source_records$$, '42501', null,
+select throws_ok($$select count(*) from public.source_records$$, '42501', null,
   'anon cannot read source_records');
-select throws_ok(
-  $$select count(*) from public.source_crosswalks$$, '42501', null,
+select throws_ok($$select count(*) from public.source_crosswalks$$, '42501', null,
   'anon cannot read source_crosswalks');
-select throws_ok(
-  $$select count(*) from public.audit_events$$, '42501', null,
+select throws_ok($$select count(*) from public.audit_events$$, '42501', null,
   'anon cannot read audit_events');
-select throws_ok(
-  $$select count(*) from public.data_quality_issues$$, '42501', null,
+select throws_ok($$select count(*) from public.data_quality_issues$$, '42501', null,
   'anon cannot read data_quality_issues');
-select throws_ok(
-  $$select count(*) from public.source_systems$$, '42501', null,
+select throws_ok($$select count(*) from public.source_systems$$, '42501', null,
   'anon cannot read source_systems');
-select throws_ok(
-  $$select count(*) from public.external_identifiers$$, '42501', null,
+select throws_ok($$select count(*) from public.external_identifiers$$, '42501', null,
   'anon cannot read external_identifiers');
 select throws_ok(
-  $$select public.commit_import_job('a6000000-0000-4000-8000-000000000001', 'idem-a-000000001')$$,
-  '42501', null, 'anon cannot execute commit_import_job');
+  $$select public.confirm_source_crosswalk('ac000000-0000-4000-8000-000000000001')$$,
+  '42501', null, 'anon cannot execute confirm_source_crosswalk');
+select throws_ok(
+  $$select public.finalize_import_job('a6000000-0000-4000-8000-000000000001',
+      'idem-a-000000001', 1, 1, 0)$$,
+  '42501', null, 'anon cannot execute finalize_import_job');
+select throws_ok(
+  $$select public.register_source_system('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'X', 'manual', 'x')$$,
+  '42501', null, 'anon cannot execute register_source_system');
 
 select pg_temp.logout();
 
--- An authenticated non-member gets nothing -------------------------------------------
+-- AUTHENTICATED NON-MEMBER: nothing at all ----------------------------------------
 select pg_temp.login('55555555-5555-5555-5555-555555555555');
 
 select is((select count(*)::int from public.import_jobs), 0,
@@ -159,17 +174,24 @@ select is((select count(*)::int from public.data_quality_issues), 0,
   'a non-member sees no data-quality issues');
 select is((select count(*)::int from public.source_systems), 0,
   'a non-member sees no source systems');
+select is((select count(*)::int from public.external_identifiers), 0,
+  'a non-member sees no external identifiers');
 
 select throws_ok(
-  $$select public.commit_import_job('a6000000-0000-4000-8000-000000000001', 'idem-a-000000001')$$,
-  '42501', null, 'a non-member cannot commit another workspace''s import');
-select throws_ok(
   $$select public.confirm_source_crosswalk('ac000000-0000-4000-8000-000000000001')$$,
-  '42501', null, 'a non-member cannot confirm another workspace''s crosswalk');
+  '42501', null, 'a non-member cannot confirm a crosswalk');
+select throws_ok(
+  $$select public.resolve_data_quality_issue('ad000000-0000-4000-8000-000000000001',
+      'resolved'::public.data_quality_status)$$,
+  '42501', null, 'a non-member cannot resolve an issue');
+select throws_ok(
+  $$select public.finalize_import_job('a6000000-0000-4000-8000-000000000001',
+      'idem-a-000000001', 1, 1, 0)$$,
+  '42501', null, 'a non-member cannot finalize an import');
 
 select pg_temp.logout();
 
--- Viewer: reads the review surface, changes nothing --------------------------------------
+-- VIEWER: reads everything, changes nothing ------------------------------------------
 select pg_temp.login('33333333-3333-3333-3333-333333333333');
 
 select is((select count(*)::int from public.import_jobs), 1,
@@ -184,10 +206,10 @@ select is((select count(*)::int from public.audit_events), 1,
   'a viewer reads audit history in her workspace');
 select is((select count(*)::int from public.source_systems), 1,
   'a viewer reads the source-system registry in her workspace');
+select is((select count(*)::int from public.external_identifiers), 1,
+  'a viewer reads external identifiers in her workspace');
 
-select throws_ok(
-  $$select public.commit_import_job('a6000000-0000-4000-8000-000000000001', 'idem-a-000000001')$$,
-  '42501', null, 'a viewer cannot commit an import');
+-- ...and can do nothing else.
 select throws_ok(
   $$select public.confirm_source_crosswalk('ac000000-0000-4000-8000-000000000001')$$,
   '42501', null, 'a viewer cannot confirm a crosswalk');
@@ -199,68 +221,34 @@ select throws_ok(
       'ac000000-0000-4000-8000-000000000001', 'bc000000-0000-4000-8000-000000000001')$$,
   '42501', null, 'a viewer cannot supersede a crosswalk');
 select throws_ok(
-  $$select public.resolve_data_quality_issue(
-      'ad000000-0000-4000-8000-000000000001', 'resolved'::public.data_quality_status)$$,
-  '42501', null, 'a viewer cannot resolve a data-quality issue');
-
--- A viewer's direct writes are refused by RLS as well.
+  $$select public.resolve_data_quality_issue('ad000000-0000-4000-8000-000000000001',
+      'resolved'::public.data_quality_status)$$,
+  '42501', null, 'a viewer cannot resolve an issue');
 select throws_ok(
-  $$insert into public.import_jobs (
-      workspace_id, public_id, source_system_id, source_label, file_sha256,
-      content_sha256, parser_version, mapping_version, idempotency_key, mode,
-      actor_user_id, actor_process, source_row_count
-    ) values (
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'JOB-V', 'a5000000-0000-4000-8000-000000000001',
-      'x.json', repeat('c', 64), repeat('c', 64), '1.0.0', '1.0.0', 'idem-v-000000001',
-      'preview', '33333333-3333-3333-3333-333333333333', 'provenance.preview', 1)$$,
-  '42501', null, 'a viewer cannot create an import job directly');
+  $$select public.register_source_system('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'VSYS', 'manual', 'viewer try')$$,
+  '42501', null, 'a viewer cannot register a source system');
+select throws_ok(
+  $$select public.finalize_import_job('a6000000-0000-4000-8000-000000000001',
+      'idem-a-000000001', 1, 1, 0)$$,
+  '42501', null, 'a viewer cannot finalize an import');
 
+-- Direct writes are refused at the grant layer for a viewer too.
+select throws_ok(
+  $$update public.import_jobs set status = 'committed'$$,
+  '42501', null, 'a viewer cannot update an import job directly');
 select throws_ok(
   $$insert into public.source_records (
       workspace_id, import_job_id, source_row_index, raw_payload, normalized_hash,
-      parse_status, parser_output, parser_version, mapping_version, created_by_process
-    ) values (
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'a6000000-0000-4000-8000-000000000001',
-      50, '{}'::jsonb, repeat('3', 64), 'parsed', '{}'::jsonb, '1.0.0', '1.0.0',
-      'provenance.import')$$,
-  '42501', null, 'a viewer cannot write a source record');
-
-select throws_ok(
-  $$insert into public.source_crosswalks (
-      workspace_id, source_record_id, proposed_entity_type, proposed_entity_key,
-      match_method, created_by_process
-    ) values (
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'a7000000-0000-4000-8000-000000000001',
-      'acquisition_candidate', 'KEY-V', 'manual', 'provenance.import')$$,
-  '42501', null, 'a viewer cannot create a crosswalk candidate');
+      parse_status, parser_output, parser_version, mapping_version, created_by_process)
+    values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'a6000000-0000-4000-8000-000000000001',
+      50, '{}'::jsonb, repeat('3', 64), 'parsed', '{}'::jsonb, '1.0.0', '1.0.0', 'x')$$,
+  '42501', null, 'a viewer cannot write a source record directly');
 
 select pg_temp.logout();
 
--- Operator: ordinary preview/commit and candidate-review work in her workspace ------------
+-- OPERATOR: reads, plus the governed review actions -------------------------------------
 select pg_temp.login('22222222-2222-2222-2222-222222222222');
-
-select lives_ok(
-  $$insert into public.import_jobs (
-      id, workspace_id, public_id, source_system_id, source_label, file_sha256,
-      content_sha256, parser_version, mapping_version, idempotency_key, mode,
-      actor_user_id, actor_process, source_row_count
-    ) values (
-      'a6000000-0000-4000-8000-0000000000e1',
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'JOB-OP', 'a5000000-0000-4000-8000-000000000001',
-      'checks.json', repeat('e', 64), repeat('e', 64), '1.0.0', '1.0.0',
-      'idem-op-00000001', 'preview', '22222222-2222-2222-2222-222222222222',
-      'provenance.preview', 3)$$,
-  'an operator can create a preview import job in her workspace');
-
-select lives_ok(
-  $$insert into public.source_records (
-      workspace_id, import_job_id, source_row_index, raw_payload, normalized_hash,
-      parse_status, parser_output, parser_version, mapping_version, created_by_process
-    ) values (
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'a6000000-0000-4000-8000-0000000000e1',
-      0, '{"c":1}'::jsonb, repeat('4', 64), 'parsed', '{"c":1}'::jsonb, '1.0.0', '1.0.0',
-      'provenance.import')$$,
-  'an operator can write raw source records for her own job');
 
 select lives_ok(
   $$select public.confirm_source_crosswalk(
@@ -270,160 +258,101 @@ select lives_ok(
 select is(
   (select review_state::text from public.source_crosswalks
    where id = 'ac000000-0000-4000-8000-000000000001'),
-  'confirmed',
-  'the confirmed state was recorded');
+  'confirmed', 'the confirmed state was recorded');
 
 select is(
   (select reviewed_by from public.source_crosswalks
    where id = 'ac000000-0000-4000-8000-000000000001'),
   '22222222-2222-2222-2222-222222222222'::uuid,
-  'confirmation is attributed to the acting reviewer, not the importer');
+  'confirmation is attributed to the acting reviewer');
 
 select lives_ok(
-  $$select public.resolve_data_quality_issue(
-      'ad000000-0000-4000-8000-000000000001', 'resolved'::public.data_quality_status, 'ok')$$,
+  $$select public.resolve_data_quality_issue('ad000000-0000-4000-8000-000000000001',
+      'resolved'::public.data_quality_status, 'ok')$$,
   'an operator can resolve an issue in her own workspace');
 
--- Operator cannot administer the source-system registry: that is owner-only.
+-- Registry administration remains owner-only.
 select throws_ok(
-  $$insert into public.source_systems (
-      workspace_id, public_id, kind, instance_label, created_by
-    ) values (
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'OPSYS', 'manual', 'operator try',
-      '22222222-2222-2222-2222-222222222222')$$,
+  $$select public.register_source_system('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'OPSYS', 'manual', 'operator try')$$,
   '42501', null, 'an operator cannot register a source system (owner-only)');
 
--- An operator's UPDATE is filtered out by the owner-only USING clause, so it
--- matches zero rows rather than raising. The guarantee is that the registry is
--- unchanged, which is what this asserts.
-select lives_ok(
-  $$update public.source_systems set instance_label = 'renamed'
-    where id = 'a5000000-0000-4000-8000-000000000001'$$,
-  'an operator''s registry update matches no rows instead of erroring');
+-- Direct writes are refused for an operator too: the RPCs are the only path.
+select throws_ok(
+  $$update public.source_crosswalks set review_state = 'confirmed'$$,
+  '42501', null, 'an operator cannot confirm a crosswalk by direct update');
+select throws_ok(
+  $$update public.data_quality_issues set status = 'resolved'$$,
+  '42501', null, 'an operator cannot resolve an issue by direct update');
+select throws_ok(
+  $$insert into public.audit_events (
+      workspace_id, event_type, subject_table, actor_user_id, actor_process)
+    values ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'import_committed', 'import_jobs',
+      '22222222-2222-2222-2222-222222222222', 'forged')$$,
+  '42501', null, 'an operator cannot fabricate an audit event');
+select throws_ok(
+  $$delete from public.source_records$$,
+  '42501', null, 'an operator cannot delete evidence');
 
-select is(
-  (select instance_label from public.source_systems
-   where id = 'a5000000-0000-4000-8000-000000000001'),
-  'repo seed A',
-  'an operator cannot amend the source-system registry (owner-only)');
-
--- Workspace isolation: operator in A sees and touches nothing in B -----------------------------
+-- CROSS-WORKSPACE ISOLATION -----------------------------------------------------------
 select is(
   (select count(*)::int from public.import_jobs
    where workspace_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),
-  0,
-  'user A cannot read workspace B import jobs');
+  0, 'user A cannot read workspace B import jobs');
 select is(
   (select count(*)::int from public.source_records
    where workspace_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),
-  0,
-  'user A cannot read workspace B source records');
+  0, 'user A cannot read workspace B source records');
 select is(
   (select count(*)::int from public.source_crosswalks
    where workspace_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),
-  0,
-  'user A cannot read workspace B crosswalks');
+  0, 'user A cannot read workspace B crosswalks');
 
 select throws_ok(
   $$select public.confirm_source_crosswalk('bc000000-0000-4000-8000-000000000001')$$,
   '42501', null, 'user A cannot confirm a workspace B crosswalk');
 select throws_ok(
-  $$select public.commit_import_job('b6000000-0000-4000-8000-000000000001', 'idem-b-000000001')$$,
-  '42501', null, 'user A cannot commit a workspace B import');
-
-select is(
-  (select count(*)::int from public.import_jobs
-   where id = 'b6000000-0000-4000-8000-000000000001'),
-  0,
-  'a workspace B import job is invisible to a workspace A operator');
-
--- Writing into workspace B is refused outright.
+  $$select public.reject_source_crosswalk('bc000000-0000-4000-8000-000000000001')$$,
+  '42501', null, 'user A cannot reject a workspace B crosswalk');
 select throws_ok(
-  $$insert into public.source_records (
-      workspace_id, import_job_id, source_row_index, raw_payload, normalized_hash,
-      parse_status, parser_output, parser_version, mapping_version, created_by_process
-    ) values (
-      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 'b6000000-0000-4000-8000-000000000001',
-      9, '{}'::jsonb, repeat('5', 64), 'parsed', '{}'::jsonb, '1.0.0', '1.0.0',
-      'provenance.import')$$,
-  '42501', null, 'user A cannot insert a source record into workspace B');
-
--- Append-only still binds an ordinary operator ------------------------------------------------
+  $$select public.resolve_data_quality_issue('bd000000-0000-4000-8000-000000000001',
+      'resolved'::public.data_quality_status)$$,
+  '42501', null, 'user A cannot resolve a workspace B issue');
 select throws_ok(
-  $$update public.source_records set source_row_key = 'x'
-    where id = 'a7000000-0000-4000-8000-000000000001'$$,
-  '42501', null, 'an operator cannot update a source record');
-select throws_ok(
-  $$delete from public.source_records
-    where id = 'a7000000-0000-4000-8000-000000000001'$$,
-  '42501', null, 'an operator cannot delete a source record');
-select throws_ok(
-  $$delete from public.audit_events$$,
-  '42501', null, 'an operator cannot delete audit events');
-select throws_ok(
-  $$delete from public.import_jobs
-    where id = 'a6000000-0000-4000-8000-000000000001'$$,
-  '42501', null, 'an operator cannot delete an import job');
+  $$select public.finalize_import_job('b6000000-0000-4000-8000-000000000001',
+      'idem-b-000000001', 1, 1, 0)$$,
+  '42501', null, 'user A cannot finalize a workspace B import');
 
 select pg_temp.logout();
 
--- Owner: everything the operator can do, plus registry administration ---------------------------
+-- OWNER: everything an operator can do, plus the registry ---------------------------------
 select pg_temp.login('11111111-1111-1111-1111-111111111111');
 
 select lives_ok(
-  $$insert into public.source_systems (
-      workspace_id, public_id, kind, instance_label, created_by
-    ) values (
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'EXCELCTL', 'excel_export',
-      'future control workbook export', '11111111-1111-1111-1111-111111111111')$$,
+  $$select public.register_source_system('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      'EXCELCTL', 'excel_export', 'future control workbook export')$$,
   'an owner can register a source system');
-
-select lives_ok(
-  $$update public.source_systems set active = false
-    where public_id = 'EXCELCTL' and workspace_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'$$,
-  'an owner can deactivate a source system');
 
 select throws_ok(
   $$delete from public.source_systems where public_id = 'EXCELCTL'$$,
-  '42501', null, 'even an owner cannot delete a source system: registry rows are retained');
-
-select lives_ok(
-  $$select public.commit_import_job('a6000000-0000-4000-8000-000000000001', 'idem-a-000000001')$$,
-  'an owner can commit an import in her workspace');
-
-select is(
-  (select status::text from public.import_jobs
-   where id = 'a6000000-0000-4000-8000-000000000001'),
-  'committed',
-  'the import reached committed status');
-
--- Committing wrote an append-only audit event.
-select is(
-  (select count(*)::int from public.audit_events
-   where event_type = 'import_committed'
-     and import_job_id = 'a6000000-0000-4000-8000-000000000001'),
-  1,
-  'committing appended exactly one import_committed audit event');
-
--- Re-committing the same job is refused.
-select throws_ok(
-  $$select public.commit_import_job('a6000000-0000-4000-8000-000000000001', 'idem-a-000000001')$$,
-  '23505', null, 'the same job cannot be committed twice');
+  '42501', null,
+  'even an owner cannot delete a source system: registry rows are retained');
 
 select pg_temp.logout();
 
--- Workspace B is entirely untouched by everything above --------------------------------------------
-select is(
-  (select count(*)::int from public.import_jobs
-   where workspace_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' and status = 'committed'),
-  0,
-  'no workspace B import was committed by workspace A activity');
-
+-- Workspace B is untouched by everything above ----------------------------------------------
 select is(
   (select review_state::text from public.source_crosswalks
    where id = 'bc000000-0000-4000-8000-000000000001'),
-  'candidate',
-  'the workspace B crosswalk is still an unreviewed candidate');
+  'candidate', 'the workspace B crosswalk is still an unreviewed candidate');
+select is(
+  (select status::text from public.data_quality_issues
+   where id = 'bd000000-0000-4000-8000-000000000001'),
+  'open', 'the workspace B issue is still open');
+select is(
+  (select count(*)::int from public.import_jobs
+   where workspace_id = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' and status = 'committed'),
+  0, 'no workspace B import was committed by workspace A activity');
 
 select * from finish();
 rollback;
