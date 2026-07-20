@@ -157,7 +157,8 @@ export async function commitImportPlan(
     }
 
     // 3. Scoped external identifiers, addressed by already-staged row index.
-    for (const batch of chunk(buildIdentifiers(plan), IDENTIFIER_BATCH_SIZE)) {
+    const identifiers = buildIdentifiers(plan);
+    for (const batch of chunk(identifiers, IDENTIFIER_BATCH_SIZE)) {
       await rpc(client, 'stage_external_identifiers', {
         p_import_job_id: importJobId,
         p_identifiers: batch,
@@ -189,7 +190,11 @@ export async function commitImportPlan(
     batches += 1;
 
     // 5. Finalize. The database recounts everything and refuses to commit
-    //    anything incomplete or inconsistent with these expectations.
+    //    anything incomplete or inconsistent with these expectations. All six
+    //    counts are ALWAYS supplied, explicitly, even when the true count is
+    //    zero — finalize_import_job has no default and no null-skip for any
+    //    of them, so there is no way to accidentally omit an expectation just
+    //    because a derivative happens to be empty for this plan.
     const finalized = await rpc<{
       id: string;
       status: string;
@@ -205,7 +210,9 @@ export async function commitImportPlan(
       p_expected_source_rows: plan.sourceRowCount,
       p_expected_accepted_rows: plan.acceptedRowCount,
       p_expected_issue_rows: plan.issueRowCount,
+      p_expected_total_issues: plan.issues.length,
       p_expected_crosswalks: plan.crosswalks.length,
+      p_expected_external_identifiers: identifiers.length,
     });
 
     return {

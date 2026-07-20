@@ -312,7 +312,7 @@ select has_function('public'::name, 'stage_external_identifiers'::name,
 select has_function('public'::name, 'stage_import_derivatives'::name,
   array['uuid', 'jsonb', 'jsonb'], 'stage_import_derivatives exists');
 select has_function('public'::name, 'finalize_import_job'::name,
-  array['uuid', 'text', 'integer', 'integer', 'integer', 'integer'],
+  array['uuid', 'text', 'integer', 'integer', 'integer', 'integer', 'integer', 'integer'],
   'finalize_import_job exists');
 select has_function('public'::name, 'fail_import_job'::name,
   array['uuid', 'text', 'text'], 'fail_import_job exists');
@@ -353,7 +353,8 @@ select is(
 -- Least privilege on the governed entry points ------------------------------------------------
 select ok(
   not has_function_privilege('anon',
-    'public.finalize_import_job(uuid, text, integer, integer, integer, integer)', 'execute'),
+    'public.finalize_import_job(uuid, text, integer, integer, integer, integer, integer, integer)',
+    'execute'),
   'anon cannot execute finalize_import_job'
 );
 select ok(
@@ -362,7 +363,8 @@ select ok(
 );
 select ok(
   has_function_privilege('authenticated',
-    'public.finalize_import_job(uuid, text, integer, integer, integer, integer)', 'execute'),
+    'public.finalize_import_job(uuid, text, integer, integer, integer, integer, integer, integer)',
+    'execute'),
   'authenticated may execute finalize_import_job'
 );
 select ok(

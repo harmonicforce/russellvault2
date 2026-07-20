@@ -320,7 +320,7 @@ select throws_ok(
   '42501', null, 'an unknown issue id is refused as unauthorized');
 select throws_ok(
   $$select public.finalize_import_job('00000000-0000-4000-8000-0000000000ff',
-      'idem-key-00000001', 1, 1, 0)$$,
+      'idem-key-00000001', 1, 1, 0, 0, 0, 0)$$,
   '42501', null, 'an unknown import job id is refused as unauthorized');
 
 -- The audit log recorded every governed action ---------------------------------------------------------

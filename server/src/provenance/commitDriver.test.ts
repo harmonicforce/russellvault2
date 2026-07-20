@@ -62,9 +62,9 @@ function makeRecordingClient(
               source_rows: args.p_expected_source_rows,
               accepted_rows: args.p_expected_accepted_rows,
               issue_rows: args.p_expected_issue_rows,
-              issues: 1,
+              issues: args.p_expected_total_issues,
               crosswalks: args.p_expected_crosswalks,
-              external_identifiers: 2149,
+              external_identifiers: args.p_expected_external_identifiers,
             },
             error: null,
           };
@@ -317,7 +317,34 @@ describe('expectations sent to finalize match the plan', () => {
     expect(finalize.args.p_expected_source_rows).toBe(2149);
     expect(finalize.args.p_expected_accepted_rows).toBe(plan.acceptedRowCount);
     expect(finalize.args.p_expected_issue_rows).toBe(plan.issueRowCount);
+    expect(finalize.args.p_expected_total_issues).toBe(plan.issues.length);
     expect(finalize.args.p_expected_crosswalks).toBe(plan.crosswalks.length);
+    expect(finalize.args.p_expected_external_identifiers).toBe(
+      plan.records.filter((r) => r.sourceRowKey).length
+    );
+  });
+
+  it('never sends a null or undefined expected count, even when a derivative is empty', async () => {
+    // checks.json produces zero crosswalk candidates in this adapter, which is
+    // exactly the shape that previously let a count be silently omitted.
+    const plan = commitPlan('checks.json');
+    expect(plan.crosswalks.length).toBe(0);
+    const { client, calls } = makeRecordingClient();
+    await commitImportPlan(client as never, WS, SYS, plan);
+
+    const finalize = calls.find((c) => c.fn === 'finalize_import_job')!;
+    for (const key of [
+      'p_expected_source_rows',
+      'p_expected_accepted_rows',
+      'p_expected_issue_rows',
+      'p_expected_total_issues',
+      'p_expected_crosswalks',
+      'p_expected_external_identifiers',
+    ]) {
+      expect(finalize.args[key]).not.toBeNull();
+      expect(finalize.args[key]).not.toBeUndefined();
+    }
+    expect(finalize.args.p_expected_crosswalks).toBe(0);
   });
 
   it('sends the declared source row count and totals when opening the job', async () => {

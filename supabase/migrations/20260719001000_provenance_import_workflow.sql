@@ -299,7 +299,15 @@ revoke all on function app.open_job_for_caller(uuid, uuid) from public;
 
 -- Stage raw source records --------------------------------------------------------
 -- The exact raw payload, written before anything derived from it. Idempotent
--- per (job, source_row_index), so a retried batch inserts nothing new.
+-- per (job, source_row_index) ONLY when the retried content is byte-identical
+-- to what is already stored: a repeated batch whose immutable staged values
+-- (source_row_key, raw_payload, normalized_hash, parse_status, parser_output,
+-- parser_version, mapping_version, errors, warnings) match is a safe no-op. A
+-- retry that differs in any of those fields at the same row index is a real
+-- content conflict, not a retry, and the ENTIRE batch is rejected
+-- transactionally rather than silently dropped by ON CONFLICT DO NOTHING —
+-- source_records is append-only (migration 7), so there is no way to correct
+-- a mismatched row in place; the caller must resolve the conflict and retry.
 create function public.stage_source_records(
   p_import_job_id uuid,
   p_records jsonb
@@ -315,10 +323,48 @@ declare
   v_batch integer;
   v_inserted integer;
   v_total integer;
+  v_conflict_index integer;
 begin
   v_uid := app.require_uid();
   v_batch := app.assert_batch_size(p_records, 500);
   v_job := app.open_job_for_caller(p_import_job_id, v_uid);
+
+  with incoming as (
+    select
+      (r->>'source_row_index')::integer as source_row_index,
+      nullif(r->>'source_row_key', '') as source_row_key,
+      r->'raw_payload' as raw_payload,
+      r->>'normalized_hash' as normalized_hash,
+      (r->>'parse_status')::public.source_parse_status as parse_status,
+      case when jsonb_typeof(r->'parser_output') = 'null' then null
+           else r->'parser_output' end as parser_output,
+      coalesce(r->'errors', '[]'::jsonb) as errors,
+      coalesce(r->'warnings', '[]'::jsonb) as warnings
+    from jsonb_array_elements(p_records) as r
+  )
+  select min(i.source_row_index) into v_conflict_index
+  from incoming i
+  join public.source_records sr
+    on sr.workspace_id = v_job.workspace_id
+   and sr.import_job_id = v_job.id
+   and sr.source_row_index = i.source_row_index
+  where sr.source_row_key is distinct from i.source_row_key
+     or sr.raw_payload is distinct from i.raw_payload
+     or sr.normalized_hash is distinct from i.normalized_hash
+     or sr.parse_status is distinct from i.parse_status
+     or sr.parser_output is distinct from i.parser_output
+     or sr.parser_version is distinct from v_job.parser_version
+     or sr.mapping_version is distinct from v_job.mapping_version
+     or sr.errors is distinct from i.errors
+     or sr.warnings is distinct from i.warnings;
+
+  if v_conflict_index is not null then
+    raise exception
+      'staged retry at source row index % conflicts with already-stored content; '
+      'a retry must resend byte-identical staged values for an already-staged row',
+      v_conflict_index
+      using errcode = '23514';
+  end if;
 
   with incoming as (
     select
@@ -374,6 +420,15 @@ grant execute on function public.stage_source_records(uuid, jsonb) to authentica
 -- Stage scoped external identifiers -------------------------------------------------
 -- Addressed by source_row_index, so the raw row MUST already exist: the join
 -- below yields nothing otherwise and the identifier is refused.
+--
+-- Content-idempotent retry: the natural key is (workspace, source system,
+-- scope, identifier_type, identifier_value). A retry that resolves to the
+-- SAME source_record_id as what is already stored is a safe no-op. A retry
+-- that resolves the identical scoped identifier to a DIFFERENT source_record
+-- is a real conflict — it would otherwise vanish silently behind
+-- ON CONFLICT DO NOTHING and leave the caller believing its row was
+-- recorded — so it is rejected transactionally instead, and the original
+-- immutable source association is never mutated.
 create function public.stage_external_identifiers(
   p_import_job_id uuid,
   p_identifiers jsonb
@@ -389,6 +444,7 @@ declare
   v_batch integer;
   v_inserted integer;
   v_unresolved integer;
+  v_conflict_index integer;
 begin
   v_uid := app.require_uid();
   v_batch := app.assert_batch_size(p_identifiers, 500);
@@ -410,6 +466,36 @@ begin
       'raw records must be written first',
       v_unresolved
       using errcode = 'check_violation';
+  end if;
+
+  with incoming as (
+    select
+      (r->>'source_row_index')::integer as source_row_index,
+      r->>'scope' as scope,
+      r->>'identifier_type' as identifier_type,
+      r->>'identifier_value' as identifier_value
+    from jsonb_array_elements(p_identifiers) as r
+  )
+  select min(i.source_row_index) into v_conflict_index
+  from incoming i
+  join public.source_records sr
+    on sr.import_job_id = v_job.id
+   and sr.source_row_index = i.source_row_index
+  join public.external_identifiers e
+    on e.workspace_id = v_job.workspace_id
+   and e.source_system_id = v_job.source_system_id
+   and e.scope = i.scope
+   and e.identifier_type = i.identifier_type
+   and e.identifier_value = i.identifier_value
+  where e.source_record_id <> sr.id;
+
+  if v_conflict_index is not null then
+    raise exception
+      'staged retry at source row index % conflicts with an already-recorded '
+      'external identifier bound to a different source record; the original '
+      'source association is immutable',
+      v_conflict_index
+      using errcode = '23514';
   end if;
 
   with ins as (
@@ -549,13 +635,25 @@ grant execute on function public.stage_import_derivatives(uuid, jsonb, jsonb) to
 -- The ONLY path to committed status. Recounts what is actually stored and
 -- refuses to commit anything incomplete or inconsistent, so a partially
 -- populated job can never be marked committed.
+--
+-- EVERY required derivative gets an explicit expected count, and every one of
+-- them is mandatory: source records, accepted records, issue-bearing source
+-- rows, TOTAL data-quality issues (including job-level issues with no
+-- source_record_id, e.g. a duplicate-candidate finding), crosswalk
+-- candidates, and external identifiers. None of the six has a default and
+-- none may be passed as NULL — a caller cannot omit an expectation just
+-- because the true count happens to be zero, closing the gap where an
+-- omitted-because-zero derivative (a missing job-level issue, no external
+-- identifiers, no crosswalk candidates) would previously commit unverified.
 create function public.finalize_import_job(
   p_import_job_id uuid,
   p_idempotency_key text,
   p_expected_source_rows integer,
   p_expected_accepted_rows integer,
   p_expected_issue_rows integer,
-  p_expected_crosswalks integer default null
+  p_expected_total_issues integer,
+  p_expected_crosswalks integer,
+  p_expected_external_identifiers integer
 )
 returns jsonb
 language plpgsql
@@ -576,6 +674,16 @@ declare
 begin
   if p_idempotency_key is null or btrim(p_idempotency_key) = '' then
     raise exception 'an idempotency key is required to commit an import'
+      using errcode = '22023';
+  end if;
+
+  if p_expected_source_rows is null or p_expected_accepted_rows is null
+     or p_expected_issue_rows is null or p_expected_total_issues is null
+     or p_expected_crosswalks is null or p_expected_external_identifiers is null then
+    raise exception
+      'all six expected derivative counts (source rows, accepted rows, '
+      'issue rows, total issues, crosswalk candidates, external identifiers) '
+      'are required; none may be omitted, even when the true count is zero'
       using errcode = '22023';
   end if;
 
@@ -634,9 +742,17 @@ begin
     raise exception 'expected % issue rows but % are stored',
       p_expected_issue_rows, v_issue_rows using errcode = 'check_violation';
   end if;
-  if p_expected_crosswalks is not null and p_expected_crosswalks <> v_crosswalks then
+  if p_expected_total_issues is distinct from v_issues then
+    raise exception 'expected % total data-quality issues but % are stored',
+      p_expected_total_issues, v_issues using errcode = 'check_violation';
+  end if;
+  if p_expected_crosswalks is distinct from v_crosswalks then
     raise exception 'expected % crosswalk candidates but % are stored',
       p_expected_crosswalks, v_crosswalks using errcode = 'check_violation';
+  end if;
+  if p_expected_external_identifiers is distinct from v_identifiers then
+    raise exception 'expected % external identifiers but % are stored',
+      p_expected_external_identifiers, v_identifiers using errcode = 'check_violation';
   end if;
 
   -- Every malformed row must have produced an issue, so evidence is never lost.
@@ -705,10 +821,12 @@ begin
 end
 $$;
 
-revoke all on function public.finalize_import_job(uuid, text, integer, integer, integer, integer)
-  from public, anon;
-grant execute on function public.finalize_import_job(uuid, text, integer, integer, integer, integer)
-  to authenticated;
+revoke all on function public.finalize_import_job(
+  uuid, text, integer, integer, integer, integer, integer, integer
+) from public, anon;
+grant execute on function public.finalize_import_job(
+  uuid, text, integer, integer, integer, integer, integer, integer
+) to authenticated;
 
 -- Fail an attempt visibly ------------------------------------------------------------------
 -- An interrupted or doomed upload is marked failed rather than left ambiguous.

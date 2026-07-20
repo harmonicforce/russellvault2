@@ -216,6 +216,119 @@ select is(
   '{"check_id":"OP-002","actual":"not-a-number"}'::jsonb,
   'the malformed row retained its exact raw payload');
 
+-- A retry is idempotent only when CONTENT-identical, not merely index-identical ---------------
+-- A repeated row index whose immutable staged values differ from what is
+-- already stored is a real conflict, not a retry: it is rejected
+-- transactionally, identifying the offending source-row index, rather than
+-- silently disappearing behind ON CONFLICT DO NOTHING.
+
+-- Changed raw payload at the same row index -----------------------------------------------------
+select throws_ok(
+  format($$select public.stage_source_records(%L, jsonb_build_array(
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":999}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb)))$$,
+    pg_temp.get('job'), pg_temp.h('r0-changed')),
+  '23514', null,
+  'a retry with a changed raw payload at an already-staged row index is refused');
+
+-- Changed normalized hash at the same row index (payload text unchanged) ------------------------
+select throws_ok(
+  format($$select public.stage_source_records(%L, jsonb_build_array(
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":5}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb)))$$,
+    pg_temp.get('job'), pg_temp.h('a-different-hash')),
+  '23514', null,
+  'a retry with a changed normalized hash at an already-staged row index is refused');
+
+-- Changed parse result at the same row index -----------------------------------------------------
+select throws_ok(
+  format($$select public.stage_source_records(%L, jsonb_build_array(
+     jsonb_build_object(
+       'source_row_index', 1, 'source_row_key', 'OP-002',
+       'raw_payload', '{"check_id":"OP-002","actual":"not-a-number"}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-002"}'::jsonb)))$$,
+    pg_temp.get('job'), pg_temp.h('r1')),
+  '23514', null,
+  'a retry that reclassifies an already-staged row''s parse result is refused');
+
+-- A mixed batch containing an identical row and a conflicting row rejects the WHOLE batch --------
+-- (the batch also carries a genuinely new row index, proving no partial insert occurs)
+select is(
+  (select count(*)::int from public.source_records where import_job_id = pg_temp.get('job')),
+  3,
+  'before the mixed batch: exactly three rows staged');
+
+select throws_ok(
+  format($$select public.stage_source_records(%L, jsonb_build_array(
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":5}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb),
+     jsonb_build_object(
+       'source_row_index', 1, 'source_row_key', 'OP-002',
+       'raw_payload', '{"check_id":"OP-002","actual":"CHANGED"}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'malformed',
+       'errors', '[{"field":"actual","code":"not_numeric"}]'::jsonb),
+     jsonb_build_object(
+       'source_row_index', 97, 'raw_payload', '{"new":true}'::jsonb,
+       'normalized_hash', %L, 'parse_status', 'parsed',
+       'parser_output', '{}'::jsonb)))$$,
+    pg_temp.get('job'), pg_temp.h('r0'), pg_temp.h('mixed-conflict'), pg_temp.h('r97')),
+  '23514', null,
+  'a mixed batch with one conflicting row rejects the entire batch');
+
+select is(
+  (select count(*)::int from public.source_records where import_job_id = pg_temp.get('job')),
+  3,
+  'the rejected mixed batch left the row count unchanged: no partial insert');
+
+select is(
+  (select count(*)::int from public.source_records
+   where import_job_id = pg_temp.get('job') and source_row_index = 97),
+  0,
+  'the genuinely-new row in the rejected mixed batch was not inserted');
+
+select is(
+  (select raw_payload from public.source_records
+   where import_job_id = pg_temp.get('job') and source_row_index = 1),
+  '{"check_id":"OP-002","actual":"not-a-number"}'::jsonb,
+  'the conflicting row''s stored content is unmodified after the rejected retry');
+
+-- An identical retry alongside the same content-identical rows is STILL a safe no-op -------------
+select is(
+  (select (public.stage_source_records(pg_temp.get('job'), jsonb_build_array(
+     jsonb_build_object(
+       'source_row_index', 0, 'source_row_key', 'OP-001',
+       'raw_payload', '{"check_id":"OP-001","actual":5}'::jsonb,
+       'normalized_hash', pg_temp.h('r0'), 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-001"}'::jsonb),
+     jsonb_build_object(
+       'source_row_index', 1, 'source_row_key', 'OP-002',
+       'raw_payload', '{"check_id":"OP-002","actual":"not-a-number"}'::jsonb,
+       'normalized_hash', pg_temp.h('r1'), 'parse_status', 'malformed',
+       'errors', '[{"field":"actual","code":"not_numeric"}]'::jsonb),
+     jsonb_build_object(
+       'source_row_index', 2, 'source_row_key', 'OP-003',
+       'raw_payload', '{"check_id":"OP-003","actual":7}'::jsonb,
+       'normalized_hash', pg_temp.h('r2'), 'parse_status', 'parsed',
+       'parser_output', '{"check_id":"OP-003"}'::jsonb)
+   ))->>'inserted')::int),
+  0,
+  'a fully content-identical retry of the whole batch reports zero newly inserted rows');
+
+select is(
+  (select count(*)::int from public.source_records where import_job_id = pg_temp.get('job')),
+  3,
+  'a fully content-identical retry still leaves exactly three rows staged');
+
 -- Staging more rows than declared is refused ---------------------------------------------------
 select throws_ok(
   format($$select public.stage_source_records(%L, jsonb_build_array(
@@ -243,7 +356,7 @@ select lives_ok(
   'only one of the five rows is staged');
 
 select throws_ok(
-  format($$select public.finalize_import_job(%L, 'idem-partial-0001', 1, 1, 0)$$,
+  format($$select public.finalize_import_job(%L, 'idem-partial-0001', 1, 1, 0, 0, 0, 0)$$,
     pg_temp.get('partial')),
   '23514', null,
   'an incomplete job cannot be finalized');
@@ -291,6 +404,38 @@ select is(
   0,
   'restaging an identifier is idempotent');
 
+-- A conflicting alias request — the SAME scoped identifier claimed for a
+-- DIFFERENT source row — fails loudly instead of silently vanishing behind
+-- ON CONFLICT DO NOTHING, and the original immutable source association is
+-- never mutated.
+select throws_ok(
+  format($$select public.stage_external_identifiers(%L,
+     '[{"source_row_index":1,"scope":"checks.op","identifier_type":"check_id","identifier_value":"OP-001"}]'::jsonb)$$,
+    pg_temp.get('job')),
+  '23514', null,
+  'restaging the same scoped identifier bound to a DIFFERENT source row is refused');
+
+select is(
+  (select count(*)::int from public.external_identifiers
+   where scope = 'checks.op' and identifier_type = 'check_id'
+     and identifier_value = 'OP-001'),
+  1,
+  'the conflicting retry left exactly one OP-001 identifier recorded');
+
+select is(
+  (select sr.source_row_index from public.external_identifiers e
+   join public.source_records sr on sr.id = e.source_record_id
+   where e.scope = 'checks.op' and e.identifier_type = 'check_id'
+     and e.identifier_value = 'OP-001'),
+  0,
+  'the original immutable source association (row 0) was not overwritten by the conflicting retry');
+
+select is(
+  (select count(*)::int from public.external_identifiers
+   where source_system_id = pg_temp.get('sys')),
+  3,
+  'the conflicting retry inserted no new identifier rows');
+
 select is(
   (select (public.stage_import_derivatives(pg_temp.get('job'),
      '[{"source_row_index":1,"issue_type":"malformed_row","severity":"error",
@@ -324,25 +469,49 @@ select is(
 
 -- Finalization: wrong expectations are refused -------------------------------------------------------
 select throws_ok(
-  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 99, 2, 1)$$,
+  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 99, 2, 1, 1, 1, 3)$$,
     pg_temp.get('job')),
   '23514', null,
   'finalize refuses a mismatched source row expectation');
 
 select throws_ok(
-  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 3, 1)$$,
+  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 3, 1, 1, 1, 3)$$,
     pg_temp.get('job')),
   '23514', null,
   'finalize refuses a mismatched accepted row expectation');
 
 select throws_ok(
-  format($$select public.finalize_import_job(%L, 'wrong-key-000001', 3, 2, 1)$$,
+  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 2, 1, 99, 1, 3)$$,
+    pg_temp.get('job')),
+  '23514', null,
+  'finalize refuses a mismatched total data-quality issue expectation');
+
+select throws_ok(
+  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 2, 1, 1, 99, 3)$$,
+    pg_temp.get('job')),
+  '23514', null,
+  'finalize refuses a mismatched crosswalk candidate expectation');
+
+select throws_ok(
+  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 2, 1, 1, 1, 99)$$,
+    pg_temp.get('job')),
+  '23514', null,
+  'finalize refuses a mismatched external identifier expectation');
+
+select throws_ok(
+  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 2, 1, 1, 1, null)$$,
+    pg_temp.get('job')),
+  '22023', null,
+  'finalize refuses an omitted (null) external identifier expectation, even though the true count is nonzero');
+
+select throws_ok(
+  format($$select public.finalize_import_job(%L, 'wrong-key-000001', 3, 2, 1, 1, 1, 3)$$,
     pg_temp.get('job')),
   '22023', null,
   'finalize refuses a mismatched idempotency key');
 
 select throws_ok(
-  format($$select public.finalize_import_job(%L, null, 3, 2, 1)$$, pg_temp.get('job')),
+  format($$select public.finalize_import_job(%L, null, 3, 2, 1, 1, 1, 3)$$, pg_temp.get('job')),
   '22023', null,
   'finalize refuses a missing idempotency key');
 
@@ -351,12 +520,18 @@ select is(
   'preview',
   'every refused finalization left the job uncommitted');
 
--- Finalization: correct -----------------------------------------------------------------------------
 select is(
-  (select (public.finalize_import_job(pg_temp.get('job'), 'idem-key-00000001', 3, 2, 1, 1)
+  (select count(*)::int from public.audit_events
+   where event_type = 'import_committed' and import_job_id = pg_temp.get('job')),
+  0,
+  'none of the refused finalizations wrote an import_committed event for this job');
+
+-- Finalization: correct -- a corrected retry finishes the SAME open job ------------------------------
+select is(
+  (select (public.finalize_import_job(pg_temp.get('job'), 'idem-key-00000001', 3, 2, 1, 1, 1, 3)
    )->>'status'),
   'committed',
-  'the job finalizes with correct expectations');
+  'a corrected retry with all six matching expectations finalizes the same open job');
 
 select results_eq(
   $$select source_row_count, accepted_row_count, issue_row_count
@@ -370,7 +545,7 @@ select is(
 
 -- Re-finalizing is refused ----------------------------------------------------------------------------
 select throws_ok(
-  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 2, 1)$$,
+  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 2, 1, 1, 1, 3)$$,
     pg_temp.get('job')),
   '23514', null,
   'an already-committed job cannot be finalized again');
@@ -424,7 +599,7 @@ select lives_ok(
   'the new version stages its own raw rows');
 
 select lives_ok(
-  format($$select public.finalize_import_job(%L, 'idem-key-00000002', 1, 1, 0)$$,
+  format($$select public.finalize_import_job(%L, 'idem-key-00000002', 1, 1, 0, 0, 0, 0)$$,
     pg_temp.get('job2')),
   'the new parser version commits independently');
 
@@ -563,7 +738,7 @@ select throws_ok(
   'a viewer cannot stage raw rows');
 
 select throws_ok(
-  format($$select public.finalize_import_job(%L, 'idem-key-00000002', 1, 1, 0)$$,
+  format($$select public.finalize_import_job(%L, 'idem-key-00000002', 1, 1, 0, 0, 0, 0)$$,
     pg_temp.get('job2')),
   '42501', null,
   'a viewer cannot finalize an import');
@@ -592,7 +767,7 @@ select is((select count(*)::int from public.source_records), 0,
   'workspace B sees none of workspace A''s raw records');
 
 select throws_ok(
-  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 2, 1)$$,
+  format($$select public.finalize_import_job(%L, 'idem-key-00000001', 3, 2, 1, 1, 1, 3)$$,
     pg_temp.get('job')),
   '42501', null,
   'workspace B cannot finalize a workspace A import');
@@ -609,6 +784,233 @@ select throws_ok(
     pg_temp.get('sys'), pg_temp.h('ff'), pg_temp.h('fc')),
   '42501', null,
   'workspace B cannot open a job against a workspace A source system');
+
+select pg_temp.logout();
+
+-- The complete 2,149-row Whatnot import: the full finalization-count contract ------------------------
+-- A synthetic but full-scale stand-in for the real whatnot_purchases.json fixture
+-- (2,149 rows), staged in batches under the 500-row ceiling, proving every leg
+-- of the finalize_import_job count contract: a job-level (source_row_index
+-- NULL) duplicate-candidate issue exactly like the real adapter raises for
+-- colliding seller spellings, row-level malformed-row issues, crosswalk
+-- candidates, and scoped external identifiers.
+create function pg_temp.stage_whatnot_batch(p_job uuid, p_start integer, p_end integer)
+returns jsonb language sql as $$
+  select public.stage_source_records(
+    p_job,
+    (select jsonb_agg(
+       case when i in (2000, 2001, 2002) then
+         jsonb_build_object(
+           'source_row_index', i,
+           'source_row_key', 'WN-' || lpad(i::text, 6, '0'),
+           'raw_payload', jsonb_build_object(
+             'seller', 'Synthetic Seller', 'row', i, 'amount', 'not-a-number'),
+           'normalized_hash', encode(sha256(('whatnot-row-' || i)::bytea), 'hex'),
+           'parse_status', 'malformed',
+           'errors', jsonb_build_array(
+             jsonb_build_object('field', 'amount', 'code', 'not_numeric'))
+         )
+       else
+         jsonb_build_object(
+           'source_row_index', i,
+           'source_row_key', 'WN-' || lpad(i::text, 6, '0'),
+           'raw_payload', jsonb_build_object(
+             'seller', 'Synthetic Seller', 'row', i, 'amount', 12.34),
+           'normalized_hash', encode(sha256(('whatnot-row-' || i)::bytea), 'hex'),
+           'parse_status', 'parsed',
+           'parser_output', jsonb_build_object('seller', 'Synthetic Seller', 'row', i)
+         )
+       end)
+     from generate_series(p_start, p_end - 1) as i)
+  );
+$$;
+
+create function pg_temp.stage_whatnot_ids_batch(p_job uuid, p_start integer, p_end integer)
+returns jsonb language sql as $$
+  select public.stage_external_identifiers(
+    p_job,
+    (select jsonb_agg(
+       jsonb_build_object(
+         'source_row_index', i,
+         'scope', 'fixture.whatnot_purchases',
+         'identifier_type', 'source_row_key',
+         'identifier_value', 'WN-' || lpad(i::text, 6, '0'))
+     )
+     from generate_series(p_start, p_end - 1) as i)
+  );
+$$;
+
+select pg_temp.login('22222222-2222-2222-2222-222222222222');
+
+select lives_ok(
+  format($$select pg_temp.put('whatnot', (public.begin_import_job(
+      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', %L, 'whatnot_purchases.json',
+      %L, %L, '1.0.0', '1.0.0', 'idem-whatnot-2149-001', 2149,
+      '{"row_count":2149}'::jsonb)->>'id')::uuid)$$,
+    pg_temp.get('sys'), pg_temp.h('whatnot-file'), pg_temp.h('whatnot-content')),
+  'a 2,149-row Whatnot-shaped import job is opened');
+
+select lives_ok($$select pg_temp.stage_whatnot_batch(pg_temp.get('whatnot'), 0, 500)$$,
+  'Whatnot batch 1/5 (rows 0-499) staged');
+select lives_ok($$select pg_temp.stage_whatnot_batch(pg_temp.get('whatnot'), 500, 1000)$$,
+  'Whatnot batch 2/5 (rows 500-999) staged');
+select lives_ok($$select pg_temp.stage_whatnot_batch(pg_temp.get('whatnot'), 1000, 1500)$$,
+  'Whatnot batch 3/5 (rows 1000-1499) staged');
+select lives_ok($$select pg_temp.stage_whatnot_batch(pg_temp.get('whatnot'), 1500, 2000)$$,
+  'Whatnot batch 4/5 (rows 1500-1999) staged');
+select lives_ok($$select pg_temp.stage_whatnot_batch(pg_temp.get('whatnot'), 2000, 2149)$$,
+  'Whatnot batch 5/5 (rows 2000-2148, including 3 malformed) staged');
+
+select is(
+  (select count(*)::int from public.source_records
+   where import_job_id = pg_temp.get('whatnot')),
+  2149,
+  'all 2,149 Whatnot-shaped source rows are staged');
+select is(
+  (select count(*)::int from public.source_records
+   where import_job_id = pg_temp.get('whatnot') and parse_status = 'parsed'),
+  2146,
+  '2,146 rows parsed');
+select is(
+  (select count(*)::int from public.source_records
+   where import_job_id = pg_temp.get('whatnot') and parse_status = 'malformed'),
+  3,
+  '3 rows malformed');
+
+-- A retry of an already-staged batch is a content-identical, safe no-op at scale.
+select is(
+  (select (pg_temp.stage_whatnot_batch(pg_temp.get('whatnot'), 0, 500))->>'inserted')::int,
+  0,
+  'retrying an already-staged Whatnot batch inserts nothing new');
+
+select lives_ok($$select pg_temp.stage_whatnot_ids_batch(pg_temp.get('whatnot'), 0, 500)$$,
+  'Whatnot identifiers batch 1/5 staged');
+select lives_ok($$select pg_temp.stage_whatnot_ids_batch(pg_temp.get('whatnot'), 500, 1000)$$,
+  'Whatnot identifiers batch 2/5 staged');
+select lives_ok($$select pg_temp.stage_whatnot_ids_batch(pg_temp.get('whatnot'), 1000, 1500)$$,
+  'Whatnot identifiers batch 3/5 staged');
+select lives_ok($$select pg_temp.stage_whatnot_ids_batch(pg_temp.get('whatnot'), 1500, 2000)$$,
+  'Whatnot identifiers batch 4/5 staged');
+select lives_ok($$select pg_temp.stage_whatnot_ids_batch(pg_temp.get('whatnot'), 2000, 2149)$$,
+  'Whatnot identifiers batch 5/5 staged');
+
+select is(
+  (select count(*)::int from public.external_identifiers e
+   join public.source_records sr on sr.id = e.source_record_id
+   where sr.import_job_id = pg_temp.get('whatnot')),
+  2149,
+  'exactly 2,149 scoped external identifiers staged, one per Whatnot row');
+
+-- Row-level issues for the 3 malformed rows, PLUS one job-level (source_row_index
+-- NULL) duplicate-candidate issue -- exactly the shape the real adapter produces
+-- when two seller spellings normalize to the same form.
+select lives_ok(
+  format($$select public.stage_import_derivatives(%L,
+    '[{"source_row_index":2000,"issue_type":"malformed_row","severity":"error",
+       "message":"amount is not numeric"},
+      {"source_row_index":2001,"issue_type":"malformed_row","severity":"error",
+       "message":"amount is not numeric"},
+      {"source_row_index":2002,"issue_type":"malformed_row","severity":"error",
+       "message":"amount is not numeric"},
+      {"source_row_index":null,"issue_type":"duplicate_candidate","severity":"warning",
+       "message":"2 spellings normalize to the same form and were NOT merged",
+       "raw_payload_snapshot":{"spellings":["Synthetic Seller","synthetic  seller"]}}]'::jsonb,
+    '[{"source_row_index":10,"proposed_entity_type":"party_candidate",
+       "proposed_entity_key":"SYNTHETIC-SELLER","match_method":"normalized_text","confidence":0.5},
+      {"source_row_index":11,"proposed_entity_type":"party_candidate",
+       "proposed_entity_key":"SYNTHETIC-SELLER","match_method":"normalized_text","confidence":0.5}]'::jsonb)$$,
+    pg_temp.get('whatnot')),
+  'Whatnot issues and crosswalk candidates staged');
+
+select is(
+  (select count(*)::int from public.data_quality_issues
+   where import_job_id = pg_temp.get('whatnot')),
+  4,
+  'four total data-quality issues: 3 malformed-row issues + 1 job-level duplicate-candidate issue');
+select is(
+  (select count(*)::int from public.data_quality_issues
+   where import_job_id = pg_temp.get('whatnot') and source_record_id is null),
+  1,
+  'exactly one job-level issue carries no source_record_id');
+select is(
+  (select count(*)::int from public.source_crosswalks c
+   join public.source_records sr on sr.id = c.source_record_id
+   where sr.import_job_id = pg_temp.get('whatnot')),
+  2,
+  'two crosswalk candidates staged for the colliding seller spellings');
+
+-- Omitting the job-level duplicate-candidate issue from the total blocks finalization ------------
+select throws_ok(
+  format($$select public.finalize_import_job(%L, 'idem-whatnot-2149-001',
+      2149, 2146, 3, 3, 2, 2149)$$,
+    pg_temp.get('whatnot')),
+  '23514', null,
+  'expecting only the 3 row-level issues (omitting the job-level duplicate-candidate issue) blocks finalization');
+
+-- Omitting external identifiers blocks finalization -----------------------------------------------
+select throws_ok(
+  format($$select public.finalize_import_job(%L, 'idem-whatnot-2149-001',
+      2149, 2146, 3, 4, 2, 0)$$,
+    pg_temp.get('whatnot')),
+  '23514', null,
+  'expecting zero external identifiers when 2,149 are actually staged blocks finalization');
+
+-- Omitting crosswalk candidates blocks finalization -----------------------------------------------
+select throws_ok(
+  format($$select public.finalize_import_job(%L, 'idem-whatnot-2149-001',
+      2149, 2146, 3, 4, 0, 2149)$$,
+    pg_temp.get('whatnot')),
+  '23514', null,
+  'expecting zero crosswalk candidates when 2 are actually staged blocks finalization');
+
+-- Over-staging relative to expectation blocks finalization (expects fewer crosswalks than staged) --
+select throws_ok(
+  format($$select public.finalize_import_job(%L, 'idem-whatnot-2149-001',
+      2149, 2146, 3, 4, 1, 2149)$$,
+    pg_temp.get('whatnot')),
+  '23514', null,
+  'expecting one crosswalk candidate when two are staged (over-staged relative to expectation) blocks finalization');
+
+-- Under-staging relative to expectation blocks finalization (expects more identifiers than staged) --
+select throws_ok(
+  format($$select public.finalize_import_job(%L, 'idem-whatnot-2149-001',
+      2149, 2146, 3, 4, 2, 2150)$$,
+    pg_temp.get('whatnot')),
+  '23514', null,
+  'expecting 2,150 external identifiers when only 2,149 are staged (under-staged relative to expectation) blocks finalization');
+
+select is(
+  (select status::text from public.import_jobs where id = pg_temp.get('whatnot')),
+  'preview',
+  'every rejected Whatnot finalization left the job uncommitted, status=preview');
+
+select is(
+  (select count(*)::int from public.audit_events
+   where event_type = 'import_committed' and import_job_id = pg_temp.get('whatnot')),
+  0,
+  'no rejected Whatnot finalization wrote an import_committed event');
+
+-- A corrected retry, with all six expected counts matching exactly, finishes the same open job -----
+select is(
+  (select (public.finalize_import_job(pg_temp.get('whatnot'), 'idem-whatnot-2149-001',
+     2149, 2146, 3, 4, 2, 2149))->>'status'),
+  'committed',
+  'the complete 2,149-row Whatnot import commits once every expected count is correct');
+
+select results_eq(
+  $$select source_row_count, accepted_row_count, issue_row_count
+    from public.import_jobs where id = (select v from ids where k = 'whatnot')$$,
+  $$values (2149, 2146, 3)$$,
+  'the committed Whatnot job carries the reconciled 2,149/2,146/3 counts');
+
+select is(
+  (select count(*)::int from public.audit_events
+   where import_job_id = pg_temp.get('whatnot') and event_type = 'import_started'),
+  1, 'exactly one import_started audit event for the Whatnot job');
+select is(
+  (select count(*)::int from public.audit_events
+   where import_job_id = pg_temp.get('whatnot') and event_type = 'import_committed'),
+  1, 'exactly one import_committed audit event for the Whatnot job');
 
 select pg_temp.logout();
 

@@ -150,7 +150,7 @@ select throws_ok(
   '42501', null, 'anon cannot execute confirm_source_crosswalk');
 select throws_ok(
   $$select public.finalize_import_job('a6000000-0000-4000-8000-000000000001',
-      'idem-a-000000001', 1, 1, 0)$$,
+      'idem-a-000000001', 1, 1, 0, 0, 0, 0)$$,
   '42501', null, 'anon cannot execute finalize_import_job');
 select throws_ok(
   $$select public.register_source_system('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -186,7 +186,7 @@ select throws_ok(
   '42501', null, 'a non-member cannot resolve an issue');
 select throws_ok(
   $$select public.finalize_import_job('a6000000-0000-4000-8000-000000000001',
-      'idem-a-000000001', 1, 1, 0)$$,
+      'idem-a-000000001', 1, 1, 0, 0, 0, 0)$$,
   '42501', null, 'a non-member cannot finalize an import');
 
 select pg_temp.logout();
@@ -230,7 +230,7 @@ select throws_ok(
   '42501', null, 'a viewer cannot register a source system');
 select throws_ok(
   $$select public.finalize_import_job('a6000000-0000-4000-8000-000000000001',
-      'idem-a-000000001', 1, 1, 0)$$,
+      'idem-a-000000001', 1, 1, 0, 0, 0, 0)$$,
   '42501', null, 'a viewer cannot finalize an import');
 
 -- Direct writes are refused at the grant layer for a viewer too.
@@ -320,7 +320,7 @@ select throws_ok(
   '42501', null, 'user A cannot resolve a workspace B issue');
 select throws_ok(
   $$select public.finalize_import_job('b6000000-0000-4000-8000-000000000001',
-      'idem-b-000000001', 1, 1, 0)$$,
+      'idem-b-000000001', 1, 1, 0, 0, 0, 0)$$,
   '42501', null, 'user A cannot finalize a workspace B import');
 
 select pg_temp.logout();
