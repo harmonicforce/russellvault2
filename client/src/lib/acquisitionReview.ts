@@ -59,16 +59,48 @@ export interface PreviewSummary {
   readonly authoritative: false;
 }
 
+export interface ChannelRow {
+  readonly id: string;
+  readonly public_id: string;
+  readonly name: string;
+  readonly kind: string;
+}
+
+export interface OrderDetail {
+  readonly order: Record<string, unknown>;
+  readonly lots: ReadonlyArray<Record<string, unknown>>;
+  readonly placements: ReadonlyArray<Record<string, unknown>>;
+  readonly lines: ReadonlyArray<Record<string, unknown>>;
+  readonly costComponents: ReadonlyArray<Record<string, unknown>>;
+  readonly allocations: ReadonlyArray<Record<string, unknown>>;
+  readonly discrepancy: Record<string, unknown>;
+  readonly auditEvents: ReadonlyArray<Record<string, unknown>>;
+}
+
+export interface CommitOutcome {
+  readonly importJobId: string;
+  readonly status: string;
+  readonly orders: number;
+  readonly lineItems: number;
+  readonly resumed: boolean;
+}
+
 export interface AcquisitionTransport {
   listJobs(workspaceId: string): Promise<AcquisitionJobRow[]>;
+  listChannels(workspaceId: string): Promise<ChannelRow[]>;
   listOrders(
     workspaceId: string,
     limit: number,
     offset: number
   ): Promise<{ total: number; orders: AcquisitionOrderRow[] }>;
+  getOrderDetail(workspaceId: string, orderId: string): Promise<OrderDetail>;
   listSupplierCandidates(workspaceId: string): Promise<SupplierCandidate[]>;
   listAuditEvents(workspaceId: string): Promise<Array<Record<string, unknown>>>;
   preview(workspaceId: string, sourceImportJobId: string): Promise<PreviewSummary>;
+  commit(
+    workspaceId: string,
+    input: { sourceImportJobId: string; channelId: string; idempotencyKey: string }
+  ): Promise<CommitOutcome>;
 }
 
 export interface AcquisitionCapabilities {
@@ -91,11 +123,14 @@ export interface AcquisitionReviewState {
   readonly role: WorkspaceRole | null;
   readonly capabilities: AcquisitionCapabilities;
   readonly jobs: readonly AcquisitionJobRow[];
+  readonly channels: readonly ChannelRow[];
   readonly orders: readonly AcquisitionOrderRow[];
   readonly totalOrders: number;
   readonly candidates: readonly SupplierCandidate[];
   readonly auditEvents: ReadonlyArray<Record<string, unknown>>;
   readonly preview: PreviewSummary | null;
+  readonly orderDetail: OrderDetail | null;
+  readonly commitOutcome: CommitOutcome | null;
   readonly error: string | null;
   /** Always true: this surface is never the system of record. */
   readonly staging: true;
@@ -122,11 +157,14 @@ export class AcquisitionReviewController {
       role: null,
       capabilities: CLOSED_CAPS,
       jobs: [],
+      channels: [],
       orders: [],
       totalOrders: 0,
       candidates: [],
       auditEvents: [],
       preview: null,
+      orderDetail: null,
+      commitOutcome: null,
       error: null,
       staging: true,
       authoritative: false,
@@ -157,10 +195,13 @@ export class AcquisitionReviewController {
       capabilities: capabilitiesFor(role),
       error: null,
       preview: null,
+      orderDetail: null,
+      commitOutcome: null,
     });
     try {
-      const [jobs, orders, candidates, auditEvents] = await Promise.all([
+      const [jobs, channels, orders, candidates, auditEvents] = await Promise.all([
         this.transport.listJobs(workspaceId),
+        this.transport.listChannels(workspaceId),
         this.transport.listOrders(workspaceId, 50, 0),
         this.transport.listSupplierCandidates(workspaceId),
         this.transport.listAuditEvents(workspaceId),
@@ -168,6 +209,7 @@ export class AcquisitionReviewController {
       this.set({
         status: 'ready',
         jobs,
+        channels,
         orders: orders.orders,
         totalOrders: orders.total,
         candidates,
@@ -179,11 +221,46 @@ export class AcquisitionReviewController {
         status: 'error',
         error: err instanceof Error ? err.message : 'failed to load acquisition data',
         jobs: [],
+        channels: [],
         orders: [],
         totalOrders: 0,
         candidates: [],
         auditEvents: [],
       });
+    }
+  }
+
+  async openOrder(orderId: string): Promise<void> {
+    if (!this.transport || !this.state.workspaceId) return;
+    try {
+      const orderDetail = await this.transport.getOrderDetail(this.state.workspaceId, orderId);
+      this.set({ orderDetail, error: null });
+    } catch (err) {
+      this.set({ error: err instanceof Error ? err.message : 'failed to load order detail' });
+    }
+  }
+
+  async runCommit(input: {
+    sourceImportJobId: string;
+    channelId: string;
+    idempotencyKey: string;
+  }): Promise<void> {
+    if (!this.transport || !this.state.workspaceId) return;
+    // A viewer cannot run the governed commit; refuse before any request.
+    if (!this.state.capabilities.canRunWorkflow) {
+      this.set({ error: 'committing requires an operator or owner role' });
+      return;
+    }
+    try {
+      const commitOutcome = await this.transport.commit(this.state.workspaceId, input);
+      // Refresh the loaded data after a commit, THEN surface the outcome (open()
+      // resets transient fields, so the outcome is set last to stay visible).
+      const ws = this.state.workspaceId;
+      const role = this.state.role;
+      if (ws && role) await this.open(ws, role);
+      this.set({ commitOutcome, error: null });
+    } catch (err) {
+      this.set({ error: err instanceof Error ? err.message : 'commit failed' });
     }
   }
 

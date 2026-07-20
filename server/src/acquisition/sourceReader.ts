@@ -49,6 +49,27 @@ export async function readCommittedSourceRows(
   workspaceId: string,
   sourceImportJobId: string
 ): Promise<CommittedSourceRow[]> {
+  // PROVENANCE DEPENDENCY: never read a job's rows for mapping unless that job is
+  // actually COMMITTED. A preview has no begin_acquisition_import_job to enforce
+  // this, so it is enforced here — a preview of a non-committed (or absent) job
+  // is refused before any source_record is read.
+  const { data: jobRows, error: jobErr } = await client
+    .from('import_jobs')
+    .select('status')
+    .eq('workspace_id', workspaceId)
+    .eq('id', sourceImportJobId)
+    .limit(1);
+  if (jobErr) throw new SourceReadError(jobErr.message, 400);
+  if (!jobRows || jobRows.length === 0) {
+    throw new SourceReadError('source import job not found', 404);
+  }
+  if ((jobRows[0] as { status: string }).status !== 'committed') {
+    throw new SourceReadError(
+      'source import job is not committed; only a committed Phase 3 import may be mapped',
+      409
+    );
+  }
+
   const records = await readAll(
     client,
     'source_records',

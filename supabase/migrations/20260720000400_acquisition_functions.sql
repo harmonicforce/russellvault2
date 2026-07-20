@@ -217,6 +217,14 @@ begin
     raise exception 'cost component has been reversed and cannot be allocated'
       using errcode = 'check_violation';
   end if;
+  -- An unknown or null-amount component has no total to split. It must never be
+  -- allocated: the caller''s expected total cannot stand in for a missing amount,
+  -- and doing so would fabricate a cost basis the source never reported.
+  if v_component.amount_state <> 'known' or v_component.amount_minor is null then
+    raise exception 'a cost component whose amount is unknown or null cannot be allocated; '
+      'resolve its amount to a known value first'
+      using errcode = 'check_violation';
+  end if;
   if exists (
     select 1 from public.acquisition_cost_allocations a
     where a.cost_component_id = p_cost_component_id and a.state = 'candidate'
@@ -329,6 +337,14 @@ begin
   if v_component.id is null then
     raise exception 'cost component not found or not authorized' using errcode = '42501';
   end if;
+  -- An unknown or null-amount component can never be confirmed as allocated: it
+  -- has no amount to conserve against, and the caller''s expected total must not
+  -- be allowed to stand in for the missing figure.
+  if v_component.amount_state <> 'known' or v_component.amount_minor is null then
+    raise exception 'a cost component whose amount is unknown or null cannot be confirmed as '
+      'allocated; it must stay unresolved until its amount is known'
+      using errcode = 'check_violation';
+  end if;
 
   select coalesce(sum(a.amount_minor), 0)::bigint, count(*)::integer
   into v_sum, v_count
@@ -345,7 +361,9 @@ begin
       p_expected_total_minor, v_sum
       using errcode = 'check_violation';
   end if;
-  if v_component.amount_minor is not null and abs(v_sum - v_component.amount_minor) > 1 then
+  -- amount_minor is guaranteed non-null by the guard above: conservation against
+  -- the component''s own amount is always enforced, never skipped.
+  if abs(v_sum - v_component.amount_minor) > 1 then
     raise exception 'candidate allocations sum to % but the component amount is %',
       v_sum, v_component.amount_minor
       using errcode = 'check_violation';

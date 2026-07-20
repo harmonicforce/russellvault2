@@ -34,7 +34,11 @@ import {
   AcquisitionMappingError,
 } from '../acquisition/adapter.js';
 import { readCommittedSourceRows, SourceReadError } from '../acquisition/sourceReader.js';
-import { commitAcquisitionPlan, AcquisitionCommitError } from '../acquisition/commitDriver.js';
+import {
+  commitAcquisitionPlan,
+  abandonAcquisitionJob,
+  AcquisitionCommitError,
+} from '../acquisition/commitDriver.js';
 
 const router = Router();
 
@@ -162,6 +166,25 @@ router.post(
   })
 );
 
+// --- Explicit abandonment (operator) ------------------------------------------
+// Marks a preview job 'failed'. This is a deliberate discard, NOT the recovery
+// path: an interrupted commit leaves its job in 'preview' and is resumed by
+// re-running /commit with the same idempotency key. Abandoning is terminal.
+router.post(
+  '/jobs/:id/abandon',
+  requireOperator,
+  asyncRoute(async (req, res) => {
+    const { client } = caller(req);
+    const id = await abandonAcquisitionJob(
+      client,
+      String(req.params.id),
+      String(req.body?.failureCode ?? 'operator_abandoned'),
+      typeof req.body?.failureDetail === 'string' ? req.body.failureDetail : undefined
+    );
+    res.json({ staging: true, abandonedJobId: id });
+  })
+);
+
 // --- Stored acquisition data, read-only (members incl. viewers) ---------------
 router.get(
   '/jobs',
@@ -237,26 +260,29 @@ router.get(
       .order('sequence_no', { ascending: true });
     const lots = (lotData ?? []) as unknown as Array<Record<string, unknown>>;
 
-    // Every line placed in this order's lots (active or superseded), via
-    // lot-line placements, so the order view shows the full picture.
+    // Every placement (ACTIVE and HISTORICAL/superseded) of a line in this
+    // order's lots, so the order view shows the full re-homing history.
     const lotIds = lots.map((l) => String(l.id));
     const placements =
       lotIds.length > 0
-        ? (
+        ? ((
             (
               await client
                 .from('acquisition_lot_lines')
-                .select('line_item_id')
+                .select(
+                  'id, lot_id, line_item_id, sequence_no, state, superseded_by_id, ' +
+                    'supersedes_id, created_at'
+                )
                 .eq('workspace_id', workspaceId)
                 .in('lot_id', lotIds)
             ).data ?? []
-          ) as unknown as Array<Record<string, unknown>>
+          ) as unknown as Array<Record<string, unknown>>)
         : [];
     const lineIds = [...new Set(placements.map((p) => String(p.line_item_id)))];
 
     const lines =
       lineIds.length > 0
-        ? (
+        ? ((
             (
               await client
                 .from('acquisition_line_items')
@@ -267,29 +293,112 @@ router.get(
                 .eq('workspace_id', workspaceId)
                 .in('id', lineIds)
             ).data ?? []
-          ) as unknown as Array<Record<string, unknown>>
+          ) as unknown as Array<Record<string, unknown>>)
         : [];
 
-    const components =
+    // Cost components of EVERY scope that bears on this order: line-scoped
+    // (direct), lot-scoped, and order-scoped (shared). Fetched separately and
+    // merged, since they hang off different columns.
+    const componentQueries = await Promise.all([
       lineIds.length > 0
-        ? (
+        ? client
+            .from('acquisition_cost_components')
+            .select('*')
+            .eq('workspace_id', workspaceId)
+            .in('line_item_id', lineIds)
+        : Promise.resolve({ data: [] }),
+      lotIds.length > 0
+        ? client
+            .from('acquisition_cost_components')
+            .select('*')
+            .eq('workspace_id', workspaceId)
+            .in('lot_id', lotIds)
+        : Promise.resolve({ data: [] }),
+      client
+        .from('acquisition_cost_components')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .eq('order_id', orderId),
+    ]);
+    const componentById = new Map<string, Record<string, unknown>>();
+    for (const q of componentQueries) {
+      for (const c of (q.data ?? []) as unknown as Array<Record<string, unknown>>) {
+        componentById.set(String(c.id), c);
+      }
+    }
+    const components = [...componentById.values()];
+    const componentIds = [...componentById.keys()];
+
+    // Allocations in ALL states (candidate, confirmed, reversed) with method.
+    const allocations =
+      componentIds.length > 0
+        ? ((
             (
               await client
-                .from('acquisition_cost_components')
-                .select('*')
+                .from('acquisition_cost_allocations')
+                .select(
+                  'id, public_id, cost_component_id, line_item_id, amount_minor, method, ' +
+                    'state, reviewed_at, reversed_at, created_at'
+                )
                 .eq('workspace_id', workspaceId)
-                .in('line_item_id', lineIds)
+                .in('cost_component_id', componentIds)
             ).data ?? []
-          ) as unknown as Array<Record<string, unknown>>
+          ) as unknown as Array<Record<string, unknown>>)
+        : [];
+
+    // Discrepancy: the source-reported order total kept beside the normalized
+    // known-component total, with unknown/unresolved cost counts made explicit.
+    const orderRow = order[0] as Record<string, unknown>;
+    let knownComponentMinor = 0;
+    let unknownCount = 0;
+    let unresolvedCount = 0;
+    for (const c of components) {
+      if (c.amount_state === 'known' && typeof c.amount_minor === 'number') {
+        knownComponentMinor += c.amount_minor;
+      }
+      if (c.amount_state === 'unknown') unknownCount += 1;
+      if (c.attribution_state === 'unresolved') unresolvedCount += 1;
+    }
+    const sourceTotal =
+      typeof orderRow.source_reported_total_minor === 'number'
+        ? orderRow.source_reported_total_minor
+        : null;
+    const discrepancy = {
+      sourceReportedTotalMinor: sourceTotal,
+      normalizedKnownComponentMinor: knownComponentMinor,
+      differenceMinor: sourceTotal === null ? null : sourceTotal - knownComponentMinor,
+      unknownComponentCount: unknownCount,
+      unresolvedComponentCount: unresolvedCount,
+    };
+
+    // Audit history for this order and everything hanging off it.
+    const auditTargets = [orderId, ...lotIds, ...lineIds, ...componentIds];
+    const auditEvents =
+      auditTargets.length > 0
+        ? ((
+            (
+              await client
+                .from('audit_events')
+                .select('id, event_seq, event_type, entity_table, entity_id, created_at')
+                .eq('workspace_id', workspaceId)
+                .in('entity_id', auditTargets)
+                .order('event_seq', { ascending: false })
+                .limit(MAX_PAGE)
+            ).data ?? []
+          ) as unknown as Array<Record<string, unknown>>)
         : [];
 
     res.json({
       staging: true,
       authoritative: false,
-      order: order[0],
+      order: orderRow,
       lots,
+      placements,
       lines,
       costComponents: components,
+      allocations,
+      discrepancy,
+      auditEvents,
     });
   })
 );
@@ -299,16 +408,21 @@ router.get(
   requireMember,
   asyncRoute(async (req, res) => {
     const { workspaceId, client } = caller(req);
+    // suppliers has no source_system_id column; a supplier's source system is
+    // carried by its aliases (a supplier can be sourced from more than one).
     const { data: suppliers, error } = await client
       .from('suppliers')
-      .select('id, public_id, source_system_id, created_at')
+      .select('id, public_id, display_name, created_at')
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: true })
       .limit(readLimit(req.query.limit, 100));
     if (error) throw new SourceReadError(error.message, 400);
     const { data: aliases } = await client
       .from('supplier_aliases')
-      .select('id, supplier_id, raw_handle, normalized_handle, source_system_id')
+      .select(
+        'id, supplier_id, raw_handle, normalized_handle, source_system_id, ' +
+          'first_seen_source_record_id'
+      )
       .eq('workspace_id', workspaceId)
       .limit(MAX_PAGE);
     res.json({ staging: true, suppliers: suppliers ?? [], aliases: aliases ?? [] });
@@ -324,24 +438,42 @@ router.get(
     const { workspaceId, client } = caller(req);
     const { data: aliases, error } = await client
       .from('supplier_aliases')
-      .select('supplier_id, raw_handle, normalized_handle')
+      .select('supplier_id, raw_handle, normalized_handle, source_system_id')
       .eq('workspace_id', workspaceId);
     if (error) throw new SourceReadError(error.message, 400);
-    const byNorm = new Map<string, { rawHandles: Set<string>; suppliers: Set<string> }>();
+    // Group by (source_system_id, normalized_handle) — matching the database
+    // finalization contract, which counts candidates WITHIN a source system.
+    // Identical normalized handles from unrelated source systems are never
+    // combined into one candidate.
+    const byKey = new Map<
+      string,
+      {
+        sourceSystemId: string;
+        normalizedHandle: string;
+        rawHandles: Set<string>;
+        suppliers: Set<string>;
+      }
+    >();
     for (const a of aliases ?? []) {
       const row = a as Record<string, string>;
-      const g = byNorm.get(row.normalized_handle) ?? {
-        rawHandles: new Set<string>(),
-        suppliers: new Set<string>(),
-      };
+      const key = `${row.source_system_id}|${row.normalized_handle}`;
+      const g =
+        byKey.get(key) ??
+        {
+          sourceSystemId: row.source_system_id,
+          normalizedHandle: row.normalized_handle,
+          rawHandles: new Set<string>(),
+          suppliers: new Set<string>(),
+        };
       g.rawHandles.add(row.raw_handle);
       g.suppliers.add(row.supplier_id);
-      byNorm.set(row.normalized_handle, g);
+      byKey.set(key, g);
     }
-    const candidates = [...byNorm.entries()]
-      .filter(([, g]) => g.suppliers.size > 1)
-      .map(([normalizedHandle, g]) => ({
-        normalizedHandle,
+    const candidates = [...byKey.values()]
+      .filter((g) => g.suppliers.size > 1)
+      .map((g) => ({
+        sourceSystemId: g.sourceSystemId,
+        normalizedHandle: g.normalizedHandle,
         rawHandles: [...g.rawHandles].sort(),
         supplierCount: g.suppliers.size,
       }));

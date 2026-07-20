@@ -435,8 +435,33 @@ create table public.acquisition_cost_components (
   reverses_id uuid,
   created_by_process text not null check (created_by_process ~ '^[a-z][a-z0-9_.:-]{1,63}$'),
   created_at timestamptz not null default now(),
+  -- The scope portion of the CURRENT (unreversed) cost fact's natural key:
+  -- workspace + the one scope target + source record, with empty string
+  -- standing in for a NULL source record so NULL is treated CONSISTENTLY (two
+  -- active components with no source record collide, rather than slipping past
+  -- as SQL-distinct NULLs). Null once reversed, so any number of historical
+  -- (reversed) components may coexist. component_type is kept OUT of this
+  -- generated expression (an enum-to-text cast is not immutable) and joined in
+  -- at the constraint instead. A generated column lets the uniqueness be
+  -- DEFERRABLE (a partial WHERE index cannot be), which lets
+  -- reverse_cost_component insert the replacement and retire the original in one
+  -- transaction without a transient two-active collision. The staging function
+  -- additionally filters with NOT EXISTS so an identical retry inserts zero.
+  active_scope_key text generated always as (
+    case when reversed_at is null then
+      workspace_id::text || '|' || coalesce(line_item_id::text, '') || '|' ||
+      coalesce(lot_id::text, '') || '|' || coalesce(order_id::text, '') || '|' ||
+      coalesce(source_record_id::text, '')
+    else null end
+  ) stored,
   unique (id, workspace_id),
   unique (workspace_id, public_id),
+  -- At most one ACTIVE component per (scope target, source record, type).
+  -- active_scope_key is NULL for reversed rows, so (via NULLS DISTINCT) any
+  -- number of historical components coexist. Deferred so an in-transaction
+  -- reversal (insert replacement + retire original) validates only at commit.
+  constraint acquisition_cost_components_one_active_uniq
+    unique (active_scope_key, component_type) deferrable initially deferred,
   foreign key (line_item_id, workspace_id)
     references public.acquisition_line_items (id, workspace_id) on delete restrict,
   foreign key (lot_id, workspace_id)

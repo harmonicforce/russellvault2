@@ -12,6 +12,7 @@ import { buildImportPlan } from '../provenance/adapter.js';
 import { buildAcquisitionPlan, type CommittedSourceRow } from './adapter.js';
 import {
   commitAcquisitionPlan,
+  abandonAcquisitionJob,
   AcquisitionCommitError,
   BATCH_SIZE,
 } from './commitDriver.js';
@@ -44,12 +45,20 @@ function makeFakeClient(
   const orders = new Map<string, { id: string; source_order_reference: string }>();
   const lots: Array<{ id: string; sequence_no: number; source_order_reference: string }> = [];
   const lines = new Map<string, { id: string; public_id: string }>();
+  // Test-controlled single interruption: the named rpc fails once, then the
+  // flag clears so a resume succeeds. Simulates an interrupted commit.
+  const control: { failOnce: string | null } = { failOnce: null };
+  let beginCount = 0;
   let seq = 0;
   const nextId = (p: string) => `${p}-${(seq += 1)}`;
 
   const client = {
     rpc: async (fn: string, args: Record<string, unknown>) => {
       calls.push({ fn, args });
+      if (control.failOnce === fn) {
+        control.failOnce = null;
+        return { data: null, error: { message: `interrupted at ${fn}` } };
+      }
       if (overrides[fn]) {
         try {
           return { data: overrides[fn](args), error: null };
@@ -59,7 +68,12 @@ function makeFakeClient(
       }
       switch (fn) {
         case 'begin_acquisition_import_job':
-          return { data: { id: 'ajob-1', status: beginStatus, resumed }, error: null };
+          beginCount += 1;
+          // A repeated key resumes the SAME preview job on every later call.
+          return {
+            data: { id: 'ajob-1', status: beginStatus, resumed: resumed || beginCount > 1 },
+            error: null,
+          };
         case 'stage_acquisition_orders': {
           const rows = args.p_orders as Array<Record<string, string>>;
           for (const o of rows) {
@@ -147,7 +161,7 @@ function makeFakeClient(
       return q;
     },
   };
-  return { client, calls, orders, lots, lines };
+  return { client, calls, orders, lots, lines, control };
 }
 
 function fixturePlan() {
@@ -267,18 +281,73 @@ describe('commit-driver guards and failure handling', () => {
     expect(outcome.resumed).toBe(true);
   });
 
-  it('marks the job failed and never committed when a stage throws', async () => {
+  it('does NOT auto-fail the job on an ordinary error; leaves it resumable', async () => {
     const plan = fixturePlan();
-    const { client, calls } = makeFakeClient({
-      stage_acquisition_line_items: () => {
-        throw new Error('boom');
-      },
-    });
+    const { client, calls, control } = makeFakeClient();
+    control.failOnce = 'stage_acquisition_line_items';
     await expect(
       commitAcquisitionPlan(client as never, WS, CH, SRCJOB, plan, 'acq-key-00001')
     ).rejects.toMatchObject({ importJobId: 'ajob-1' });
-    // The failure was recorded; finalize was never reached.
-    expect(calls.some((c) => c.fn === 'fail_acquisition_import_job')).toBe(true);
+    // The job is NOT marked failed, and finalize was not reached.
+    expect(calls.some((c) => c.fn === 'fail_acquisition_import_job')).toBe(false);
     expect(calls.some((c) => c.fn === 'finalize_acquisition_import_job')).toBe(false);
+  });
+});
+
+describe('an interrupted import resumes under the SAME key without duplicates', () => {
+  // Each interruption point: the first run fails there; a second run with the
+  // same key and client (state persisted) finishes the same job cleanly.
+  for (const failAt of [
+    'stage_acquisition_orders',
+    'stage_acquisition_lots',
+    'stage_acquisition_line_items',
+    'stage_acquisition_cost_components',
+    'finalize_acquisition_import_job',
+  ]) {
+    it(`recovers from an interruption at ${failAt}`, async () => {
+      const plan = fixturePlan();
+      const { client, calls, control, orders, lines } = makeFakeClient();
+
+      // First run: interrupted at the chosen stage.
+      control.failOnce = failAt;
+      await expect(
+        commitAcquisitionPlan(client as never, WS, CH, SRCJOB, plan, 'acq-key-00001')
+      ).rejects.toMatchObject({ importJobId: 'ajob-1' });
+      expect(calls.some((c) => c.fn === 'fail_acquisition_import_job')).toBe(false);
+
+      // Second run under the SAME key resumes the SAME job and completes.
+      const outcome = await commitAcquisitionPlan(
+        client as never,
+        WS,
+        CH,
+        SRCJOB,
+        plan,
+        'acq-key-00001'
+      );
+      expect(outcome.status).toBe('committed');
+      expect(outcome.resumed).toBe(true);
+      expect(outcome.orders).toBe(2149);
+      expect(outcome.lineItems).toBe(2149);
+      // Idempotent re-staging created no duplicate rows in the fake store.
+      expect(orders.size).toBe(2149);
+      expect(lines.size).toBe(2149);
+      // The job was never failed and never adopted by a new key.
+      expect(calls.some((c) => c.fn === 'fail_acquisition_import_job')).toBe(false);
+      const beginKeys = calls
+        .filter((c) => c.fn === 'begin_acquisition_import_job')
+        .map((c) => c.args.p_idempotency_key);
+      expect(new Set(beginKeys)).toEqual(new Set(['acq-key-00001']));
+    });
+  }
+});
+
+describe('explicit abandonment is a separate, deliberate action', () => {
+  it('abandonAcquisitionJob marks the job failed via the governed RPC', async () => {
+    const { client, calls } = makeFakeClient();
+    const id = await abandonAcquisitionJob(client as never, 'ajob-1', 'operator_abandoned', 'done with it');
+    expect(id).toBe('ajob-1');
+    const fail = calls.find((c) => c.fn === 'fail_acquisition_import_job');
+    expect(fail).toBeDefined();
+    expect(fail!.args.p_failure_code).toBe('operator_abandoned');
   });
 });

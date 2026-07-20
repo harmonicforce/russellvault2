@@ -13,9 +13,27 @@ import {
 function fakeTransport(overrides: Partial<AcquisitionTransport> = {}): AcquisitionTransport {
   return {
     listJobs: async () => [],
+    listChannels: async () => [{ id: 'ch-1', public_id: 'RV-CH-1', name: 'Whatnot', kind: 'marketplace' }],
     listOrders: async () => ({ total: 0, orders: [] }),
+    getOrderDetail: async () => ({
+      order: { id: 'o1' },
+      lots: [],
+      placements: [],
+      lines: [],
+      costComponents: [],
+      allocations: [],
+      discrepancy: {},
+      auditEvents: [],
+    }),
     listSupplierCandidates: async () => [],
     listAuditEvents: async () => [],
+    commit: async () => ({
+      importJobId: 'j1',
+      status: 'committed',
+      orders: 2,
+      lineItems: 2,
+      resumed: false,
+    }),
     preview: async () =>
       ({
         orders: 2,
@@ -87,6 +105,45 @@ describe('permission gating', () => {
     const controller = new AcquisitionReviewController(fakeTransport(), true);
     await controller.open('ws-1', 'owner');
     expect(controller.getState().capabilities.canRunWorkflow).toBe(true);
+  });
+
+  it('a viewer cannot run the governed commit', async () => {
+    const commit = vi.fn();
+    const controller = new AcquisitionReviewController(fakeTransport({ commit }), true);
+    await controller.open('ws-1', 'viewer');
+    await controller.runCommit({
+      sourceImportJobId: 'src',
+      channelId: 'ch-1',
+      idempotencyKey: 'key-000001',
+    });
+    expect(commit).not.toHaveBeenCalled();
+    expect(controller.getState().error).toMatch(/operator or owner/);
+  });
+
+  it('an operator can run the governed commit', async () => {
+    const controller = new AcquisitionReviewController(fakeTransport(), true);
+    await controller.open('ws-1', 'operator');
+    await controller.runCommit({
+      sourceImportJobId: 'src',
+      channelId: 'ch-1',
+      idempotencyKey: 'key-000001',
+    });
+    expect(controller.getState().commitOutcome?.status).toBe('committed');
+  });
+});
+
+describe('order detail', () => {
+  it('loads a selected order detail', async () => {
+    const controller = new AcquisitionReviewController(fakeTransport(), true);
+    await controller.open('ws-1', 'viewer');
+    await controller.openOrder('o1');
+    expect(controller.getState().orderDetail?.order).toEqual({ id: 'o1' });
+  });
+
+  it('channels are loaded for the commit control', async () => {
+    const controller = new AcquisitionReviewController(fakeTransport(), true);
+    await controller.open('ws-1', 'operator');
+    expect(controller.getState().channels).toHaveLength(1);
   });
 });
 

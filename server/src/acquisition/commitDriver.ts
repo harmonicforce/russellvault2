@@ -26,10 +26,19 @@
 // The database refuses steps 3-6 if an earlier step is incomplete, so a bug
 // here cannot produce a committed job with missing rows.
 //
-// FAILURE BEHAVIOR
-// If any step throws, the job is marked failed via fail_acquisition_import_job.
-// A failed job is visibly failed, never committed, keeps its staged rows as
-// evidence, and a corrected run proceeds under a new idempotency key.
+// FAILURE / INTERRUPTION BEHAVIOR
+// An ordinary staging, network, readback, count, or finalization error does NOT
+// mark the job failed. The job is left in 'preview', its job id and the original
+// error are surfaced, and because every stage above is idempotent the SAME
+// idempotency key can safely resume the SAME job: a re-run re-stages what is
+// missing and finishes without duplicates. 'failed' is a TERMINAL state, so
+// auto-failing here would strand the already-staged normalized rows on a job no
+// key could ever complete — recovery would then be impossible. Marking a job
+// failed is therefore an EXPLICIT, operator-driven abandonment
+// (abandonAcquisitionJob / fail_acquisition_import_job), never the automatic
+// recovery mechanism. An abandoned (failed) job's staged rows are NOT adoptable
+// by a new key: its line items already hold the source public ids, so a fresh
+// job mapping the same source is refused on the duplicate identifiers.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AcquisitionPlan } from './adapter.js';
@@ -320,19 +329,34 @@ export async function commitAcquisitionPlan(
       batches,
     };
   } catch (err) {
+    // Do NOT auto-fail: leaving the job in 'preview' is what makes an identical
+    // re-run under the SAME key a safe resume. Surface the job id and the
+    // original error so the caller can retry (or explicitly abandon).
     const detail = err instanceof Error ? err.message : 'unknown error';
-    try {
-      await rpc(client, 'fail_acquisition_import_job', {
-        p_import_job_id: importJobId,
-        p_failure_code: 'staging_failed',
-        p_failure_detail: detail.slice(0, 4000),
-      });
-    } catch {
-      // Deliberately swallowed: the original failure is the useful one.
-    }
     if (err instanceof AcquisitionCommitError) {
       throw new AcquisitionCommitError(err.message, err.status, importJobId);
     }
     throw new AcquisitionCommitError(detail, 500, importJobId);
   }
+}
+
+/**
+ * EXPLICIT operator abandonment of an acquisition import job. This is the ONLY
+ * path that marks a job 'failed'; it is never called automatically. A failed
+ * job is terminal: it keeps its staged rows as evidence but can never be
+ * committed, and — because those rows already hold the source public ids — its
+ * work is NOT adoptable by a new idempotency key. Use it only when an import is
+ * being deliberately discarded, not to recover from a transient error.
+ */
+export async function abandonAcquisitionJob(
+  client: SupabaseClient,
+  importJobId: string,
+  failureCode: string,
+  failureDetail?: string
+): Promise<string> {
+  return rpc<string>(client, 'fail_acquisition_import_job', {
+    p_import_job_id: importJobId,
+    p_failure_code: failureCode,
+    p_failure_detail: failureDetail ?? null,
+  });
 }

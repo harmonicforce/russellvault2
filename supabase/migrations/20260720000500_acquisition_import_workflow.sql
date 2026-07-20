@@ -246,6 +246,23 @@ begin
       using errcode = '23514';
   end if;
 
+  -- PROVENANCE BINDING: every first_source_record_id used to seed a supplier
+  -- alias must be a raw row of THIS committed Phase 3 job. A record from another
+  -- job (or another workspace) is refused before any supplier is created.
+  if exists (
+    select 1 from jsonb_array_elements(p_orders) as r
+    where not exists (
+      select 1 from public.source_records sr
+      where sr.id = (r->>'first_source_record_id')::uuid
+        and sr.import_job_id = v_job.source_import_job_id
+        and sr.workspace_id = v_job.workspace_id
+    )
+  ) then
+    raise exception 'an order cites a source record that does not belong to the mapped '
+      'Phase 3 import job'
+      using errcode = 'check_violation';
+  end if;
+
   -- Resolve (find-or-create) the supplier for every seller handle in this
   -- batch. Rolled back with everything else if this call later aborts.
   for v_row in select * from jsonb_array_elements(p_orders)
@@ -469,17 +486,46 @@ begin
       using errcode = 'check_violation';
   end if;
 
+  -- PROVENANCE BINDING: a supplied external_identifier_id must be an identifier
+  -- of THIS workspace and source system that points at the EXACT source record
+  -- this line item is built from — never some other row's alias.
+  if exists (
+    select 1 from jsonb_array_elements(p_lines) as r
+    where r ? 'external_identifier_id' and r->>'external_identifier_id' is not null
+      and not exists (
+        select 1 from public.external_identifiers ei
+        where ei.id = (r->>'external_identifier_id')::uuid
+          and ei.workspace_id = v_job.workspace_id
+          and ei.source_system_id = v_source_system_id
+          and ei.source_record_id = (r->>'source_record_id')::uuid
+      )
+  ) then
+    raise exception 'a line item cites an external identifier that does not belong to the '
+      'same workspace, source system, and source record'
+      using errcode = 'check_violation';
+  end if;
+
+  -- Content-idempotent retry check. A retry must match on EVERY immutable value,
+  -- now including the external identifier AND the requested active lot placement
+  -- (compared against the line''s current active lot_line), so re-homing or
+  -- re-aliasing on retry is refused rather than silently ignored.
   select min(li.public_id) into v_conflict_id
   from jsonb_array_elements(p_lines) as r
   join public.acquisition_line_items li
     on li.workspace_id = v_job.workspace_id
    and li.source_system_id = v_source_system_id
    and li.public_id = r->>'public_id'
+  left join public.acquisition_lot_lines ll
+    on ll.line_item_id = li.id and ll.state = 'active'
   where li.source_record_id is distinct from (r->>'source_record_id')::uuid
      or li.quantity is distinct from (r->>'quantity')::integer
      or li.description is distinct from (r->>'description')
      or li.reference_number is distinct from (r->>'reference_number')
-     or li.source_detail is distinct from coalesce(r->'source_detail', '{}'::jsonb);
+     or li.source_detail is distinct from coalesce(r->'source_detail', '{}'::jsonb)
+     or li.external_identifier_id is distinct from
+        case when r ? 'external_identifier_id' and r->>'external_identifier_id' is not null
+             then (r->>'external_identifier_id')::uuid else null end
+     or ll.lot_id is distinct from (r->>'lot_id')::uuid;
 
   if v_conflict_id is not null then
     raise exception 'staged retry for line item % conflicts with already-stored content',
@@ -622,6 +668,65 @@ begin
       using errcode = 'check_violation';
   end if;
 
+  -- PROVENANCE BINDING for cost evidence:
+  --   * any supplied source_record_id must be a raw row of THIS committed Phase
+  --     3 job;
+  --   * a line-scoped (direct) component's source_record_id must MATCH the
+  --     target line item's own source_record_id — a direct cost cannot cite a
+  --     different row than the line it prices;
+  --   * a shared (lot/order-scoped) component's evidence, when supplied, must
+  --     belong to a line item that actually sits in that lot or order — evidence
+  --     is tied to the scope it explains, not attached arbitrarily.
+  if exists (
+    select 1 from jsonb_array_elements(p_components) as r
+    where r ? 'source_record_id' and r->>'source_record_id' is not null
+      and not exists (
+        select 1 from public.source_records sr
+        where sr.id = (r->>'source_record_id')::uuid
+          and sr.import_job_id = v_job.source_import_job_id
+          and sr.workspace_id = v_job.workspace_id
+      )
+  ) then
+    raise exception 'a cost component cites a source record that does not belong to the '
+      'mapped Phase 3 import job'
+      using errcode = 'check_violation';
+  end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(p_components) as r
+    where r ? 'line_item_id' and r ? 'source_record_id'
+      and r->>'source_record_id' is not null
+      and not exists (
+        select 1 from public.acquisition_line_items li
+        where li.id = (r->>'line_item_id')::uuid
+          and li.source_record_id = (r->>'source_record_id')::uuid
+      )
+  ) then
+    raise exception 'a direct cost component''s source record must match the line item it prices'
+      using errcode = 'check_violation';
+  end if;
+
+  if exists (
+    select 1 from jsonb_array_elements(p_components) as r
+    where (r ? 'lot_id' or r ? 'order_id')
+      and r ? 'source_record_id' and r->>'source_record_id' is not null
+      and not exists (
+        select 1
+        from public.acquisition_line_items li
+        join public.acquisition_lot_lines ll on ll.line_item_id = li.id and ll.state = 'active'
+        join public.acquisition_lots lt on lt.id = ll.lot_id
+        where li.source_record_id = (r->>'source_record_id')::uuid
+          and (
+            (r ? 'lot_id' and lt.id = (r->>'lot_id')::uuid)
+            or (r ? 'order_id' and lt.order_id = (r->>'order_id')::uuid)
+          )
+      )
+  ) then
+    raise exception 'a shared cost component''s evidence must belong to a line item within its '
+      'lot or order scope'
+      using errcode = 'check_violation';
+  end if;
+
   select min(coalesce(r->>'line_item_id', coalesce(r->>'lot_id', r->>'order_id'))) into v_conflict_id
   from jsonb_array_elements(p_components) as r
   join public.acquisition_cost_components c
@@ -646,6 +751,13 @@ begin
       using errcode = '23514';
   end if;
 
+  -- Insert only components not already present as an ACTIVE (unreversed) row
+  -- with the same natural key, so an identical cross-call retry inserts zero
+  -- (idempotent) while a genuinely new component is added. The changed-content
+  -- case was already rejected above; concurrent identical inserts are caught by
+  -- the deferred acquisition_cost_components_one_active_uniq constraint at
+  -- commit. ON CONFLICT is deliberately NOT used: it cannot arbiter a
+  -- deferrable constraint.
   with ins as (
     insert into public.acquisition_cost_components (
       workspace_id, public_id, line_item_id, lot_id, order_id, component_type,
@@ -667,7 +779,18 @@ begin
       case when r ? 'source_record_id' then (r->>'source_record_id')::uuid end,
       v_job.id, 'acquisition.import'
     from jsonb_array_elements(p_components) as r
-    on conflict do nothing
+    where not exists (
+      select 1 from public.acquisition_cost_components c
+      where c.workspace_id = v_job.workspace_id
+        and c.reversed_at is null
+        and c.line_item_id is not distinct from
+            case when r ? 'line_item_id' then (r->>'line_item_id')::uuid end
+        and c.lot_id is not distinct from case when r ? 'lot_id' then (r->>'lot_id')::uuid end
+        and c.order_id is not distinct from case when r ? 'order_id' then (r->>'order_id')::uuid end
+        and c.component_type = (r->>'component_type')::public.cost_component_type
+        and c.source_record_id is not distinct from
+            case when r ? 'source_record_id' then (r->>'source_record_id')::uuid end
+    )
     returning 1
   )
   select count(*)::integer into v_inserted from ins;

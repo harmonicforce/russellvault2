@@ -89,6 +89,8 @@ export default function AcquisitionReview() {
   const [workspaceId, setWorkspaceId] = useState('');
   const [role, setRole] = useState<WorkspaceRole>('operator');
   const [sourceJobId, setSourceJobId] = useState('');
+  const [channelId, setChannelId] = useState('');
+  const [commitKey, setCommitKey] = useState('');
 
   useEffect(() => controller.subscribe(setState), [controller]);
 
@@ -99,6 +101,16 @@ export default function AcquisitionReview() {
   const runPreview = useCallback(() => {
     if (sourceJobId.trim()) void controller.runPreview(sourceJobId.trim());
   }, [controller, sourceJobId]);
+
+  const runCommit = useCallback(() => {
+    if (sourceJobId.trim() && channelId.trim() && commitKey.trim()) {
+      void controller.runCommit({
+        sourceImportJobId: sourceJobId.trim(),
+        channelId: channelId.trim(),
+        idempotencyKey: commitKey.trim(),
+      });
+    }
+  }, [controller, sourceJobId, channelId, commitKey]);
 
   if (!config || state.status === 'unconfigured') {
     return (
@@ -224,6 +236,61 @@ export default function AcquisitionReview() {
                 <Stat label="Distinct seller handles" value={String(p.distinctSellerHandles)} />
               </div>
             )}
+
+            {/* Governed commit — operators/owners only. Viewers see no control. */}
+            {caps.canRunWorkflow ? (
+              <div className="mt-3 space-y-2 rounded-lg border border-hairline bg-surface-0 p-3">
+                <div className="text-xs font-medium">Commit this mapping</div>
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex flex-col gap-1 text-xs">
+                    <span className="text-ink-muted">Channel</span>
+                    <select
+                      className="rounded-lg border border-hairline bg-surface-0 px-2 py-1.5 text-xs"
+                      value={channelId}
+                      onChange={(e) => setChannelId(e.target.value)}
+                    >
+                      <option value="">select a channel…</option>
+                      {state.channels.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({c.public_id})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs">
+                    <span className="text-ink-muted">Idempotency key</span>
+                    <input
+                      className="w-56 rounded-lg border border-hairline bg-surface-0 px-2 py-1.5 font-mono text-xs"
+                      value={commitKey}
+                      onChange={(e) => setCommitKey(e.target.value)}
+                      placeholder="a stable key for safe resume"
+                    />
+                  </label>
+                  <button
+                    className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                    onClick={runCommit}
+                    disabled={!sourceJobId.trim() || !channelId.trim() || !commitKey.trim()}
+                  >
+                    Commit mapping
+                  </button>
+                </div>
+                {state.commitOutcome && (
+                  <div className="text-xs text-ink-secondary">
+                    Committed job {state.commitOutcome.importJobId}:{' '}
+                    {state.commitOutcome.orders} orders, {state.commitOutcome.lineItems} lines
+                    {state.commitOutcome.resumed ? ' (resumed)' : ''}.
+                  </div>
+                )}
+                <p className="text-[11px] text-ink-muted">
+                  Re-running with the same key safely resumes an interrupted commit; the
+                  server and database re-check your role and enforce every governed rule.
+                </p>
+              </div>
+            ) : (
+              <p className="mt-2 text-[11px] text-ink-muted">
+                Viewers are read-only. Committing a mapping requires an operator or owner.
+              </p>
+            )}
           </Section>
 
           {/* Orders: source beside normalized */}
@@ -242,7 +309,11 @@ export default function AcquisitionReview() {
                 </thead>
                 <tbody>
                   {state.orders.map((o) => (
-                    <tr key={o.id} className="border-t border-hairline">
+                    <tr
+                      key={o.id}
+                      className="cursor-pointer border-t border-hairline hover:bg-surface-2"
+                      onClick={() => void controller.openOrder(o.id)}
+                    >
                       <td className="py-1 pr-3 font-mono">{o.public_id}</td>
                       <td className="py-1 pr-3 font-mono">{o.source_order_reference}</td>
                       <td className="py-1 pr-3 font-mono">{o.suppliers?.public_id ?? o.supplier_id}</td>
@@ -269,6 +340,53 @@ export default function AcquisitionReview() {
               </table>
             </div>
           </Section>
+
+          {/* Selected order detail: source vs normalized, all scopes, allocations */}
+          {state.orderDetail && (
+            <Section title="Order detail" icon={Layers}>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs md:grid-cols-4">
+                <Stat
+                  label="Source-reported total"
+                  value={
+                    detailNumber(state.orderDetail.discrepancy.sourceReportedTotalMinor) === null
+                      ? '—'
+                      : money(
+                          detailNumber(state.orderDetail.discrepancy.sourceReportedTotalMinor)! / 100
+                        )
+                  }
+                />
+                <Stat
+                  label="Normalized known total"
+                  value={money(
+                    (detailNumber(state.orderDetail.discrepancy.normalizedKnownComponentMinor) ?? 0) /
+                      100
+                  )}
+                />
+                <Stat
+                  label="Difference"
+                  value={
+                    detailNumber(state.orderDetail.discrepancy.differenceMinor) === null
+                      ? '—'
+                      : money(detailNumber(state.orderDetail.discrepancy.differenceMinor)! / 100)
+                  }
+                />
+                <Stat
+                  label="Unknown / unresolved costs"
+                  value={`${detailNumber(state.orderDetail.discrepancy.unknownComponentCount) ?? 0} / ${
+                    detailNumber(state.orderDetail.discrepancy.unresolvedComponentCount) ?? 0
+                  }`}
+                />
+              </div>
+              <div className="grid grid-cols-1 gap-3 text-xs md:grid-cols-2">
+                <DetailList title={`Lots (${state.orderDetail.lots.length})`} rows={state.orderDetail.lots} keys={['public_id', 'sequence_no', 'label']} />
+                <DetailList title={`Lot-line placements (${state.orderDetail.placements.length})`} rows={state.orderDetail.placements} keys={['line_item_id', 'state', 'sequence_no']} />
+                <DetailList title={`Line items (${state.orderDetail.lines.length})`} rows={state.orderDetail.lines} keys={['public_id', 'quantity', 'source_record_id']} />
+                <DetailList title={`Cost components (${state.orderDetail.costComponents.length})`} rows={state.orderDetail.costComponents} keys={['component_type', 'amount_state', 'amount_minor', 'attribution_state']} />
+                <DetailList title={`Allocations (${state.orderDetail.allocations.length})`} rows={state.orderDetail.allocations} keys={['method', 'state', 'amount_minor']} />
+                <DetailList title={`Audit history (${state.orderDetail.auditEvents.length})`} rows={state.orderDetail.auditEvents} keys={['event_seq', 'event_type']} />
+              </div>
+            </Section>
+          )}
 
           {/* Unresolved supplier candidates — never auto-merged */}
           <Section title={`Unresolved supplier candidates (${state.candidates.length})`} icon={Users}>
@@ -335,6 +453,40 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div className="flex flex-col gap-0.5">
       <span className="text-[11px] uppercase tracking-wide text-ink-muted">{label}</span>
       <span className="text-sm font-medium">{value}</span>
+    </div>
+  );
+}
+
+function detailNumber(v: unknown): number | null {
+  return typeof v === 'number' ? v : null;
+}
+
+// A compact read-only listing of a set of rows, showing a few named columns.
+function DetailList({
+  title,
+  rows,
+  keys,
+}: {
+  title: string;
+  rows: ReadonlyArray<Record<string, unknown>>;
+  keys: string[];
+}) {
+  return (
+    <div className="rounded-lg border border-hairline bg-surface-0 p-2">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-muted">
+        {title}
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-ink-muted">none</div>
+      ) : (
+        <ul className="space-y-0.5">
+          {rows.slice(0, 25).map((r, i) => (
+            <li key={String(r.id ?? i)} className="font-mono">
+              {keys.map((k) => `${k}=${String(r[k] ?? '—')}`).join('  ')}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

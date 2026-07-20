@@ -13,6 +13,9 @@ import type {
   AcquisitionJobRow,
   AcquisitionOrderRow,
   AcquisitionTransport,
+  ChannelRow,
+  CommitOutcome,
+  OrderDetail,
   PreviewSummary,
   SupplierCandidate,
 } from './acquisitionReview';
@@ -54,10 +57,17 @@ export function createAcquisitionTransport(getToken: TokenProvider): Acquisition
       const r = await get<{ jobs: AcquisitionJobRow[] }>(`/jobs?${ws(workspaceId)}`);
       return r.jobs;
     },
+    async listChannels(workspaceId) {
+      const r = await get<{ channels: ChannelRow[] }>(`/channels?${ws(workspaceId)}`);
+      return r.channels;
+    },
     async listOrders(workspaceId, limit, offset) {
       return get<{ total: number; orders: AcquisitionOrderRow[] }>(
         `/orders?${ws(workspaceId)}&limit=${limit}&offset=${offset}`
       );
+    },
+    async getOrderDetail(workspaceId, orderId) {
+      return get<OrderDetail>(`/orders/${encodeURIComponent(orderId)}?${ws(workspaceId)}`);
     },
     async listSupplierCandidates(workspaceId) {
       const r = await get<{ candidates: SupplierCandidate[] }>(
@@ -73,6 +83,9 @@ export function createAcquisitionTransport(getToken: TokenProvider): Acquisition
     },
     async preview(workspaceId, sourceImportJobId) {
       return post<PreviewSummary>('/preview', { workspaceId, sourceImportJobId });
+    },
+    async commit(workspaceId, input) {
+      return post<CommitOutcome>('/commit', { workspaceId, ...input });
     },
   };
 }
