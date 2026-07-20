@@ -143,18 +143,48 @@ select is(
   'all seven provenance tables grant SELECT to authenticated'
 );
 
--- No write privilege exists for ANY non-owner role -----------------------------
+-- No write privilege exists for ANY client-reachable role -----------------------
+-- Scoped to the roles a client can actually authenticate as: anon and
+-- authenticated (via the anon key / a user JWT), service_role (via the
+-- service-role key), and PUBLIC. Table-owner and platform-superuser grants are
+-- deliberately out of scope — they are the roles that run migrations, and no
+-- grant can constrain them anyway (see migration 7 on the threat boundary).
+--
+-- Reported as a sorted grantee:privilege list rather than a bare count, so a
+-- failure names exactly which role gained what instead of just showing a
+-- number. This assertion previously used "any role except current_user", which
+-- silently passed on plain PostgreSQL (where the test user owns the tables) but
+-- caught real service_role default privileges on a hosted Supabase stack.
 select is(
-  (select count(*)::int
+  (select coalesce(
+     string_agg(distinct grantee || ':' || privilege_type, ', ' order by grantee || ':' || privilege_type),
+     '')
    from information_schema.role_table_grants
    where table_schema = 'public'
      and privilege_type in ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
      and table_name in (
        'source_systems', 'import_jobs', 'source_records', 'external_identifiers',
        'source_crosswalks', 'audit_events', 'data_quality_issues')
-     and grantee <> current_user),
-  0,
-  'no application role holds INSERT, UPDATE, DELETE, or TRUNCATE on any provenance table'
+     and grantee in ('anon', 'authenticated', 'service_role', 'PUBLIC')),
+  '',
+  'no client-reachable role holds INSERT, UPDATE, DELETE, or TRUNCATE on any provenance table'
+);
+
+-- service_role specifically holds no write privilege -----------------------------
+-- service_role carries BYPASSRLS, so any write grant it held would be a total
+-- bypass of the governed path. A hosted Supabase project grants it write access
+-- to new public tables by default, which migration 8 explicitly revokes.
+select is(
+  (select coalesce(
+     string_agg(distinct privilege_type, ',' order by privilege_type), '')
+   from information_schema.role_table_grants
+   where table_schema = 'public'
+     and grantee = 'service_role'
+     and table_name in (
+       'source_systems', 'import_jobs', 'source_records', 'external_identifiers',
+       'source_crosswalks', 'audit_events', 'data_quality_issues')),
+  '',
+  'service_role holds no privilege at all on any provenance table, not even SELECT'
 );
 
 -- Only SELECT policies exist anywhere in this schema ----------------------------

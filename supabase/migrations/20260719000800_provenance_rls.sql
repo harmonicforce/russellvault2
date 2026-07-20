@@ -46,6 +46,29 @@ revoke all on table
   public.data_quality_issues
 from public, anon, authenticated;
 
+-- service_role too. A hosted Supabase project configures DEFAULT PRIVILEGES on
+-- the public schema that automatically grant service_role write access to every
+-- new table, so without this revoke it would silently retain INSERT/UPDATE/
+-- DELETE here — and service_role also carries BYPASSRLS, so those grants would
+-- be a complete bypass of the governed path.
+--
+-- Nothing in this application uses a service-role key (the server authenticates
+-- as the calling user and holds no privileged credential), so revoking costs
+-- nothing and means even a leaked service-role key cannot fabricate evidence,
+-- forge audit history, or commit an import outside the governed RPCs.
+--
+-- Guarded because the local PostgreSQL shim may not define the role.
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    execute 'revoke all on table
+      public.source_systems, public.import_jobs, public.source_records,
+      public.external_identifiers, public.source_crosswalks, public.audit_events,
+      public.data_quality_issues
+    from service_role';
+  end if;
+end $$;
+
 grant select on table
   public.source_systems, public.import_jobs, public.source_records,
   public.external_identifiers, public.source_crosswalks, public.audit_events,
