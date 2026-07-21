@@ -40,6 +40,8 @@ select has_function('public'::name, 'finalize_acquisition_import_job'::name,
   'finalize_acquisition_import_job exists');
 select has_function('public'::name, 'fail_acquisition_import_job'::name,
   array['uuid', 'text', 'text'], 'fail_acquisition_import_job exists');
+select has_function('public'::name, 'get_committed_acquisition_summary'::name,
+  array['uuid', 'text', 'uuid', 'uuid', 'integer'], 'get_committed_acquisition_summary exists');
 select has_function('public'::name, 'propose_cost_allocation'::name,
   array['uuid', 'text', 'jsonb'], 'propose_cost_allocation exists');
 select has_function('public'::name, 'confirm_cost_allocation'::name,
@@ -64,7 +66,8 @@ select is(
        'open_acquisition_job_for_caller', 'begin_acquisition_import_job',
        'stage_acquisition_orders', 'stage_acquisition_lots',
        'stage_acquisition_line_items', 'stage_acquisition_cost_components',
-       'finalize_acquisition_import_job', 'fail_acquisition_import_job',
+       'finalize_acquisition_import_job', 'get_committed_acquisition_summary',
+       'fail_acquisition_import_job',
        'mint_governed_public_id', 'enforce_acquisition_job_status_flow',
        'enforce_acquisition_job_open', 'enforce_lot_line_initial_state',
        'enforce_lot_line_transition', 'enforce_lot_line_supersession_coherence',

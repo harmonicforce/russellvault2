@@ -53,6 +53,10 @@ export function createAcquisitionTransport(getToken: TokenProvider): Acquisition
   const ws = (workspaceId: string) => `workspaceId=${encodeURIComponent(workspaceId)}`;
 
   return {
+    async getSession(workspaceId) {
+      const r = await get<{ role: 'owner' | 'operator' | 'viewer' }>(`/session?${ws(workspaceId)}`);
+      return { role: r.role };
+    },
     async listJobs(workspaceId) {
       const r = await get<{ jobs: AcquisitionJobRow[] }>(`/jobs?${ws(workspaceId)}`);
       return r.jobs;

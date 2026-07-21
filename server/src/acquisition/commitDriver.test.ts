@@ -49,6 +49,9 @@ function makeFakeClient(
   // flag clears so a resume succeeds. Simulates an interrupted commit.
   const control: { failOnce: string | null } = { failOnce: null };
   let beginCount = 0;
+  // Once finalize commits, later begins report the job committed (a replay) and
+  // the governed summary read returns the stored reconciliation counts.
+  let committedSummary: Record<string, unknown> | null = null;
   let seq = 0;
   const nextId = (p: string) => `${p}-${(seq += 1)}`;
 
@@ -67,11 +70,28 @@ function makeFakeClient(
         }
       }
       switch (fn) {
-        case 'begin_acquisition_import_job':
+        case 'begin_acquisition_import_job': {
           beginCount += 1;
-          // A repeated key resumes the SAME preview job on every later call.
+          // After a successful finalize, a replay reports the job committed.
+          const status = committedSummary ? 'committed' : beginStatus;
           return {
-            data: { id: 'ajob-1', status: beginStatus, resumed: resumed || beginCount > 1 },
+            data: { id: 'ajob-1', status, resumed: resumed || beginCount > 1 || !!committedSummary },
+            error: null,
+          };
+        }
+        case 'get_committed_acquisition_summary':
+          return {
+            data:
+              committedSummary ?? {
+                id: 'ajob-1',
+                status: 'committed',
+                orders: 2149,
+                lots: 2149,
+                line_items: 2149,
+                cost_components: 2149,
+                unresolved_supplier_candidates: 1,
+                unresolved_cost_components: 0,
+              },
             error: null,
           };
         case 'stage_acquisition_orders': {
@@ -114,20 +134,21 @@ function makeFakeClient(
           const rows = args.p_components as unknown[];
           return { data: { batch: rows.length, inserted: rows.length }, error: null };
         }
-        case 'finalize_acquisition_import_job':
-          return {
-            data: {
-              id: 'ajob-1',
-              status: 'committed',
-              orders: args.p_expected_orders,
-              lots: args.p_expected_lots,
-              line_items: args.p_expected_line_items,
-              cost_components: args.p_expected_cost_components,
-              unresolved_supplier_candidates: args.p_expected_unresolved_supplier_candidates,
-              unresolved_cost_components: args.p_expected_unresolved_cost_components,
-            },
-            error: null,
+        case 'finalize_acquisition_import_job': {
+          const finalizedData = {
+            id: 'ajob-1',
+            status: 'committed',
+            orders: args.p_expected_orders,
+            lots: args.p_expected_lots,
+            line_items: args.p_expected_line_items,
+            cost_components: args.p_expected_cost_components,
+            unresolved_supplier_candidates: args.p_expected_unresolved_supplier_candidates,
+            unresolved_cost_components: args.p_expected_unresolved_cost_components,
           };
+          // Remember the committed result so a later replay can read it back.
+          committedSummary = finalizedData;
+          return { data: finalizedData, error: null };
+        }
         case 'fail_acquisition_import_job':
           return { data: 'ajob-1', error: null };
         default:
@@ -259,12 +280,24 @@ describe('commit-driver guards and failure handling', () => {
     expect(calls.length).toBe(0);
   });
 
-  it('refuses to re-commit an already-committed job', async () => {
+  it('a committed replay returns the existing committed outcome, not a 409', async () => {
     const plan = fixturePlan();
-    const { client } = makeFakeClient({}, 'committed');
-    await expect(
-      commitAcquisitionPlan(client as never, WS, CH, SRCJOB, plan, 'acq-key-00001')
-    ).rejects.toMatchObject({ importJobId: 'ajob-1' });
+    const { client, calls } = makeFakeClient({}, 'committed');
+    const outcome = await commitAcquisitionPlan(
+      client as never,
+      WS,
+      CH,
+      SRCJOB,
+      plan,
+      'acq-key-00001'
+    );
+    expect(outcome.status).toBe('committed');
+    expect(outcome.importJobId).toBe('ajob-1');
+    // No staging or finalize write is repeated; the counts come from the
+    // governed summary read, not from the caller.
+    expect(calls.some((c) => c.fn.startsWith('stage_'))).toBe(false);
+    expect(calls.some((c) => c.fn === 'finalize_acquisition_import_job')).toBe(false);
+    expect(calls.some((c) => c.fn === 'get_committed_acquisition_summary')).toBe(true);
   });
 
   it('carries resumed through when begin reports a resume', async () => {
@@ -339,6 +372,46 @@ describe('an interrupted import resumes under the SAME key without duplicates', 
       expect(new Set(beginKeys)).toEqual(new Set(['acq-key-00001']));
     });
   }
+});
+
+describe('a committed response that was lost replays safely', () => {
+  it('a retried request after a committed-but-lost response returns the same outcome', async () => {
+    const plan = fixturePlan();
+    const { client, calls } = makeFakeClient();
+
+    // 1. Finalization actually commits.
+    const first = await commitAcquisitionPlan(client as never, WS, CH, SRCJOB, plan, 'acq-key-00001');
+    expect(first.status).toBe('committed');
+    const stageCount = calls.filter((c) => c.fn.startsWith('stage_')).length;
+    expect(calls.filter((c) => c.fn === 'finalize_acquisition_import_job')).toHaveLength(1);
+
+    // 2. The response is lost. 3. The same request and key are retried.
+    const replay = await commitAcquisitionPlan(client as never, WS, CH, SRCJOB, plan, 'acq-key-00001');
+
+    // 4. The retry returns a successful committed outcome for the SAME job.
+    expect(replay.status).toBe('committed');
+    expect(replay.importJobId).toBe(first.importJobId);
+    expect(replay.orders).toBe(first.orders);
+    expect(replay.lineItems).toBe(first.lineItems);
+    expect(replay.costComponents).toBe(first.costComponents);
+
+    // 5. No stage or finalize write is repeated; the outcome came from the
+    // governed summary read.
+    expect(calls.filter((c) => c.fn.startsWith('stage_'))).toHaveLength(stageCount);
+    expect(calls.filter((c) => c.fn === 'finalize_acquisition_import_job')).toHaveLength(1);
+    expect(calls.some((c) => c.fn === 'get_committed_acquisition_summary')).toBe(true);
+  });
+
+  it('passes the full binding to the governed summary read', async () => {
+    const plan = fixturePlan();
+    const { client, calls } = makeFakeClient({}, 'committed');
+    await commitAcquisitionPlan(client as never, WS, CH, SRCJOB, plan, 'acq-key-00001');
+    const summary = calls.find((c) => c.fn === 'get_committed_acquisition_summary');
+    expect(summary!.args.p_idempotency_key).toBe('acq-key-00001');
+    expect(summary!.args.p_channel_id).toBe(CH);
+    expect(summary!.args.p_source_import_job_id).toBe(SRCJOB);
+    expect(summary!.args.p_expected_line_count).toBe(plan.expectedLineItems);
+  });
 });
 
 describe('explicit abandonment is a separate, deliberate action', () => {

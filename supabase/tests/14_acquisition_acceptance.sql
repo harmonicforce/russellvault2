@@ -354,6 +354,59 @@ select is((select attribution_state::text from public.acquisition_cost_component
   where id = pg_temp.get('unknown_c')), 'unresolved',
   'F4: the unknown component remains unresolved throughout');
 
+-- ===== F2 (final patch): complete cost provenance + zero-state enforcement =====
+-- Five components exist on the job so far (3 from F1's first stage + 2 shared
+-- from F4); the rejection tests below must leave that count unchanged.
+select is((select count(*)::int from public.acquisition_cost_components
+  where acquisition_import_job_id = pg_temp.get('job')), 5, 'F2: five components staged so far');
+
+-- A DIRECT (line-scoped) import component with NO source_record_id is refused.
+select throws_ok(
+  format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(jsonb_build_object(
+    'line_item_id',%L::uuid,'component_type','fee','amount_state','known',
+    'amount_minor',50,'currency','USD')))$$, pg_temp.get('job'), pg_temp.get('line_a')),
+  '23514', null, 'F2: a direct component without a source record is refused');
+
+-- A known ZERO with an evidence_note is still refused (evidence does not rescue it).
+select throws_ok(
+  format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(jsonb_build_object(
+    'line_item_id',%L::uuid,'component_type','fee','amount_state','known','amount_minor',0,
+    'currency','USD','evidence_note','was free but priced as known',
+    'source_record_id','77770000-0000-4000-8000-000000000001')))$$,
+    pg_temp.get('job'), pg_temp.get('line_a')),
+  '23514', null, 'F2: a known zero is refused even with an evidence note');
+
+-- A mixed batch (one valid + one known-zero) is rejected wholesale.
+select throws_ok(
+  format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(
+    jsonb_build_object('line_item_id',%L::uuid,'component_type','tax','amount_state','known',
+      'amount_minor',10,'currency','USD','source_record_id','77770000-0000-4000-8000-000000000001'),
+    jsonb_build_object('line_item_id',%L::uuid,'component_type','fee','amount_state','known',
+      'amount_minor',0,'currency','USD','evidence_note','x',
+      'source_record_id','77770000-0000-4000-8000-000000000001')))$$,
+    pg_temp.get('job'), pg_temp.get('line_a'), pg_temp.get('line_a')),
+  '23514', null, 'F2: a mixed batch containing a known zero is rejected wholesale');
+select is((select count(*)::int from public.acquisition_cost_components
+  where acquisition_import_job_id = pg_temp.get('job')), 5,
+  'F2: the rejected batches inserted nothing');
+
+-- A valid DOCUMENTED-FREE line-scoped component (0 + evidence + its source) stages.
+select lives_ok(
+  format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(jsonb_build_object(
+    'line_item_id',%L::uuid,'component_type','discount','amount_state','documented_free',
+    'amount_minor',0,'currency','USD','evidence_note','seller-confirmed free bonus',
+    'source_record_id','77770000-0000-4000-8000-000000000001')))$$,
+    pg_temp.get('job'), pg_temp.get('line_a')),
+  'F2: a valid documented-free direct component stages');
+
+-- A valid KNOWN-POSITIVE line-scoped component (with its matching source) stages.
+select lives_ok(
+  format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(jsonb_build_object(
+    'line_item_id',%L::uuid,'component_type','fee','amount_state','known','amount_minor',25,
+    'currency','USD','source_record_id','77770000-0000-4000-8000-000000000002')))$$,
+    pg_temp.get('job'), pg_temp.get('line_b')),
+  'F2: a valid known-positive direct component stages');
+
 select pg_temp.logout();
 select * from finish();
 rollback;

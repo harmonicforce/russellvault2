@@ -145,11 +145,40 @@ export async function commitAcquisitionPlan(
 
   const importJobId = begun.id;
   if (begun.status === 'committed') {
-    throw new AcquisitionCommitError(
-      'this acquisition import is already committed; re-running changes nothing',
-      409,
-      importJobId
-    );
+    // RESPONSE-LOSS REPLAY: finalize already committed this job, but the HTTP
+    // response was lost, so the caller retried the identical request. Return the
+    // existing committed outcome from a governed, workspace-authorized read that
+    // RE-COUNTS from the committed data and re-verifies the full binding (key,
+    // channel, source job, expected line count). No staging or finalize write is
+    // repeated, and no duplicate audit event is created. A replay whose binding
+    // differs is rejected by this RPC, not silently accepted.
+    const summary = await rpc<{
+      id: string;
+      orders: number;
+      lots: number;
+      line_items: number;
+      cost_components: number;
+      unresolved_supplier_candidates: number;
+      unresolved_cost_components: number;
+    }>(client, 'get_committed_acquisition_summary', {
+      p_import_job_id: importJobId,
+      p_idempotency_key: key,
+      p_channel_id: channelId,
+      p_source_import_job_id: sourceImportJobId,
+      p_expected_line_count: plan.expectedLineItems,
+    });
+    return {
+      importJobId,
+      status: 'committed',
+      resumed: true,
+      orders: summary.orders,
+      lots: summary.lots,
+      lineItems: summary.line_items,
+      costComponents: summary.cost_components,
+      unresolvedSupplierCandidates: summary.unresolved_supplier_candidates,
+      unresolvedCostComponents: summary.unresolved_cost_components,
+      batches: 0,
+    };
   }
 
   let batches = 0;

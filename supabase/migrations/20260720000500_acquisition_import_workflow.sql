@@ -692,6 +692,20 @@ begin
       using errcode = 'check_violation';
   end if;
 
+  -- A direct (line-scoped) import component MUST be traceable: it must cite a
+  -- source record. A missing one rejects the whole batch — the import RPC never
+  -- creates an untraceable direct cost fact. (Shared lot/order-scoped components
+  -- may omit it, preserving later governed shared-cost entry.)
+  if exists (
+    select 1 from jsonb_array_elements(p_components) as r
+    where r ? 'line_item_id'
+      and (not (r ? 'source_record_id') or r->>'source_record_id' is null)
+  ) then
+    raise exception 'a direct (line-scoped) cost component must cite the source record it '
+      'came from; an untraceable direct cost fact is refused'
+      using errcode = 'check_violation';
+  end if;
+
   if exists (
     select 1 from jsonb_array_elements(p_components) as r
     where r ? 'line_item_id' and r ? 'source_record_id'
@@ -984,6 +998,107 @@ grant execute on function public.finalize_acquisition_import_job(
   uuid, text, integer, integer, integer, integer, integer, integer
 ) to authenticated;
 
+-- Committed-replay summary (idempotent, read-only) --------------------------------------
+-- Safe for the case where finalize COMMITTED but the HTTP response was lost:
+-- replaying the same request must return the existing committed outcome, not a
+-- 409. This RECOMPUTES the reconciliation counts from the committed data (it
+-- never trusts caller-supplied counts) and verifies the FULL binding — the same
+-- idempotency key, channel, source import job, and expected line count — before
+-- returning. It never reopens, mutates, or re-audits the committed job. A replay
+-- whose binding differs in any of those is refused, identically to not-found.
+create function public.get_committed_acquisition_summary(
+  p_import_job_id uuid,
+  p_idempotency_key text,
+  p_channel_id uuid,
+  p_source_import_job_id uuid,
+  p_expected_line_count integer
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_uid uuid;
+  v_job public.acquisition_import_jobs%rowtype;
+  v_source_system_id uuid;
+  v_orders integer;
+  v_lots integer;
+  v_line_items integer;
+  v_cost_components integer;
+  v_unresolved_candidates integer;
+  v_unresolved_costs integer;
+begin
+  v_uid := app.require_uid();
+
+  -- Authorize as part of the lookup: a caller who is not an owner/operator of
+  -- this job's workspace gets the same answer as "does not exist". No FOR
+  -- UPDATE / no lock — this path never mutates the committed job.
+  select j.* into v_job
+  from public.acquisition_import_jobs j
+  join public.workspace_members m
+    on m.workspace_id = j.workspace_id
+   and m.user_id = v_uid
+   and m.role = any (array['owner', 'operator']::public.workspace_role[])
+  where j.id = p_import_job_id;
+
+  if v_job.id is null then
+    raise exception 'acquisition import job not found or not authorized' using errcode = '42501';
+  end if;
+  if v_job.status <> 'committed' then
+    raise exception 'acquisition import job is not committed' using errcode = 'check_violation';
+  end if;
+
+  -- FULL binding check: the replay must describe the SAME work in every part.
+  if v_job.idempotency_key is distinct from p_idempotency_key
+     or v_job.channel_id is distinct from p_channel_id
+     or v_job.source_import_job_id is distinct from p_source_import_job_id
+     or v_job.expected_line_count is distinct from p_expected_line_count then
+    raise exception 'the replayed request does not match this committed acquisition import'
+      using errcode = '22023';
+  end if;
+
+  select j.source_system_id into v_source_system_id
+  from public.import_jobs j where j.id = v_job.source_import_job_id;
+
+  select count(*)::integer into v_orders
+  from public.acquisition_orders where acquisition_import_job_id = v_job.id;
+  select count(*)::integer into v_lots
+  from public.acquisition_lots lt
+  join public.acquisition_orders o on o.id = lt.order_id
+  where o.acquisition_import_job_id = v_job.id;
+  select count(*)::integer into v_line_items
+  from public.acquisition_line_items where acquisition_import_job_id = v_job.id;
+  select count(*)::integer into v_cost_components
+  from public.acquisition_cost_components where acquisition_import_job_id = v_job.id;
+  select count(*)::integer into v_unresolved_costs
+  from public.acquisition_cost_components
+  where acquisition_import_job_id = v_job.id and attribution_state = 'unresolved';
+  select count(*)::integer into v_unresolved_candidates
+  from (
+    select normalized_handle
+    from public.supplier_aliases
+    where workspace_id = v_job.workspace_id and source_system_id = v_source_system_id
+    group by normalized_handle
+    having count(distinct supplier_id) > 1
+  ) g;
+
+  return jsonb_build_object(
+    'id', v_job.id, 'status', 'committed', 'orders', v_orders, 'lots', v_lots,
+    'line_items', v_line_items, 'cost_components', v_cost_components,
+    'unresolved_supplier_candidates', v_unresolved_candidates,
+    'unresolved_cost_components', v_unresolved_costs
+  );
+end
+$$;
+
+revoke all on function public.get_committed_acquisition_summary(
+  uuid, text, uuid, uuid, integer
+) from public, anon;
+grant execute on function public.get_committed_acquisition_summary(
+  uuid, text, uuid, uuid, integer
+) to authenticated;
+
 -- Fail an attempt visibly ---------------------------------------------------------------
 create function public.fail_acquisition_import_job(
   p_import_job_id uuid,
@@ -1049,7 +1164,7 @@ begin
         'begin_acquisition_import_job', 'stage_acquisition_orders',
         'stage_acquisition_lots', 'stage_acquisition_line_items',
         'stage_acquisition_cost_components', 'finalize_acquisition_import_job',
-        'fail_acquisition_import_job')
+        'get_committed_acquisition_summary', 'fail_acquisition_import_job')
   loop
     execute format('revoke all on function %s from service_role', v_signature);
   end loop;

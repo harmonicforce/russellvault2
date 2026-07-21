@@ -83,6 +83,20 @@ function asyncRoute(
   };
 }
 
+// --- Session: the caller's ACTUAL workspace role (governed) --------------------
+// The UI must derive its capabilities from this, never from a user-selected
+// value. The role here is the one the database resolved for the caller's own
+// JWT in this workspace (see provenance/auth.ts); a viewer cannot become an
+// operator by picking a different option in the client.
+router.get(
+  '/session',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, role } = caller(req);
+    res.json({ staging: true, workspaceId, role });
+  })
+);
+
 // --- Channel registry (owner) --------------------------------------------------
 router.post(
   '/channels',
@@ -252,113 +266,138 @@ router.get(
       throw new SourceReadError('acquisition order not found', 404);
     }
 
-    const { data: lotData } = await client
-      .from('acquisition_lots')
-      .select('id, public_id, sequence_no, label')
-      .eq('workspace_id', workspaceId)
-      .eq('order_id', orderId)
-      .order('sequence_no', { ascending: true });
-    const lots = (lotData ?? []) as unknown as Array<Record<string, unknown>>;
+    // Every subordinate query is error-checked: a failed lots/placements/lines/
+    // components/allocations/audit query FAILS the request (closed) rather than
+    // silently returning an empty section that could read as authoritative.
+    const rq = async (
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      builder: any
+    ): Promise<Array<Record<string, unknown>>> => {
+      const { data, error } = await builder;
+      if (error) throw new SourceReadError((error as { message: string }).message, 400);
+      return (data ?? []) as unknown as Array<Record<string, unknown>>;
+    };
 
-    // Every placement (ACTIVE and HISTORICAL/superseded) of a line in this
-    // order's lots, so the order view shows the full re-homing history.
+    const lots = await rq(
+      client
+        .from('acquisition_lots')
+        .select('id, public_id, sequence_no, label')
+        .eq('workspace_id', workspaceId)
+        .eq('order_id', orderId)
+        .order('sequence_no', { ascending: true })
+    );
     const lotIds = lots.map((l) => String(l.id));
+
+    // ALL placements (active + historical) for display; split by state.
     const placements =
       lotIds.length > 0
-        ? ((
-            (
-              await client
-                .from('acquisition_lot_lines')
-                .select(
-                  'id, lot_id, line_item_id, sequence_no, state, superseded_by_id, ' +
-                    'supersedes_id, created_at'
-                )
-                .eq('workspace_id', workspaceId)
-                .in('lot_id', lotIds)
-            ).data ?? []
-          ) as unknown as Array<Record<string, unknown>>)
+        ? await rq(
+            client
+              .from('acquisition_lot_lines')
+              .select(
+                'id, lot_id, line_item_id, sequence_no, state, superseded_by_id, ' +
+                  'supersedes_id, created_at'
+              )
+              .eq('workspace_id', workspaceId)
+              .in('lot_id', lotIds)
+          )
         : [];
-    const lineIds = [...new Set(placements.map((p) => String(p.line_item_id)))];
+    const activePlacements = placements.filter((p) => p.state === 'active');
+    const historicalPlacements = placements.filter((p) => p.state !== 'active');
+    // A line belongs to THIS order's CURRENT total only through an ACTIVE
+    // placement — a mere historical placement here does not count it.
+    const currentLineIds = new Set(activePlacements.map((p) => String(p.line_item_id)));
+    // Every line ever placed here (for display), current or historical.
+    const allLineIds = [...new Set(placements.map((p) => String(p.line_item_id)))];
 
     const lines =
-      lineIds.length > 0
-        ? ((
-            (
-              await client
-                .from('acquisition_line_items')
-                .select(
-                  'id, public_id, quantity, description, reference_number, source_detail, ' +
-                    'source_record_id, external_identifier_id, created_at'
-                )
-                .eq('workspace_id', workspaceId)
-                .in('id', lineIds)
-            ).data ?? []
-          ) as unknown as Array<Record<string, unknown>>)
+      allLineIds.length > 0
+        ? await rq(
+            client
+              .from('acquisition_line_items')
+              .select(
+                'id, public_id, quantity, description, reference_number, source_detail, ' +
+                  'source_record_id, external_identifier_id, created_at'
+              )
+              .eq('workspace_id', workspaceId)
+              .in('id', allLineIds)
+          )
         : [];
 
-    // Cost components of EVERY scope that bears on this order: line-scoped
-    // (direct), lot-scoped, and order-scoped (shared). Fetched separately and
-    // merged, since they hang off different columns.
-    const componentQueries = await Promise.all([
-      lineIds.length > 0
-        ? client
+    // Components of every scope that bears on this order (for display), fetched
+    // separately and merged, then split into current (unreversed) vs historical.
+    const componentById = new Map<string, Record<string, unknown>>();
+    for (const c of allLineIds.length > 0
+      ? await rq(
+          client
             .from('acquisition_cost_components')
             .select('*')
             .eq('workspace_id', workspaceId)
-            .in('line_item_id', lineIds)
-        : Promise.resolve({ data: [] }),
-      lotIds.length > 0
-        ? client
+            .in('line_item_id', allLineIds)
+        )
+      : []) {
+      componentById.set(String(c.id), c);
+    }
+    for (const c of lotIds.length > 0
+      ? await rq(
+          client
             .from('acquisition_cost_components')
             .select('*')
             .eq('workspace_id', workspaceId)
             .in('lot_id', lotIds)
-        : Promise.resolve({ data: [] }),
+        )
+      : []) {
+      componentById.set(String(c.id), c);
+    }
+    for (const c of await rq(
       client
         .from('acquisition_cost_components')
         .select('*')
         .eq('workspace_id', workspaceId)
-        .eq('order_id', orderId),
-    ]);
-    const componentById = new Map<string, Record<string, unknown>>();
-    for (const q of componentQueries) {
-      for (const c of (q.data ?? []) as unknown as Array<Record<string, unknown>>) {
-        componentById.set(String(c.id), c);
-      }
+        .eq('order_id', orderId)
+    )) {
+      componentById.set(String(c.id), c);
     }
     const components = [...componentById.values()];
     const componentIds = [...componentById.keys()];
+    const currentComponents = components.filter((c) => c.reversed_at == null);
+    const historicalComponents = components.filter((c) => c.reversed_at != null);
 
-    // Allocations in ALL states (candidate, confirmed, reversed) with method.
+    // Allocations in every state; split current (candidate/confirmed) vs reversed.
     const allocations =
       componentIds.length > 0
-        ? ((
-            (
-              await client
-                .from('acquisition_cost_allocations')
-                .select(
-                  'id, public_id, cost_component_id, line_item_id, amount_minor, method, ' +
-                    'state, reviewed_at, reversed_at, created_at'
-                )
-                .eq('workspace_id', workspaceId)
-                .in('cost_component_id', componentIds)
-            ).data ?? []
-          ) as unknown as Array<Record<string, unknown>>)
+        ? await rq(
+            client
+              .from('acquisition_cost_allocations')
+              .select(
+                'id, public_id, cost_component_id, line_item_id, amount_minor, method, ' +
+                  'state, reviewed_by, reviewed_at, reversed_at, created_at'
+              )
+              .eq('workspace_id', workspaceId)
+              .in('cost_component_id', componentIds)
+          )
         : [];
+    const currentAllocations = allocations.filter((a) => a.state !== 'reversed');
+    const reversedAllocations = allocations.filter((a) => a.state === 'reversed');
 
-    // Discrepancy: the source-reported order total kept beside the normalized
-    // known-component total, with unknown/unresolved cost counts made explicit.
-    const orderRow = order[0] as Record<string, unknown>;
+    // Reconciliation counts ONLY current facts: unreversed components, and for
+    // line-scoped components only those whose line currently belongs to this
+    // order through an active placement. A reversed component and its
+    // replacement are never both counted (only the replacement is unreversed).
     let knownComponentMinor = 0;
     let unknownCount = 0;
     let unresolvedCount = 0;
-    for (const c of components) {
+    for (const c of currentComponents) {
+      if (c.line_item_id != null && !currentLineIds.has(String(c.line_item_id))) {
+        continue; // a line-scoped component whose line is no longer placed here
+      }
       if (c.amount_state === 'known' && typeof c.amount_minor === 'number') {
         knownComponentMinor += c.amount_minor;
       }
       if (c.amount_state === 'unknown') unknownCount += 1;
       if (c.attribution_state === 'unresolved') unresolvedCount += 1;
     }
+    const orderRow = order[0] as Record<string, unknown>;
     const sourceTotal =
       typeof orderRow.source_reported_total_minor === 'number'
         ? orderRow.source_reported_total_minor
@@ -371,21 +410,18 @@ router.get(
       unresolvedComponentCount: unresolvedCount,
     };
 
-    // Audit history for this order and everything hanging off it.
-    const auditTargets = [orderId, ...lotIds, ...lineIds, ...componentIds];
+    const auditTargets = [orderId, ...lotIds, ...allLineIds, ...componentIds];
     const auditEvents =
       auditTargets.length > 0
-        ? ((
-            (
-              await client
-                .from('audit_events')
-                .select('id, event_seq, event_type, entity_table, entity_id, created_at')
-                .eq('workspace_id', workspaceId)
-                .in('entity_id', auditTargets)
-                .order('event_seq', { ascending: false })
-                .limit(MAX_PAGE)
-            ).data ?? []
-          ) as unknown as Array<Record<string, unknown>>)
+        ? await rq(
+            client
+              .from('audit_events')
+              .select('id, event_seq, event_type, entity_table, entity_id, created_at')
+              .eq('workspace_id', workspaceId)
+              .in('entity_id', auditTargets)
+              .order('event_seq', { ascending: false })
+              .limit(MAX_PAGE)
+          )
         : [];
 
     res.json({
@@ -394,9 +430,15 @@ router.get(
       order: orderRow,
       lots,
       placements,
+      activePlacements,
+      historicalPlacements,
       lines,
       costComponents: components,
+      currentComponents,
+      historicalComponents,
       allocations,
+      currentAllocations,
+      reversedAllocations,
       discrepancy,
       auditEvents,
     });

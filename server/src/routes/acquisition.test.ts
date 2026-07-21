@@ -241,6 +241,7 @@ async function call(
 }
 
 const MEMBER_ROUTES: ReadonlyArray<[string, string, unknown]> = [
+  ['GET', `/api/acquisition/session?workspaceId=${WS_A}`, undefined],
   ['GET', `/api/acquisition/jobs?workspaceId=${WS_A}`, undefined],
   ['GET', `/api/acquisition/orders?workspaceId=${WS_A}`, undefined],
   ['GET', `/api/acquisition/orders/ord-o1?workspaceId=${WS_A}`, undefined],
@@ -496,5 +497,190 @@ describe('F5: completed API surface contracts', () => {
       { token: 'viewer-token', body: { workspaceId: WS_A } }
     );
     expect(res.status).toBe(403);
+  });
+
+  it('the session endpoint returns the caller ACTUAL role (not a supplied one)', async () => {
+    const viewer = await call('GET', `/api/acquisition/session?workspaceId=${WS_A}`, {
+      token: 'viewer-token',
+    });
+    expect(viewer.status).toBe(200);
+    expect((await viewer.json()).role).toBe('viewer');
+
+    const operator = await call('GET', `/api/acquisition/session?workspaceId=${WS_A}`, {
+      token: 'operator-token',
+    });
+    expect((await operator.json()).role).toBe('operator');
+
+    const owner = await call('GET', `/api/acquisition/session?workspaceId=${WS_A}`, {
+      token: 'owner-token',
+    });
+    expect((await owner.json()).role).toBe('owner');
+  });
+});
+
+// F3: current-versus-historical order reconciliation. A dedicated fake that
+// records eq/in filters and models a reversed component, a reversed allocation,
+// and a line rehomed away (historical placement only), so reconciliation must
+// count ONLY current, actively-placed facts.
+describe('F3: order detail current vs historical reconciliation', () => {
+  const ORDER = 'ORDER-1';
+
+  function makeDetailClient(token: string, failTable: string | null) {
+    const identity = TOKENS[token];
+    function rowsFor(table: string, cols: Set<string>): unknown[] {
+      if (table === 'workspace_members') {
+        return identity?.memberships[WS_A] ? [{ role: identity.memberships[WS_A] }] : [];
+      }
+      if (table === 'acquisition_orders') {
+        return [
+          {
+            id: ORDER,
+            public_id: 'RV-ACQ-1',
+            source_reported_total_minor: 1500,
+            currency: 'USD',
+            suppliers: { public_id: 'RV-SUP-1' },
+          },
+        ];
+      }
+      if (table === 'acquisition_lots') {
+        return [{ id: 'LOT-A', public_id: 'RV-ALOT-A', sequence_no: 1, label: null }];
+      }
+      if (table === 'acquisition_lot_lines') {
+        return [
+          { id: 'PL1', lot_id: 'LOT-A', line_item_id: 'LINE-1', state: 'active' },
+          {
+            id: 'PL2',
+            lot_id: 'LOT-A',
+            line_item_id: 'LINE-2',
+            state: 'superseded',
+            superseded_by_id: 'PL3',
+          },
+        ];
+      }
+      if (table === 'acquisition_line_items') {
+        return [
+          {
+            id: 'LINE-1',
+            public_id: 'WN-A-000001',
+            source_detail: { seller: 'acme' },
+            source_record_id: 'sr-1',
+            external_identifier_id: 'ext-1',
+          },
+          { id: 'LINE-2', public_id: 'WN-A-000002', source_record_id: 'sr-2' },
+        ];
+      }
+      if (table === 'acquisition_cost_components') {
+        // Only the line-scoped query (filters on line_item_id) returns rows.
+        if (!cols.has('line_item_id')) return [];
+        return [
+          {
+            id: 'C1',
+            line_item_id: 'LINE-1',
+            component_type: 'item_price',
+            amount_state: 'known',
+            amount_minor: 1000,
+            attribution_state: 'direct',
+            reversed_at: null,
+          },
+          {
+            id: 'C1OLD',
+            line_item_id: 'LINE-1',
+            component_type: 'item_price',
+            amount_state: 'known',
+            amount_minor: 900,
+            attribution_state: 'direct',
+            reversed_at: '2026-01-01T00:00:00Z',
+          },
+          {
+            id: 'C2',
+            line_item_id: 'LINE-2',
+            component_type: 'item_price',
+            amount_state: 'known',
+            amount_minor: 500,
+            attribution_state: 'direct',
+            reversed_at: null,
+          },
+        ];
+      }
+      if (table === 'acquisition_cost_allocations') {
+        return [
+          { id: 'AL1', cost_component_id: 'C1', state: 'confirmed', method: 'manual', amount_minor: 1000 },
+          { id: 'AL2', cost_component_id: 'C1', state: 'reversed', method: 'manual', amount_minor: 900 },
+        ];
+      }
+      if (table === 'audit_events') return [{ id: 'AE1', event_seq: 1, event_type: 'x' }];
+      return [];
+    }
+
+    return {
+      auth: {
+        getUser: async () =>
+          identity
+            ? { data: { user: { id: identity.userId } }, error: null }
+            : { data: { user: null }, error: { message: 'invalid token' } },
+      },
+      from(table: string) {
+        const cols = new Set<string>();
+        const result = () =>
+          table === failTable
+            ? { data: null, error: { message: 'subordinate query failed' } }
+            : { data: rowsFor(table, cols), error: null, count: 0 };
+        const q: Record<string, unknown> = {
+          select: () => q,
+          eq: (c: string) => {
+            cols.add(c);
+            return q;
+          },
+          in: (c: string) => {
+            cols.add(c);
+            return q;
+          },
+          order: () => q,
+          range: async () => result(),
+          limit: async () => result(),
+          then: (resolve: (v: unknown) => unknown) => Promise.resolve(resolve(result())),
+        };
+        return q;
+      },
+      rpc: async () => ({ data: null, error: null }),
+    };
+  }
+
+  beforeEach(() => enable());
+  afterAll(() => {
+    disable();
+    setCallerClientFactoryForTests((token) => makeFakeClient(token) as never);
+  });
+
+  it('counts only current, actively-placed, unreversed facts', async () => {
+    setCallerClientFactoryForTests((token) => makeDetailClient(token, null) as never);
+    const res = await call('GET', `/api/acquisition/orders/${ORDER}?workspaceId=${WS_A}`, {
+      token: 'operator-token',
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    // C1OLD (reversed) excluded; C2 excluded (LINE-2 only historically placed).
+    expect(json.discrepancy.normalizedKnownComponentMinor).toBe(1000);
+    expect(json.discrepancy.differenceMinor).toBe(500);
+    // History is still returned in its own sections.
+    expect(json.activePlacements).toHaveLength(1);
+    expect(json.historicalPlacements).toHaveLength(1);
+    expect(json.currentComponents).toHaveLength(2);
+    expect(json.historicalComponents).toHaveLength(1);
+    expect(json.currentAllocations).toHaveLength(1);
+    expect(json.reversedAllocations).toHaveLength(1);
+  });
+
+  it('fails the whole request (closed) when a subordinate query errors', async () => {
+    setCallerClientFactoryForTests((token) =>
+      makeDetailClient(token, 'acquisition_cost_components') as never
+    );
+    const res = await call('GET', `/api/acquisition/orders/${ORDER}?workspaceId=${WS_A}`, {
+      token: 'operator-token',
+    });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    const json = await res.json();
+    expect(json).toHaveProperty('error');
+    expect(json).not.toHaveProperty('costComponents');
   });
 });

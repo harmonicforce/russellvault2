@@ -27,6 +27,7 @@ export interface AcquisitionOrderRow {
 }
 
 export interface SupplierCandidate {
+  readonly sourceSystemId: string;
   readonly normalizedHandle: string;
   readonly rawHandles: readonly string[];
   readonly supplierCount: number;
@@ -70,9 +71,15 @@ export interface OrderDetail {
   readonly order: Record<string, unknown>;
   readonly lots: ReadonlyArray<Record<string, unknown>>;
   readonly placements: ReadonlyArray<Record<string, unknown>>;
+  readonly activePlacements: ReadonlyArray<Record<string, unknown>>;
+  readonly historicalPlacements: ReadonlyArray<Record<string, unknown>>;
   readonly lines: ReadonlyArray<Record<string, unknown>>;
   readonly costComponents: ReadonlyArray<Record<string, unknown>>;
+  readonly currentComponents: ReadonlyArray<Record<string, unknown>>;
+  readonly historicalComponents: ReadonlyArray<Record<string, unknown>>;
   readonly allocations: ReadonlyArray<Record<string, unknown>>;
+  readonly currentAllocations: ReadonlyArray<Record<string, unknown>>;
+  readonly reversedAllocations: ReadonlyArray<Record<string, unknown>>;
   readonly discrepancy: Record<string, unknown>;
   readonly auditEvents: ReadonlyArray<Record<string, unknown>>;
 }
@@ -86,6 +93,8 @@ export interface CommitOutcome {
 }
 
 export interface AcquisitionTransport {
+  /** The caller's ACTUAL role, resolved by the server/database (never the UI). */
+  getSession(workspaceId: string): Promise<{ role: WorkspaceRole }>;
   listJobs(workspaceId: string): Promise<AcquisitionJobRow[]>;
   listChannels(workspaceId: string): Promise<ChannelRow[]>;
   listOrders(
@@ -129,6 +138,8 @@ export interface AcquisitionReviewState {
   readonly candidates: readonly SupplierCandidate[];
   readonly auditEvents: ReadonlyArray<Record<string, unknown>>;
   readonly preview: PreviewSummary | null;
+  /** The exact source job the current preview is for; commit is gated on it. */
+  readonly previewedSourceJobId: string | null;
   readonly orderDetail: OrderDetail | null;
   readonly commitOutcome: CommitOutcome | null;
   readonly error: string | null;
@@ -163,6 +174,7 @@ export class AcquisitionReviewController {
       candidates: [],
       auditEvents: [],
       preview: null,
+      previewedSourceJobId: null,
       orderDetail: null,
       commitOutcome: null,
       error: null,
@@ -186,19 +198,24 @@ export class AcquisitionReviewController {
     for (const fn of this.listeners) fn(this.state);
   }
 
-  async open(workspaceId: string, role: WorkspaceRole): Promise<void> {
+  async open(workspaceId: string): Promise<void> {
     if (!this.transport || this.state.status === 'unconfigured') return;
     this.set({
       status: 'loading',
       workspaceId,
-      role,
-      capabilities: capabilitiesFor(role),
+      role: null,
+      capabilities: CLOSED_CAPS,
       error: null,
       preview: null,
+      previewedSourceJobId: null,
       orderDetail: null,
       commitOutcome: null,
     });
     try {
+      // The caller's ACTUAL role is resolved by the server; capabilities derive
+      // from it, never from any value the UI supplied.
+      const session = await this.transport.getSession(workspaceId);
+      const role = session.role;
       const [jobs, channels, orders, candidates, auditEvents] = await Promise.all([
         this.transport.listJobs(workspaceId),
         this.transport.listChannels(workspaceId),
@@ -208,6 +225,8 @@ export class AcquisitionReviewController {
       ]);
       this.set({
         status: 'ready',
+        role,
+        capabilities: capabilitiesFor(role),
         jobs,
         channels,
         orders: orders.orders,
@@ -251,16 +270,28 @@ export class AcquisitionReviewController {
       this.set({ error: 'committing requires an operator or owner role' });
       return;
     }
+    // Commit is gated on a SUCCESSFUL preview of the EXACT same source job. A
+    // changed source job (or none previewed) is refused before any request.
+    if (this.state.previewedSourceJobId !== input.sourceImportJobId) {
+      this.set({ error: 'preview this source import job before committing it' });
+      return;
+    }
     try {
       const commitOutcome = await this.transport.commit(this.state.workspaceId, input);
       // Refresh the loaded data after a commit, THEN surface the outcome (open()
       // resets transient fields, so the outcome is set last to stay visible).
       const ws = this.state.workspaceId;
-      const role = this.state.role;
-      if (ws && role) await this.open(ws, role);
+      if (ws) await this.open(ws);
       this.set({ commitOutcome, error: null });
     } catch (err) {
       this.set({ error: err instanceof Error ? err.message : 'commit failed' });
+    }
+  }
+
+  /** Invalidate a stale preview when the operator changes the source job. */
+  clearPreview(): void {
+    if (this.state.preview || this.state.previewedSourceJobId) {
+      this.set({ preview: null, previewedSourceJobId: null });
     }
   }
 
@@ -273,7 +304,8 @@ export class AcquisitionReviewController {
     }
     try {
       const preview = await this.transport.preview(this.state.workspaceId, sourceImportJobId);
-      this.set({ preview, error: null });
+      // Record EXACTLY which source job this preview is for; commit is gated on it.
+      this.set({ preview, previewedSourceJobId: sourceImportJobId, error: null });
     } catch (err) {
       this.set({ error: err instanceof Error ? err.message : 'preview failed' });
     }

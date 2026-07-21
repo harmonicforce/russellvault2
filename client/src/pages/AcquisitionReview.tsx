@@ -19,7 +19,6 @@ import { createAcquisitionTransport } from '../lib/acquisitionApi';
 import {
   AcquisitionReviewController,
   type AcquisitionReviewState,
-  type WorkspaceRole,
 } from '../lib/acquisitionReview';
 import { STAGING_NOTICE, getProvenanceUiConfig } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
@@ -87,7 +86,6 @@ export default function AcquisitionReview() {
 
   const [state, setState] = useState<AcquisitionReviewState>(controller.getState());
   const [workspaceId, setWorkspaceId] = useState('');
-  const [role, setRole] = useState<WorkspaceRole>('operator');
   const [sourceJobId, setSourceJobId] = useState('');
   const [channelId, setChannelId] = useState('');
   const [commitKey, setCommitKey] = useState('');
@@ -95,8 +93,19 @@ export default function AcquisitionReview() {
   useEffect(() => controller.subscribe(setState), [controller]);
 
   const openWorkspace = useCallback(() => {
-    if (workspaceId.trim()) void controller.open(workspaceId.trim(), role);
-  }, [controller, workspaceId, role]);
+    // No role is sent: the server resolves the caller's ACTUAL role.
+    if (workspaceId.trim()) void controller.open(workspaceId.trim());
+  }, [controller, workspaceId]);
+
+  const onSourceJobChange = useCallback(
+    (value: string) => {
+      setSourceJobId(value);
+      // Changing the source job invalidates any existing preview, which
+      // disables the commit control until a fresh preview succeeds.
+      controller.clearPreview();
+    },
+    [controller]
+  );
 
   const runPreview = useCallback(() => {
     if (sourceJobId.trim()) void controller.runPreview(sourceJobId.trim());
@@ -156,18 +165,6 @@ export default function AcquisitionReview() {
               placeholder="00000000-0000-0000-0000-000000000000"
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs">
-            <span className="text-ink-muted">Your role there</span>
-            <select
-              className="rounded-lg border border-hairline bg-surface-0 px-2 py-1.5 text-xs"
-              value={role}
-              onChange={(e) => setRole(e.target.value as WorkspaceRole)}
-            >
-              <option value="viewer">viewer</option>
-              <option value="operator">operator</option>
-              <option value="owner">owner</option>
-            </select>
-          </label>
           <button
             className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
             onClick={openWorkspace}
@@ -177,8 +174,9 @@ export default function AcquisitionReview() {
           </button>
         </div>
         <p className="text-[11px] text-ink-muted">
-          The role selected here only shapes this interface. The server verifies
-          your token and re-checks your actual membership on every request.
+          Your capabilities are determined by your ACTUAL workspace role, which the
+          server resolves from your token — there is no role selector, and nothing
+          in this interface can grant a viewer operator or owner powers.
         </p>
       </Section>
 
@@ -198,7 +196,7 @@ export default function AcquisitionReview() {
                 <input
                   className="w-96 rounded-lg border border-hairline bg-surface-0 px-2 py-1.5 font-mono text-xs"
                   value={sourceJobId}
-                  onChange={(e) => setSourceJobId(e.target.value)}
+                  onChange={(e) => onSourceJobChange(e.target.value)}
                   placeholder="the source import_job to map"
                 />
               </label>
@@ -269,11 +267,27 @@ export default function AcquisitionReview() {
                   <button
                     className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
                     onClick={runCommit}
-                    disabled={!sourceJobId.trim() || !channelId.trim() || !commitKey.trim()}
+                    disabled={
+                      !sourceJobId.trim() ||
+                      !channelId.trim() ||
+                      !commitKey.trim() ||
+                      state.previewedSourceJobId !== sourceJobId.trim()
+                    }
+                    title={
+                      state.previewedSourceJobId !== sourceJobId.trim()
+                        ? 'preview this source job before committing'
+                        : undefined
+                    }
                   >
                     Commit mapping
                   </button>
                 </div>
+                {state.previewedSourceJobId !== sourceJobId.trim() && (
+                  <div className="text-[11px] text-amber-600">
+                    Preview the source job before committing — the commit uses the exact
+                    previewed source job.
+                  </div>
+                )}
                 {state.commitOutcome && (
                   <div className="text-xs text-ink-secondary">
                     Committed job {state.commitOutcome.importJobId}:{' '}
@@ -379,11 +393,14 @@ export default function AcquisitionReview() {
               </div>
               <div className="grid grid-cols-1 gap-3 text-xs md:grid-cols-2">
                 <DetailList title={`Lots (${state.orderDetail.lots.length})`} rows={state.orderDetail.lots} keys={['public_id', 'sequence_no', 'label']} />
-                <DetailList title={`Lot-line placements (${state.orderDetail.placements.length})`} rows={state.orderDetail.placements} keys={['line_item_id', 'state', 'sequence_no']} />
-                <DetailList title={`Line items (${state.orderDetail.lines.length})`} rows={state.orderDetail.lines} keys={['public_id', 'quantity', 'source_record_id']} />
-                <DetailList title={`Cost components (${state.orderDetail.costComponents.length})`} rows={state.orderDetail.costComponents} keys={['component_type', 'amount_state', 'amount_minor', 'attribution_state']} />
-                <DetailList title={`Allocations (${state.orderDetail.allocations.length})`} rows={state.orderDetail.allocations} keys={['method', 'state', 'amount_minor']} />
-                <DetailList title={`Audit history (${state.orderDetail.auditEvents.length})`} rows={state.orderDetail.auditEvents} keys={['event_seq', 'event_type']} />
+                <DetailList title={`Line items — source vs normalized (${state.orderDetail.lines.length})`} rows={state.orderDetail.lines} keys={['public_id', 'quantity', 'description', 'source_detail', 'source_record_id', 'external_identifier_id']} />
+                <DetailList title={`Active placements (${state.orderDetail.activePlacements.length})`} rows={state.orderDetail.activePlacements} keys={['line_item_id', 'lot_id', 'sequence_no', 'state']} />
+                <DetailList title={`Historical placements (${state.orderDetail.historicalPlacements.length})`} rows={state.orderDetail.historicalPlacements} keys={['line_item_id', 'lot_id', 'state', 'superseded_by_id']} />
+                <DetailList title={`Current cost components (${state.orderDetail.currentComponents.length})`} rows={state.orderDetail.currentComponents} keys={['component_type', 'line_item_id', 'lot_id', 'order_id', 'amount_state', 'amount_minor', 'currency', 'attribution_state', 'evidence_note', 'source_record_id']} />
+                <DetailList title={`Reversed cost components (${state.orderDetail.historicalComponents.length})`} rows={state.orderDetail.historicalComponents} keys={['component_type', 'amount_state', 'amount_minor', 'reversed_at', 'reversed_by_id']} />
+                <DetailList title={`Current allocations (${state.orderDetail.currentAllocations.length})`} rows={state.orderDetail.currentAllocations} keys={['line_item_id', 'method', 'amount_minor', 'state', 'reviewed_by', 'reviewed_at']} />
+                <DetailList title={`Reversed allocations (${state.orderDetail.reversedAllocations.length})`} rows={state.orderDetail.reversedAllocations} keys={['line_item_id', 'method', 'amount_minor', 'state', 'reversed_at']} />
+                <DetailList title={`Audit history (${state.orderDetail.auditEvents.length})`} rows={state.orderDetail.auditEvents} keys={['event_seq', 'event_type', 'entity_table']} />
               </div>
             </Section>
           )}
@@ -398,7 +415,13 @@ export default function AcquisitionReview() {
             ) : (
               <ul className="space-y-1 text-xs">
                 {state.candidates.map((c) => (
-                  <li key={c.normalizedHandle} className="flex flex-wrap gap-2">
+                  <li
+                    key={`${c.sourceSystemId}|${c.normalizedHandle}`}
+                    className="flex flex-wrap gap-2"
+                  >
+                    <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
+                      src {c.sourceSystemId}
+                    </span>
                     <span className="font-mono text-ink-muted">{c.normalizedHandle}</span>
                     <span>→</span>
                     {c.rawHandles.map((h) => (

@@ -478,15 +478,16 @@ create table public.acquisition_cost_components (
     references public.acquisition_cost_components (id, workspace_id) on delete restrict,
   constraint acquisition_cost_components_one_scope
     check (num_nonnulls(line_item_id, lot_id, order_id) = 1),
+  -- A 'known' amount is a real, POSITIVE priced amount. A known zero is never
+  -- valid — zero-with-evidence is 'documented_free', and an evidence_note does
+  -- NOT rescue a known zero.
   constraint acquisition_cost_components_amount_known
-    check (amount_state <> 'known' or amount_minor is not null),
+    check (amount_state <> 'known' or (amount_minor is not null and amount_minor > 0)),
   constraint acquisition_cost_components_amount_unknown
     check (amount_state <> 'unknown' or amount_minor is null),
   -- Zero is allowed ONLY when documented, and documentation is required.
   constraint acquisition_cost_components_documented_free
     check (amount_state <> 'documented_free' or (amount_minor = 0 and evidence_note is not null)),
-  constraint acquisition_cost_components_known_nonzero_or_free
-    check (amount_state <> 'known' or amount_minor > 0 or evidence_note is not null),
   constraint acquisition_cost_components_attribution_direct
     check (attribution_state <> 'direct' or line_item_id is not null),
   constraint acquisition_cost_components_attribution_shared
