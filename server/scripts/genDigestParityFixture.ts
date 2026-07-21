@@ -103,6 +103,7 @@ function main(): void {
       `(${q(li.publicId)},${q(o.sourceOrderReference)},${q(o.sellerRawHandle)},` +
         `${q(o.orderStatus)},${q(o.sourceReportedStatus)},` +
         `${o.sourceReportedTotalMinor === null ? 'null' : o.sourceReportedTotalMinor},` +
+        `${qn(o.currency)},${qn(o.occurredAt)},` +
         `${q(srId)},${qn(extId)},${li.quantity},${qn(li.description)},${qn(li.referenceNumber)},` +
         `${q(JSON.stringify(li.sourceDetail))}::jsonb,` +
         `${q(c.amountState)},${c.amountMinor === null ? 'null' : c.amountMinor},${qn(c.evidenceNote)})`
@@ -188,7 +189,8 @@ where id = '66660000-0000-4000-8000-000000000001';
 -- The frozen plan facts, one row per line (order and component are 1:1 here).
 create temp table plan_lines (
   public_id text, order_ref text, seller text, order_status text,
-  source_reported_status text, total_minor bigint, source_record_id uuid,
+  source_reported_status text, total_minor bigint, currency text,
+  occurred_at text, source_record_id uuid,
   external_identifier_id uuid, quantity integer, description text,
   reference_number text, source_detail jsonb, amount_state text,
   amount_minor bigint, evidence_note text
@@ -223,7 +225,8 @@ begin
         'source_order_reference', order_ref, 'seller_raw_handle', seller,
         'first_source_record_id', source_record_id, 'order_status', order_status,
         'source_reported_status', source_reported_status,
-        'source_reported_total_minor', total_minor, 'currency', 'USD'))
+        'source_reported_total_minor', total_minor, 'currency', currency,
+        'occurred_at', occurred_at))
       from (select * from plan_lines order by order_ref
             offset v_off * v_batch limit v_batch) b), '[]'::jsonb));
   end loop;

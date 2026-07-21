@@ -290,6 +290,11 @@ create table public.acquisition_orders (
   -- The scoped external evidence (e.g. a Whatnot order id). NOT a canonical
   -- internal identifier; uniqueness below is scoped to the source system.
   source_order_reference text not null check (char_length(source_order_reference) between 1 and 200),
+  -- Order-level provenance: the raw source_record this order was first seen on,
+  -- captured on the ORDER itself (not inferred from supplier_aliases, whose
+  -- first_seen row may belong to an earlier import). NOT NULL and — because the
+  -- table is fully append-only — immutable once staged.
+  first_source_record_id uuid not null,
   order_status public.acquisition_order_status not null default 'unknown',
   source_reported_status text check (source_reported_status is null or char_length(source_reported_status) <= 200),
   -- Independently derived from the source's own reported line totals at
@@ -313,6 +318,8 @@ create table public.acquisition_orders (
     references public.source_systems (id, workspace_id) on delete restrict,
   foreign key (acquisition_import_job_id, workspace_id)
     references public.acquisition_import_jobs (id, workspace_id) on delete restrict,
+  foreign key (first_source_record_id, workspace_id)
+    references public.source_records (id, workspace_id) on delete restrict,
   constraint acquisition_orders_total_requires_currency
     check (source_reported_total_minor is null or currency is not null)
 );

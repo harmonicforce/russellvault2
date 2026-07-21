@@ -30,7 +30,7 @@ describe('the fixed digest vector', () => {
         sourceReportedStatus: 'completed',
         sourceReportedTotalMinor: 1000,
         currency: 'USD',
-        occurredAt: null,
+        occurredAt: '2026-01-06 00:00:00',
       },
     ],
     lots: [{ sourceOrderReference: 'ORD-A', sequenceNo: 1, label: null }],
@@ -76,12 +76,13 @@ describe('the fixed digest vector', () => {
   // Length-prefixed fields (<byte-length>:<text>, null -> ~), sections in stable
   // key order, source_detail keys bytewise-sorted with JSON.stringify values.
   const CANON =
-    'ACQPLAN15:1.0.0ORD1:15:ORD-A4:acme9:completed9:completedLOT1:15:ORD-A1:1~' +
+    'ACQPLAN15:1.0.0ORD1:15:ORD-A4:acme5:rec-19:completed9:completed4:10003:USD' +
+    '24:2026-01-06T00:00:00.000ZLOT1:15:ORD-A1:1~' +
     'LIN1:111:WN-A-0001005:ORD-A1:16:Widget~{317:seller_raw_handle6:"acme"' +
     '11:source_file4:null9:unit_cost1:35:rec-15:ext-11:1' +
     'CMP1:14:line11:WN-A-00010010:item_price5:known4:10003:USD~5:rec-1' +
     'EXP1:11:11:11:11:01:0';
-  const SHA = 'e61a37b44711033d149e66fb2e5d2059b537d9aebaa9b7ef144cd6908d03aace';
+  const SHA = 'eb3626902187f4f9553b1268fb0018eab33c1442a4c353c22373f147ef41f742';
 
   it('serializes to the exact canonical text', () => {
     expect(acquisitionPlanCanonical(plan)).toBe(CANON);
@@ -113,7 +114,7 @@ describe('the exact 2,149-line driver plan digest (PostgreSQL parity anchor)', (
     // If this value changes, regenerate supabase/tests/15_acquisition_digest_
     // parity.sql (server/scripts/genDigestParityFixture.ts) so both tiers agree.
     expect(plan.planSha256).toBe(
-      '4c7a81578c44beb3b6776b76d8a7ed2d813b4dc4e7d7f8df830de78ef507858c'
+      '82f162b83076f92a478eea632589496e6d0dbad223fdfbbb1f86a66180e590ea'
     );
   });
 });

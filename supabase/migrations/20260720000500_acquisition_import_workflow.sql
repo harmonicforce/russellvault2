@@ -304,6 +304,7 @@ begin
    and o.source_system_id = v_source_system_id
    and o.source_order_reference = r->>'source_order_reference'
   where o.supplier_id is distinct from a.supplier_id
+     or o.first_source_record_id is distinct from (r->>'first_source_record_id')::uuid
      or o.order_status is distinct from (r->>'order_status')::public.acquisition_order_status
      or o.source_reported_status is distinct from r->>'source_reported_status'
      or o.source_reported_total_minor is distinct from
@@ -311,7 +312,8 @@ begin
              then (r->>'source_reported_total_minor')::bigint else null end
      or o.currency is distinct from r->>'currency'
      or o.occurred_at is distinct from
-        case when r ? 'occurred_at' then (r->>'occurred_at')::timestamptz else null end;
+        case when r ? 'occurred_at'
+             then (r->>'occurred_at')::timestamp at time zone 'UTC' else null end;
 
   if v_conflict_ref is not null then
     raise exception
@@ -322,18 +324,20 @@ begin
   with ins as (
     insert into public.acquisition_orders (
       workspace_id, public_id, channel_id, supplier_id, source_system_id,
-      acquisition_import_job_id, source_order_reference, order_status,
-      source_reported_status, source_reported_total_minor, currency, occurred_at,
-      created_by_process
+      acquisition_import_job_id, source_order_reference, first_source_record_id,
+      order_status, source_reported_status, source_reported_total_minor, currency,
+      occurred_at, created_by_process
     )
     select
       v_job.workspace_id, app.mint_governed_public_id('RV-ACQ'), v_job.channel_id,
       a.supplier_id, v_source_system_id, v_job.id, r->>'source_order_reference',
+      (r->>'first_source_record_id')::uuid,
       (r->>'order_status')::public.acquisition_order_status, r->>'source_reported_status',
       case when r ? 'source_reported_total_minor'
            then (r->>'source_reported_total_minor')::bigint else null end,
       r->>'currency',
-      case when r ? 'occurred_at' then (r->>'occurred_at')::timestamptz else null end,
+      case when r ? 'occurred_at'
+           then (r->>'occurred_at')::timestamp at time zone 'UTC' else null end,
       'acquisition.import'
     from jsonb_array_elements(p_orders) as r
     join public.supplier_aliases a
@@ -864,6 +868,19 @@ as $$
 $$;
 revoke all on function app.dg_sd(jsonb) from public;
 
+-- dg_ts: the ONE canonical form for a timestamp shared with Node — UTC ISO-8601
+-- with fixed millisecond precision (e.g. 2026-01-06T00:00:00.000Z). Rendered
+-- from the instant at UTC, so it is independent of the session TimeZone. Node's
+-- canonOccurredAt (planDigest.ts) produces the identical string.
+create function app.dg_ts(p timestamptz)
+returns text language sql immutable
+set search_path = ''
+as $$
+  select case when p is null then null
+    else to_char(p at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') end
+$$;
+revoke all on function app.dg_ts(timestamptz) from public;
+
 create function app.compute_acquisition_plan_digest(p_import_job_id uuid)
 returns text
 language plpgsql
@@ -909,7 +926,10 @@ begin
       app.dg_f((select min(a.raw_handle) from public.supplier_aliases a
                 where a.workspace_id = o.workspace_id and a.source_system_id = o.source_system_id
                   and a.supplier_id = o.supplier_id)) ||
-      app.dg_f(o.order_status::text) || app.dg_f(o.source_reported_status),
+      app.dg_f(o.first_source_record_id::text) ||
+      app.dg_f(o.order_status::text) || app.dg_f(o.source_reported_status) ||
+      app.dg_f(o.source_reported_total_minor::text) || app.dg_f(o.currency) ||
+      app.dg_f(app.dg_ts(o.occurred_at)),
       '' order by o.source_order_reference collate "C")
     from public.acquisition_orders o where o.acquisition_import_job_id = v_job.id), '');
 

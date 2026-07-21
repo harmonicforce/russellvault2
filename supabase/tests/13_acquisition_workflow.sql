@@ -169,15 +169,26 @@ declare
   v_desc1 text := 'Item 1';
   v_sd1 jsonb := '{"seller_raw_handle":"acme_traders","unit_cost":5,"note":null}'::jsonb;
   v_amt1 bigint := 1000;
+  -- ORD-1 order-level provenance facts (clean values; a variant tampers one).
+  v_fsr1 text := '77770000-0000-4000-8000-000000000001';
+  v_total1 bigint := 1000;
+  v_curr1 text := 'USD';
+  v_occ1 text := '2026-01-02 00:00:00';
 begin
   if p_variant = 'qty' then v_qty1 := 3; end if;
   if p_variant = 'desc' then v_desc1 := 'TAMPERED'; end if;
   if p_variant = 'sd' then v_sd1 := '{"seller_raw_handle":"acme_traders","unit_cost":999,"note":null}'::jsonb; end if;
   if p_variant = 'amount' then v_amt1 := 9999; end if;
+  -- Order-provenance tampers: each changes exactly ONE ORD-1 field.
+  if p_variant = 'fsr' then v_fsr1 := '77770000-0000-4000-8000-000000000002'; end if;
+  if p_variant = 'total' then v_total1 := 9999; end if;
+  if p_variant = 'currency' then v_curr1 := 'EUR'; end if;
+  if p_variant = 'occurred' then v_occ1 := '2026-06-06 00:00:00'; end if;
 
   perform public.stage_acquisition_orders(p_job, jsonb_build_array(
     jsonb_build_object('source_order_reference','ORD-1','seller_raw_handle','acme_traders',
-      'first_source_record_id','77770000-0000-4000-8000-000000000001',
+      'first_source_record_id',v_fsr1,
+      'source_reported_total_minor',v_total1,'currency',v_curr1,'occurred_at',v_occ1,
       'order_status','completed','source_reported_status','completed'),
     jsonb_build_object('source_order_reference','ORD-2','seller_raw_handle','acme_traders',
       'first_source_record_id','77770000-0000-4000-8000-000000000002',
@@ -272,7 +283,7 @@ end $$;
 -- The frozen plan digest for the clean plan, captured once from the database's
 -- own canonical function app.compute_acquisition_plan_digest (this value is what
 -- that function returns for the plan staged by pg_temp.stage_clean_plan).
-set my.dclean = 'e567ba47fbfdc3bb9433b1fde7efaed2a73bbcb0c354a9d708e1fa88e49fb2cb';
+set my.dclean = 'c736e683f56569ac54c151e38a9b01f3cc332ab178e594359915bc6202eae1fc';
 
 -- ===== GF2: governed corrections are refused while the job is preview =====
 savepoint pre;
@@ -369,6 +380,24 @@ savepoint t5;
 select throws_ok(format($$select pg_temp.try_finalize('placement', %L)$$, current_setting('my.dclean')),
   '23514', null, 'a changed lot placement is refused');
 rollback to savepoint t5;
+-- Order-level provenance: changing ONLY an order fact (still valid rows) is
+-- refused under the clean digest — the order facts are inside the frozen plan.
+savepoint t6;
+select throws_ok(format($$select pg_temp.try_finalize('fsr', %L)$$, current_setting('my.dclean')),
+  '23514', null, 'a changed order first_source_record_id is refused');
+rollback to savepoint t6;
+savepoint t7;
+select throws_ok(format($$select pg_temp.try_finalize('total', %L)$$, current_setting('my.dclean')),
+  '23514', null, 'a changed order source_reported_total_minor is refused');
+rollback to savepoint t7;
+savepoint t8;
+select throws_ok(format($$select pg_temp.try_finalize('currency', %L)$$, current_setting('my.dclean')),
+  '23514', null, 'a changed order currency is refused');
+rollback to savepoint t8;
+savepoint t9;
+select throws_ok(format($$select pg_temp.try_finalize('occurred', %L)$$, current_setting('my.dclean')),
+  '23514', null, 'a changed order occurred_at is refused');
+rollback to savepoint t9;
 -- The rejected finalizations left the job in preview and wrote no commit event.
 select is((select count(*)::int from public.acquisition_import_jobs
            where source_import_job_id='66660000-0000-4000-8000-000000000001' and status='committed'),

@@ -30,6 +30,27 @@ function byteCompare(a: string, b: string): number {
   return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
 }
 
+/**
+ * The ONE canonical form for a timestamp shared with PostgreSQL (app.dg_ts) —
+ * UTC ISO-8601 with fixed millisecond precision, e.g. 2026-01-06T00:00:00.000Z.
+ * A timezone-less source wall-clock (e.g. "2026-01-06 00:00:00") is interpreted
+ * as UTC, so the canonical instant is independent of any machine/session zone
+ * and matches (input::timestamp at time zone 'UTC') on the database side.
+ */
+export function canonOccurredAt(occurredAt: string | null): string | null {
+  if (occurredAt === null) return null;
+  const s = occurredAt.trim();
+  // A bare date/time with no zone designator is anchored to UTC. Anything that
+  // already carries a zone (Z or ±hh:mm) is left for Date to place on the line.
+  const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(s);
+  const iso = hasZone ? s.replace(' ', 'T') : `${s.replace(' ', 'T')}Z`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`occurred_at is not a parseable timestamp: ${occurredAt}`);
+  }
+  return d.toISOString();
+}
+
 function encodeSourceDetail(sd: Record<string, JsonValue>): string {
   const keys = Object.keys(sd).sort(byteCompare);
   let out = `{${keys.length}`;
@@ -50,8 +71,12 @@ export function acquisitionPlanCanonical(plan: AcquisitionPlan): string {
     parts.push(
       f(o.sourceOrderReference),
       f(o.sellerRawHandle),
+      f(o.firstSourceRecordId),
       f(o.orderStatus),
-      f(o.sourceReportedStatus)
+      f(o.sourceReportedStatus),
+      fi(o.sourceReportedTotalMinor),
+      f(o.currency),
+      f(canonOccurredAt(o.occurredAt))
     );
   }
 

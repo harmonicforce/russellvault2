@@ -17,6 +17,7 @@ export interface AcquisitionOrderRow {
   readonly id: string;
   readonly public_id: string;
   readonly source_order_reference: string;
+  readonly first_source_record_id: string;
   readonly order_status: string;
   readonly source_reported_status: string;
   readonly source_reported_total_minor: number | null;

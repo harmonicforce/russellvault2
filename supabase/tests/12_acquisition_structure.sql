@@ -16,6 +16,13 @@ select has_table('public'::name, 'acquisition_line_items'::name, 'acquisition_li
 select has_table('public'::name, 'acquisition_cost_components'::name, 'acquisition_cost_components exists');
 select has_table('public'::name, 'acquisition_cost_allocations'::name, 'acquisition_cost_allocations exists');
 
+-- Order-level provenance: acquisition_orders carries an immutable, NOT NULL
+-- first_source_record_id (the raw row the order was first seen on).
+select col_not_null('public'::name, 'acquisition_orders'::name, 'first_source_record_id'::name,
+  'acquisition_orders.first_source_record_id is NOT NULL');
+select col_type_is('public'::name, 'acquisition_orders'::name, 'first_source_record_id'::name,
+  'uuid'::text, 'acquisition_orders.first_source_record_id is a uuid');
+
 -- Governed public-id minting produces the expected prefix ------------------------------
 select is(app.mint_governed_public_id('RV-CH') ~ '^RV-CH-[A-Z0-9]{6,20}$', true,
   'app.mint_governed_public_id mints a channel-shaped id');
@@ -76,7 +83,7 @@ select is(
        'enforce_cost_component_transition', 'enforce_cost_component_reversal_coherence',
        'enforce_cost_allocation_initial_state', 'enforce_cost_allocation_transition',
        'enforce_acquisition_committed_summary_frozen',
-       'dg_f', 'dg_sd', 'compute_acquisition_plan_digest',
+       'dg_f', 'dg_sd', 'dg_ts', 'compute_acquisition_plan_digest',
        'require_committed_acquisition_job'
      )
      and not exists (

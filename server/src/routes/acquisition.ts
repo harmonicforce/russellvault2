@@ -226,9 +226,9 @@ router.get(
     const { data, error, count } = await client
       .from('acquisition_orders')
       .select(
-        'id, public_id, source_order_reference, order_status, source_reported_status, ' +
-          'source_reported_total_minor, currency, occurred_at, supplier_id, ' +
-          'suppliers(public_id), created_at',
+        'id, public_id, source_order_reference, first_source_record_id, order_status, ' +
+          'source_reported_status, source_reported_total_minor, currency, occurred_at, ' +
+          'supplier_id, suppliers(public_id), created_at',
         { count: 'exact' }
       )
       .eq('workspace_id', workspaceId)

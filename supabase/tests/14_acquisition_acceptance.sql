@@ -115,7 +115,7 @@ select pg_temp.login('a2222222-2222-2222-2222-222222222222');
 select pg_temp.put('job', (public.begin_acquisition_import_job(
   'aaaa0000-0000-4000-8000-000000000001', pg_temp.get('channel'),
   '66660000-0000-4000-8000-000000000001', 'acq-key-accept-1', 2,
-  '1.0.0', 'e58c2162fd87af44449b457c866596da73f1d7df089af191eda700d117e516e3')->>'id')::uuid);
+  '1.0.0', '4cdc7e788f6b2bffa6cb145ec086d624e12e2f9e25f98c0e71b291fbbca27ecc')->>'id')::uuid);
 
 -- F3: an order citing a source record from ANOTHER job is refused ------------------------
 select throws_ok(
