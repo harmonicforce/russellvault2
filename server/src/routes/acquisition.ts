@@ -360,10 +360,21 @@ router.get(
     }
     const components = [...componentById.values()];
     const componentIds = [...componentById.keys()];
-    const currentComponents = components.filter((c) => c.reversed_at == null);
-    const historicalComponents = components.filter((c) => c.reversed_at != null);
+    // A component is CURRENT for this order iff it is unreversed AND, when it is
+    // line-scoped, its line currently belongs to the order through an ACTIVE
+    // placement. A reversed component, or a line-scoped one whose line is only
+    // HISTORICALLY placed here (e.g. moved to another order), is historical.
+    const isCurrentComponent = (c: Record<string, unknown>): boolean => {
+      if (c.reversed_at != null) return false;
+      if (c.line_item_id != null && !currentLineIds.has(String(c.line_item_id))) return false;
+      return true;
+    };
+    const currentComponents = components.filter(isCurrentComponent);
+    const historicalComponents = components.filter((c) => !isCurrentComponent(c));
+    const currentComponentIds = new Set(currentComponents.map((c) => String(c.id)));
 
-    // Allocations in every state; split current (candidate/confirmed) vs reversed.
+    // Allocations split by whether they belong to a CURRENT component and are
+    // not themselves reversed; everything else is history.
     const allocations =
       componentIds.length > 0
         ? await rq(
@@ -377,20 +388,21 @@ router.get(
               .in('cost_component_id', componentIds)
           )
         : [];
-    const currentAllocations = allocations.filter((a) => a.state !== 'reversed');
-    const reversedAllocations = allocations.filter((a) => a.state === 'reversed');
+    const currentAllocations = allocations.filter(
+      (a) => a.state !== 'reversed' && currentComponentIds.has(String(a.cost_component_id))
+    );
+    const reversedAllocations = allocations.filter(
+      (a) => a.state === 'reversed' || !currentComponentIds.has(String(a.cost_component_id))
+    );
 
-    // Reconciliation counts ONLY current facts: unreversed components, and for
-    // line-scoped components only those whose line currently belongs to this
-    // order through an active placement. A reversed component and its
-    // replacement are never both counted (only the replacement is unreversed).
+    // Reconciliation counts ONLY the current component set (already excludes
+    // reversed components and lines no longer actively placed here), so a
+    // reversed component and its replacement are never both counted, and a line
+    // with merely a historical placement never inflates the current total.
     let knownComponentMinor = 0;
     let unknownCount = 0;
     let unresolvedCount = 0;
     for (const c of currentComponents) {
-      if (c.line_item_id != null && !currentLineIds.has(String(c.line_item_id))) {
-        continue; // a line-scoped component whose line is no longer placed here
-      }
       if (c.amount_state === 'known' && typeof c.amount_minor === 'number') {
         knownComponentMinor += c.amount_minor;
       }
@@ -459,7 +471,7 @@ router.get(
       .order('created_at', { ascending: true })
       .limit(readLimit(req.query.limit, 100));
     if (error) throw new SourceReadError(error.message, 400);
-    const { data: aliases } = await client
+    const { data: aliases, error: aliasError } = await client
       .from('supplier_aliases')
       .select(
         'id, supplier_id, raw_handle, normalized_handle, source_system_id, ' +
@@ -467,6 +479,9 @@ router.get(
       )
       .eq('workspace_id', workspaceId)
       .limit(MAX_PAGE);
+    // A failed alias query closes the request rather than returning an empty
+    // alias list that would hide a supplier's source system.
+    if (aliasError) throw new SourceReadError(aliasError.message, 400);
     res.json({ staging: true, suppliers: suppliers ?? [], aliases: aliases ?? [] });
   })
 );

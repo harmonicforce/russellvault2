@@ -148,6 +148,16 @@ export interface AcquisitionReviewState {
   readonly authoritative: false;
 }
 
+/**
+ * Render a detail cell value readably: structured values (e.g. source_detail)
+ * become compact JSON rather than the useless "[object Object]".
+ */
+export function formatDetailValue(v: unknown): string {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
 function capabilitiesFor(role: WorkspaceRole | null): AcquisitionCapabilities {
   const canRunWorkflow = role === 'owner' || role === 'operator';
   return { canRunWorkflow, readOnly: !canRunWorkflow };

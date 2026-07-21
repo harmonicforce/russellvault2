@@ -24,7 +24,7 @@
 //
 // This module performs NO database access and NO network access.
 
-import type { JsonValue } from '../provenance/hash.js';
+import { canonicalHash, type JsonValue } from '../provenance/hash.js';
 import { normalizeName } from '../provenance/parsers.js';
 import { decimalToMinor, MoneyError } from './money.js';
 
@@ -105,6 +105,16 @@ export interface SupplierCandidate {
 export interface AcquisitionPlan {
   readonly sourceLabel: string;
   readonly mappingVersion: string;
+  /**
+   * Deterministic digest of the COMPLETE normalized plan (orders + statuses,
+   * supplier raw handles, lots, line public ids + quantities + descriptions +
+   * source details, provenance identifiers, cost-component type/state/amount/
+   * currency/evidence/scope, and every expected reconciliation count). With the
+   * mapping version it freezes the plan identity: a changed mapping — even one
+   * with the same number of lines — yields a different digest and is refused as
+   * a changed-content retry.
+   */
+  readonly planSha256: string;
   readonly currency: string;
   readonly orders: readonly PlannedOrder[];
   readonly lots: readonly PlannedLot[];
@@ -350,9 +360,55 @@ export function buildAcquisitionPlan(
   }
   supplierCandidates.sort((a, b) => a.normalizedHandle.localeCompare(b.normalizedHandle));
 
+  // Canonical serialization of every persisted mapping fact, in the plan's own
+  // deterministic order, hashed to freeze the plan identity.
+  const canonicalPlan: JsonValue = {
+    mappingVersion: ACQUISITION_MAPPING_VERSION,
+    currency,
+    orders: orders.map((o) => [
+      o.sourceOrderReference,
+      o.sellerRawHandle,
+      o.firstSourceRecordId,
+      o.orderStatus,
+      o.sourceReportedStatus,
+      o.sourceReportedTotalMinor,
+      o.currency,
+      o.occurredAt,
+    ]),
+    lots: lots.map((l) => [l.sourceOrderReference, l.sequenceNo, l.label]),
+    lineItems: lineItems.map((li) => [
+      li.publicId,
+      li.sourceOrderReference,
+      li.sourceRecordId,
+      li.externalIdentifierId,
+      li.quantity,
+      li.description,
+      li.referenceNumber,
+      li.sourceDetail,
+    ]),
+    costComponents: costComponents.map((c) => [
+      c.lineItemPublicId,
+      c.componentType,
+      c.amountState,
+      c.amountMinor,
+      c.currency,
+      c.evidenceNote,
+      c.sourceRecordId,
+    ]),
+    expected: [
+      orders.length,
+      lots.length,
+      lineItems.length,
+      costComponents.length,
+      supplierCandidates.length,
+      0,
+    ],
+  } as unknown as JsonValue;
+
   return {
     sourceLabel: options.sourceLabel,
     mappingVersion: ACQUISITION_MAPPING_VERSION,
+    planSha256: canonicalHash(canonicalPlan),
     currency,
     orders,
     lots,

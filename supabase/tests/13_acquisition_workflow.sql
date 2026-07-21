@@ -161,26 +161,48 @@ select pg_temp.login('a2222222-2222-2222-2222-222222222222');
 
 select throws_ok(
   format($$select public.begin_acquisition_import_job(
-      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 5)$$,
+      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 5,
+      '1.0.0', repeat('a', 64))$$,
     pg_temp.get('channel'), '66660000-0000-4000-8000-000000000002'),
   '23514', null,
   'begin refuses to map a Phase 3 job that has not been committed');
 
 select lives_ok(
   format($$select pg_temp.put('job', (public.begin_acquisition_import_job(
-      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 7)->>'id')::uuid)$$,
+      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 7,
+      '1.0.0', repeat('a', 64))->>'id')::uuid)$$,
     pg_temp.get('channel'), '66660000-0000-4000-8000-000000000001'),
   'begin opens an acquisition import job against a COMMITTED Phase 3 job');
 
 select is(
   (select (public.begin_acquisition_import_job(
      'aaaa0000-0000-4000-8000-000000000001', pg_temp.get('channel'),
-     '66660000-0000-4000-8000-000000000001', 'idem-acq-00000001', 7)->>'resumed')::boolean),
-  true, 'reopening with the same idempotency key resumes the existing job');
+     '66660000-0000-4000-8000-000000000001', 'idem-acq-00000001', 7,
+     '1.0.0', repeat('a', 64))->>'resumed')::boolean),
+  true, 'reopening with the same idempotency key AND same plan resumes the existing job');
+
+-- A changed plan digest under the SAME key and line count is a changed-content retry.
+select throws_ok(
+  format($$select public.begin_acquisition_import_job(
+      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 7,
+      '1.0.0', repeat('b', 64))$$,
+    pg_temp.get('channel'), '66660000-0000-4000-8000-000000000001'),
+  '22023', null,
+  'reusing the key with a CHANGED plan digest (same line count) is refused');
+
+-- A changed mapping version under the SAME key is likewise refused.
+select throws_ok(
+  format($$select public.begin_acquisition_import_job(
+      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 7,
+      '2.0.0', repeat('a', 64))$$,
+    pg_temp.get('channel'), '66660000-0000-4000-8000-000000000001'),
+  '22023', null,
+  'reusing the key with a CHANGED mapping version is refused');
 
 select throws_ok(
   format($$select public.begin_acquisition_import_job(
-      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 99)$$,
+      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 99,
+      '1.0.0', repeat('a', 64))$$,
     pg_temp.get('channel'), '66660000-0000-4000-8000-000000000003'),
   '22023', null,
   'reusing the idempotency key for a DIFFERENT (also committed) source job is refused');
@@ -745,6 +767,72 @@ select throws_ok(
   format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 7, 7, 9, 1, 0)$$,
     pg_temp.get('job')),
   '23514', null, 'an already-committed acquisition import cannot be finalized again');
+
+-- ===== Frozen committed summary + response-loss replay =====
+-- A replay with the exact binding returns the FROZEN six counts.
+select is(
+  (select (public.get_committed_acquisition_summary(
+     pg_temp.get('job'), 'idem-acq-00000001', pg_temp.get('channel'),
+     '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('a', 64)))->>'cost_components'),
+  '9', 'a committed replay returns the frozen cost-component count');
+select is(
+  (select (public.get_committed_acquisition_summary(
+     pg_temp.get('job'), 'idem-acq-00000001', pg_temp.get('channel'),
+     '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('a', 64)
+   ))->>'unresolved_supplier_candidates'),
+  '1', 'a committed replay returns the frozen candidate count');
+
+-- Changed line count / mapping version / plan digest are each refused on replay.
+select throws_ok(
+  format($$select public.get_committed_acquisition_summary(%L, 'idem-acq-00000001', %L,
+    '66660000-0000-4000-8000-000000000001', 99, '1.0.0', repeat('a', 64))$$,
+    pg_temp.get('job'), pg_temp.get('channel')),
+  '22023', null, 'a committed replay with a changed expected line count is refused');
+select throws_ok(
+  format($$select public.get_committed_acquisition_summary(%L, 'idem-acq-00000001', %L,
+    '66660000-0000-4000-8000-000000000001', 7, '2.0.0', repeat('a', 64))$$,
+    pg_temp.get('job'), pg_temp.get('channel')),
+  '22023', null, 'a committed replay with a changed mapping version is refused');
+select throws_ok(
+  format($$select public.get_committed_acquisition_summary(%L, 'idem-acq-00000001', %L,
+    '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('c', 64))$$,
+    pg_temp.get('job'), pg_temp.get('channel')),
+  '22023', null, 'a committed replay with a changed plan digest is refused');
+
+-- A cost correction AFTER commit does not change the replay result.
+select pg_temp.put('post_c', (select id from public.acquisition_cost_components
+  where acquisition_import_job_id = pg_temp.get('job') and reversed_at is null
+    and line_item_id is not null limit 1));
+select lives_ok(
+  format($$select public.reverse_cost_component(%L, jsonb_build_object('amount_minor', 4242),
+    'post-commit correction')$$, pg_temp.get('post_c')),
+  'a post-commit cost correction is applied');
+select is(
+  (select (public.get_committed_acquisition_summary(
+     pg_temp.get('job'), 'idem-acq-00000001', pg_temp.get('channel'),
+     '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('a', 64)))->>'cost_components'),
+  '9', 'the replay still returns the frozen count AFTER a cost correction (not recomputed)');
+
+-- A later supplier alias (a new workspace-global collision) does not change it.
+select pg_temp.logout();
+insert into public.suppliers (workspace_id, public_id, display_name, created_by_process)
+values ('aaaa0000-0000-4000-8000-000000000001', 'RV-SUP-LATE01', 'acme_traders duplicate',
+        'test.fixture');
+insert into public.supplier_aliases (
+  workspace_id, supplier_id, source_system_id, raw_handle, normalized_handle, created_by_process
+) values (
+  'aaaa0000-0000-4000-8000-000000000001',
+  (select id from public.suppliers where public_id = 'RV-SUP-LATE01'),
+  '55550000-0000-4000-8000-000000000001', 'Acme_Traders_Late',
+  app.normalize_supplier_handle('acme_traders'), 'test.fixture'
+);
+select pg_temp.login('a2222222-2222-2222-2222-222222222222');
+select is(
+  (select (public.get_committed_acquisition_summary(
+     pg_temp.get('job'), 'idem-acq-00000001', pg_temp.get('channel'),
+     '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('a', 64)
+   ))->>'unresolved_supplier_candidates'),
+  '1', 'the replay still returns the frozen candidate count AFTER a later alias');
 
 select pg_temp.logout();
 

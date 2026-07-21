@@ -7,6 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   AcquisitionReviewController,
+  formatDetailValue,
   type AcquisitionTransport,
   type PreviewSummary,
   type WorkspaceRole,
@@ -192,6 +193,20 @@ describe('order detail and candidates', () => {
     const controller = new AcquisitionReviewController(fakeTransport('operator'), true);
     await controller.open('ws-1');
     expect(controller.getState().channels).toHaveLength(1);
+  });
+});
+
+describe('formatDetailValue renders structured values readably', () => {
+  it('renders a source_detail object as compact JSON, not [object Object]', () => {
+    const rendered = formatDetailValue({ seller: 'acme', unit_cost: 3 });
+    expect(rendered).toBe('{"seller":"acme","unit_cost":3}');
+    expect(rendered).not.toContain('[object Object]');
+  });
+  it('renders null/undefined as a dash and scalars as strings', () => {
+    expect(formatDetailValue(null)).toBe('—');
+    expect(formatDetailValue(undefined)).toBe('—');
+    expect(formatDetailValue(42)).toBe('42');
+    expect(formatDetailValue('WN-A-000001')).toBe('WN-A-000001');
   });
 });
 

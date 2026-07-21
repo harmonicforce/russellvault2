@@ -132,6 +132,28 @@ create table public.acquisition_import_jobs (
   mode text not null check (mode in ('preview', 'commit')),
   status public.import_job_status not null default 'preview',
   expected_line_count integer not null check (expected_line_count >= 0),
+  -- FROZEN MAPPING IDENTITY: the mapping version and a deterministic digest of
+  -- the COMPLETE normalized plan. Together with the idempotency key, channel,
+  -- source job, workspace, and expected line count they bind a job to one exact
+  -- plan: a re-run whose plan digest or version differs is a changed-content
+  -- retry, refused even when the line count is unchanged. Immutable once set.
+  mapping_version text not null check (mapping_version ~ '^[0-9]+\.[0-9]+\.[0-9]+$'),
+  plan_sha256 text not null check (plan_sha256 ~ '^[0-9a-f]{64}$'),
+  -- FROZEN COMMITTED SUMMARY: the six reconciliation counts as computed at the
+  -- instant of successful finalization. Set once, then immutable, so a
+  -- response-loss replay returns the ORIGINAL outcome regardless of later
+  -- corrections, allocations, re-homings, or new aliases/imports.
+  committed_orders integer check (committed_orders is null or committed_orders >= 0),
+  committed_lots integer check (committed_lots is null or committed_lots >= 0),
+  committed_line_items integer check (committed_line_items is null or committed_line_items >= 0),
+  committed_cost_components integer
+    check (committed_cost_components is null or committed_cost_components >= 0),
+  committed_unresolved_supplier_candidates integer
+    check (committed_unresolved_supplier_candidates is null
+           or committed_unresolved_supplier_candidates >= 0),
+  committed_unresolved_cost_components integer
+    check (committed_unresolved_cost_components is null
+           or committed_unresolved_cost_components >= 0),
   actor_user_id uuid references auth.users (id),
   actor_process text not null check (actor_process ~ '^[a-z][a-z0-9_.:-]{1,63}$'),
   started_at timestamptz not null default now(),
@@ -149,7 +171,16 @@ create table public.acquisition_import_jobs (
   constraint acquisition_import_jobs_commit_mode
     check (status <> 'committed' or mode = 'commit'),
   constraint acquisition_import_jobs_completed_after_start
-    check (completed_at is null or completed_at >= started_at)
+    check (completed_at is null or completed_at >= started_at),
+  -- The frozen committed summary exists exactly when the job is committed, and
+  -- is all-or-nothing (its six counts are written together at finalize).
+  constraint acquisition_import_jobs_committed_summary_presence
+    check ((status = 'committed') = (committed_orders is not null)),
+  constraint acquisition_import_jobs_committed_summary_complete
+    check (num_nonnulls(
+      committed_orders, committed_lots, committed_line_items, committed_cost_components,
+      committed_unresolved_supplier_candidates, committed_unresolved_cost_components
+    ) in (0, 6))
 );
 
 create index acquisition_import_jobs_workspace_idx on public.acquisition_import_jobs (workspace_id);

@@ -140,6 +140,8 @@ export async function commitAcquisitionPlan(
       p_source_import_job_id: sourceImportJobId,
       p_idempotency_key: key,
       p_expected_line_count: plan.expectedLineItems,
+      p_mapping_version: plan.mappingVersion,
+      p_plan_sha256: plan.planSha256,
     }
   );
 
@@ -166,6 +168,8 @@ export async function commitAcquisitionPlan(
       p_channel_id: channelId,
       p_source_import_job_id: sourceImportJobId,
       p_expected_line_count: plan.expectedLineItems,
+      p_mapping_version: plan.mappingVersion,
+      p_plan_sha256: plan.planSha256,
     });
     return {
       importJobId,

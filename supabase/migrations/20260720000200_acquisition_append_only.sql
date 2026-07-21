@@ -73,8 +73,46 @@ create trigger acquisition_import_jobs_identity_immutable
   before update on public.acquisition_import_jobs
   for each row execute function app.forbid_column_change(
     'id', 'workspace_id', 'channel_id', 'source_import_job_id', 'mode',
-    'idempotency_key', 'expected_line_count', 'started_at'
+    'idempotency_key', 'expected_line_count', 'started_at',
+    'mapping_version', 'plan_sha256'
   );
+
+-- The frozen committed summary is write-once: finalize sets it (NULL -> value)
+-- as it commits, and it can never change afterwards. This is what makes a
+-- committed replay return the ORIGINAL counts no matter what corrections,
+-- allocations, re-homings, or later aliases/imports happen next.
+create function app.enforce_acquisition_committed_summary_frozen()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if (old.committed_orders is not null
+        and new.committed_orders is distinct from old.committed_orders)
+     or (old.committed_lots is not null
+        and new.committed_lots is distinct from old.committed_lots)
+     or (old.committed_line_items is not null
+        and new.committed_line_items is distinct from old.committed_line_items)
+     or (old.committed_cost_components is not null
+        and new.committed_cost_components is distinct from old.committed_cost_components)
+     or (old.committed_unresolved_supplier_candidates is not null
+        and new.committed_unresolved_supplier_candidates
+            is distinct from old.committed_unresolved_supplier_candidates)
+     or (old.committed_unresolved_cost_components is not null
+        and new.committed_unresolved_cost_components
+            is distinct from old.committed_unresolved_cost_components) then
+    raise exception 'the committed acquisition summary is frozen and cannot be changed'
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end
+$$;
+
+revoke all on function app.enforce_acquisition_committed_summary_frozen() from public;
+
+create trigger acquisition_import_jobs_committed_summary_frozen
+  before update on public.acquisition_import_jobs
+  for each row execute function app.enforce_acquisition_committed_summary_frozen();
 
 create function app.enforce_acquisition_job_status_flow()
 returns trigger

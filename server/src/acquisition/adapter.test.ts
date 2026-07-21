@@ -121,6 +121,25 @@ describe('the 2,149-row Whatnot fixture maps deterministically', () => {
     expect(again).toEqual(plan);
   });
 
+  it('freezes a deterministic plan digest that changes when the mapping changes', () => {
+    expect(plan.planSha256).toMatch(/^[0-9a-f]{64}$/);
+    const again = buildAcquisitionPlan(committedRows(), {
+      sourceLabel: 'whatnot_purchases.json',
+    });
+    expect(again.planSha256).toBe(plan.planSha256);
+
+    // A changed line quantity — same number of lines — yields a different digest.
+    const mutated = committedRows();
+    const payload = mutated[0].rawPayload as Record<string, unknown>;
+    mutated[0] = {
+      ...mutated[0],
+      rawPayload: { ...payload, quantity_purchased: 99 },
+    };
+    const changed = buildAcquisitionPlan(mutated, { sourceLabel: 'whatnot_purchases.json' });
+    expect(changed.lineItems.length).toBe(plan.lineItems.length);
+    expect(changed.planSha256).not.toBe(plan.planSha256);
+  });
+
   it('uses a single explicit ISO currency throughout', () => {
     expect(plan.currency).toBe('USD');
     expect(plan.orders.every((o) => o.currency === 'USD')).toBe(true);

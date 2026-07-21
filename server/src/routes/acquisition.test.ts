@@ -606,6 +606,9 @@ describe('F3: order detail current vs historical reconciliation', () => {
         return [
           { id: 'AL1', cost_component_id: 'C1', state: 'confirmed', method: 'manual', amount_minor: 1000 },
           { id: 'AL2', cost_component_id: 'C1', state: 'reversed', method: 'manual', amount_minor: 900 },
+          // On C2, whose line moved to another order — a confirmed allocation on
+          // a now-HISTORICAL component. It must NOT appear in currentAllocations.
+          { id: 'AL3', cost_component_id: 'C2', state: 'confirmed', method: 'manual', amount_minor: 500 },
         ];
       }
       if (table === 'audit_events') return [{ id: 'AE1', event_seq: 1, event_type: 'x' }];
@@ -659,16 +662,29 @@ describe('F3: order detail current vs historical reconciliation', () => {
     });
     expect(res.status).toBe(200);
     const json = await res.json();
-    // C1OLD (reversed) excluded; C2 excluded (LINE-2 only historically placed).
+    // C1OLD (reversed) excluded; C2 excluded (LINE-2 moved to another order, so
+    // it belongs here only historically) — only C1 counts.
     expect(json.discrepancy.normalizedKnownComponentMinor).toBe(1000);
     expect(json.discrepancy.differenceMinor).toBe(500);
-    // History is still returned in its own sections.
+    // Current holds only C1; history holds the reversed C1OLD AND the moved
+    // line's still-unreversed C2.
+    expect(json.currentComponents.map((c: { id: string }) => c.id)).toEqual(['C1']);
+    expect(json.historicalComponents.map((c: { id: string }) => c.id).sort()).toEqual([
+      'C1OLD',
+      'C2',
+    ]);
+    // C2's unreversed component appears only in the old order's history section.
+    expect(json.currentComponents.some((c: { id: string }) => c.id === 'C2')).toBe(false);
+    // Placement history preserved.
     expect(json.activePlacements).toHaveLength(1);
     expect(json.historicalPlacements).toHaveLength(1);
-    expect(json.currentComponents).toHaveLength(2);
-    expect(json.historicalComponents).toHaveLength(1);
-    expect(json.currentAllocations).toHaveLength(1);
-    expect(json.reversedAllocations).toHaveLength(1);
+    // Current allocations are scoped to CURRENT components only: AL1 (on C1).
+    // AL2 (reversed) and AL3 (on historical C2) are both history.
+    expect(json.currentAllocations.map((a: { id: string }) => a.id)).toEqual(['AL1']);
+    expect(json.reversedAllocations.map((a: { id: string }) => a.id).sort()).toEqual([
+      'AL2',
+      'AL3',
+    ]);
   });
 
   it('fails the whole request (closed) when a subordinate query errors', async () => {
@@ -682,5 +698,16 @@ describe('F3: order detail current vs historical reconciliation', () => {
     const json = await res.json();
     expect(json).toHaveProperty('error');
     expect(json).not.toHaveProperty('costComponents');
+  });
+
+  it('closes /suppliers when the supplier-alias query fails (no silent empty list)', async () => {
+    setCallerClientFactoryForTests((token) => makeDetailClient(token, 'supplier_aliases') as never);
+    const res = await call('GET', `/api/acquisition/suppliers?workspaceId=${WS_A}`, {
+      token: 'viewer-token',
+    });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    const json = await res.json();
+    expect(json).toHaveProperty('error');
+    expect(json).not.toHaveProperty('aliases');
   });
 });

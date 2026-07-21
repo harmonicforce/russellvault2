@@ -87,7 +87,9 @@ create function public.begin_acquisition_import_job(
   p_channel_id uuid,
   p_source_import_job_id uuid,
   p_idempotency_key text,
-  p_expected_line_count integer
+  p_expected_line_count integer,
+  p_mapping_version text,
+  p_plan_sha256 text
 )
 returns jsonb
 language plpgsql
@@ -111,6 +113,12 @@ begin
   end if;
   if p_expected_line_count is null or p_expected_line_count < 0 then
     raise exception 'a non-negative expected line count is required' using errcode = '22023';
+  end if;
+  if p_mapping_version is null or p_mapping_version !~ '^[0-9]+\.[0-9]+\.[0-9]+$' then
+    raise exception 'a valid mapping version is required' using errcode = '22023';
+  end if;
+  if p_plan_sha256 is null or p_plan_sha256 !~ '^[0-9a-f]{64}$' then
+    raise exception 'a valid plan digest is required' using errcode = '22023';
   end if;
 
   v_uid := app.require_uid();
@@ -150,10 +158,19 @@ begin
   where j.workspace_id = p_workspace_id and j.idempotency_key = p_idempotency_key;
 
   if v_existing.id is not null then
+    -- The idempotency key is bound to ONE exact plan. A resume (preview,
+    -- committed, or failed) is allowed only when every part of the binding
+    -- matches: channel, source job, expected line count, mapping version, and
+    -- the plan digest. A change in ANY of these — including a changed mapping
+    -- with the same number of lines — is a changed-content retry, refused.
     if v_existing.channel_id <> p_channel_id
-       or v_existing.source_import_job_id <> p_source_import_job_id then
+       or v_existing.source_import_job_id <> p_source_import_job_id
+       or v_existing.expected_line_count <> p_expected_line_count
+       or v_existing.mapping_version <> p_mapping_version
+       or v_existing.plan_sha256 <> p_plan_sha256 then
       raise exception
-        'idempotency key is already bound to a different channel or source import job'
+        'idempotency key is already bound to a different acquisition plan '
+        '(channel, source job, line count, mapping version, or plan digest changed)'
         using errcode = '22023';
     end if;
     return jsonb_build_object('id', v_existing.id, 'status', v_existing.status, 'resumed', true);
@@ -172,11 +189,11 @@ begin
 
   insert into public.acquisition_import_jobs (
     workspace_id, channel_id, source_import_job_id, idempotency_key, mode,
-    status, expected_line_count, actor_user_id, actor_process
+    status, expected_line_count, mapping_version, plan_sha256, actor_user_id, actor_process
   )
   values (
     p_workspace_id, p_channel_id, p_source_import_job_id, p_idempotency_key, 'commit',
-    'preview', p_expected_line_count, v_uid, 'acquisition.import'
+    'preview', p_expected_line_count, p_mapping_version, p_plan_sha256, v_uid, 'acquisition.import'
   )
   returning id into v_id;
 
@@ -193,10 +210,12 @@ begin
 end
 $$;
 
-revoke all on function public.begin_acquisition_import_job(uuid, uuid, uuid, text, integer)
-  from public, anon;
-grant execute on function public.begin_acquisition_import_job(uuid, uuid, uuid, text, integer)
-  to authenticated;
+revoke all on function public.begin_acquisition_import_job(
+  uuid, uuid, uuid, text, integer, text, text
+) from public, anon;
+grant execute on function public.begin_acquisition_import_job(
+  uuid, uuid, uuid, text, integer, text, text
+) to authenticated;
 
 -- Stage orders -----------------------------------------------------------------------
 -- Each entry: {source_order_reference, seller_raw_handle, first_source_record_id,
@@ -967,8 +986,15 @@ begin
       using errcode = 'unique_violation';
   end if;
 
+  -- Freeze the six reconciliation counts on the job as it commits. These
+  -- become immutable (see migration 2) and are what a later replay returns,
+  -- regardless of any subsequent correction, allocation, re-homing, or alias.
   update public.acquisition_import_jobs
-  set status = 'committed', completed_at = now()
+  set status = 'committed', completed_at = now(),
+      committed_orders = v_orders, committed_lots = v_lots,
+      committed_line_items = v_line_items, committed_cost_components = v_cost_components,
+      committed_unresolved_supplier_candidates = v_unresolved_candidates,
+      committed_unresolved_cost_components = v_unresolved_costs
   where id = v_job.id;
 
   perform app.log_audit_event(
@@ -1001,17 +1027,21 @@ grant execute on function public.finalize_acquisition_import_job(
 -- Committed-replay summary (idempotent, read-only) --------------------------------------
 -- Safe for the case where finalize COMMITTED but the HTTP response was lost:
 -- replaying the same request must return the existing committed outcome, not a
--- 409. This RECOMPUTES the reconciliation counts from the committed data (it
--- never trusts caller-supplied counts) and verifies the FULL binding — the same
--- idempotency key, channel, source import job, and expected line count — before
--- returning. It never reopens, mutates, or re-audits the committed job. A replay
--- whose binding differs in any of those is refused, identically to not-found.
+-- 409. It returns the FROZEN committed summary stored on the job at finalize —
+-- never recomputed from mutable correction history or workspace-global aliases —
+-- so later reversals, allocations, re-homings, added aliases, or other imports
+-- can never alter the replay result. It verifies the FULL binding (idempotency
+-- key, channel, source import job, expected line count, mapping version, plan
+-- digest) before returning, performs NO write, and creates NO audit event. A
+-- replay whose binding differs is refused, identically to not-found.
 create function public.get_committed_acquisition_summary(
   p_import_job_id uuid,
   p_idempotency_key text,
   p_channel_id uuid,
   p_source_import_job_id uuid,
-  p_expected_line_count integer
+  p_expected_line_count integer,
+  p_mapping_version text,
+  p_plan_sha256 text
 )
 returns jsonb
 language plpgsql
@@ -1021,13 +1051,6 @@ as $$
 declare
   v_uid uuid;
   v_job public.acquisition_import_jobs%rowtype;
-  v_source_system_id uuid;
-  v_orders integer;
-  v_lots integer;
-  v_line_items integer;
-  v_cost_components integer;
-  v_unresolved_candidates integer;
-  v_unresolved_costs integer;
 begin
   v_uid := app.require_uid();
 
@@ -1049,54 +1072,35 @@ begin
     raise exception 'acquisition import job is not committed' using errcode = 'check_violation';
   end if;
 
-  -- FULL binding check: the replay must describe the SAME work in every part.
+  -- FULL binding check: the replay must describe the SAME work in every part,
+  -- including the frozen mapping version and plan digest.
   if v_job.idempotency_key is distinct from p_idempotency_key
      or v_job.channel_id is distinct from p_channel_id
      or v_job.source_import_job_id is distinct from p_source_import_job_id
-     or v_job.expected_line_count is distinct from p_expected_line_count then
+     or v_job.expected_line_count is distinct from p_expected_line_count
+     or v_job.mapping_version is distinct from p_mapping_version
+     or v_job.plan_sha256 is distinct from p_plan_sha256 then
     raise exception 'the replayed request does not match this committed acquisition import'
       using errcode = '22023';
   end if;
 
-  select j.source_system_id into v_source_system_id
-  from public.import_jobs j where j.id = v_job.source_import_job_id;
-
-  select count(*)::integer into v_orders
-  from public.acquisition_orders where acquisition_import_job_id = v_job.id;
-  select count(*)::integer into v_lots
-  from public.acquisition_lots lt
-  join public.acquisition_orders o on o.id = lt.order_id
-  where o.acquisition_import_job_id = v_job.id;
-  select count(*)::integer into v_line_items
-  from public.acquisition_line_items where acquisition_import_job_id = v_job.id;
-  select count(*)::integer into v_cost_components
-  from public.acquisition_cost_components where acquisition_import_job_id = v_job.id;
-  select count(*)::integer into v_unresolved_costs
-  from public.acquisition_cost_components
-  where acquisition_import_job_id = v_job.id and attribution_state = 'unresolved';
-  select count(*)::integer into v_unresolved_candidates
-  from (
-    select normalized_handle
-    from public.supplier_aliases
-    where workspace_id = v_job.workspace_id and source_system_id = v_source_system_id
-    group by normalized_handle
-    having count(distinct supplier_id) > 1
-  ) g;
-
+  -- Return the FROZEN counts recorded at finalize — not a recomputation.
   return jsonb_build_object(
-    'id', v_job.id, 'status', 'committed', 'orders', v_orders, 'lots', v_lots,
-    'line_items', v_line_items, 'cost_components', v_cost_components,
-    'unresolved_supplier_candidates', v_unresolved_candidates,
-    'unresolved_cost_components', v_unresolved_costs
+    'id', v_job.id, 'status', 'committed',
+    'orders', v_job.committed_orders, 'lots', v_job.committed_lots,
+    'line_items', v_job.committed_line_items,
+    'cost_components', v_job.committed_cost_components,
+    'unresolved_supplier_candidates', v_job.committed_unresolved_supplier_candidates,
+    'unresolved_cost_components', v_job.committed_unresolved_cost_components
   );
 end
 $$;
 
 revoke all on function public.get_committed_acquisition_summary(
-  uuid, text, uuid, uuid, integer
+  uuid, text, uuid, uuid, integer, text, text
 ) from public, anon;
 grant execute on function public.get_committed_acquisition_summary(
-  uuid, text, uuid, uuid, integer
+  uuid, text, uuid, uuid, integer, text, text
 ) to authenticated;
 
 -- Fail an attempt visibly ---------------------------------------------------------------

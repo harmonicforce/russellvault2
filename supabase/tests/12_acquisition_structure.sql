@@ -26,7 +26,8 @@ select is(app.mint_governed_public_id('RV-SUP') ~ '^RV-SUP-[A-Z0-9]{6,20}$', tru
 select has_function('public'::name, 'register_channel'::name,
   array['uuid', 'text', 'text', 'text', 'text'], 'register_channel exists');
 select has_function('public'::name, 'begin_acquisition_import_job'::name,
-  array['uuid', 'uuid', 'uuid', 'text', 'integer'], 'begin_acquisition_import_job exists');
+  array['uuid', 'uuid', 'uuid', 'text', 'integer', 'text', 'text'],
+  'begin_acquisition_import_job exists');
 select has_function('public'::name, 'stage_acquisition_orders'::name,
   array['uuid', 'jsonb'], 'stage_acquisition_orders exists');
 select has_function('public'::name, 'stage_acquisition_lots'::name,
@@ -41,7 +42,8 @@ select has_function('public'::name, 'finalize_acquisition_import_job'::name,
 select has_function('public'::name, 'fail_acquisition_import_job'::name,
   array['uuid', 'text', 'text'], 'fail_acquisition_import_job exists');
 select has_function('public'::name, 'get_committed_acquisition_summary'::name,
-  array['uuid', 'text', 'uuid', 'uuid', 'integer'], 'get_committed_acquisition_summary exists');
+  array['uuid', 'text', 'uuid', 'uuid', 'integer', 'text', 'text'],
+  'get_committed_acquisition_summary exists');
 select has_function('public'::name, 'propose_cost_allocation'::name,
   array['uuid', 'text', 'jsonb'], 'propose_cost_allocation exists');
 select has_function('public'::name, 'confirm_cost_allocation'::name,
@@ -72,7 +74,8 @@ select is(
        'enforce_acquisition_job_open', 'enforce_lot_line_initial_state',
        'enforce_lot_line_transition', 'enforce_lot_line_supersession_coherence',
        'enforce_cost_component_transition', 'enforce_cost_component_reversal_coherence',
-       'enforce_cost_allocation_initial_state', 'enforce_cost_allocation_transition'
+       'enforce_cost_allocation_initial_state', 'enforce_cost_allocation_transition',
+       'enforce_acquisition_committed_summary_frozen'
      )
      and not exists (
        select 1 from unnest(coalesce(p.proconfig, array[]::text[])) cfg

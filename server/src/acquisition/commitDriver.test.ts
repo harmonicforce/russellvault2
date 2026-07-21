@@ -411,6 +411,19 @@ describe('a committed response that was lost replays safely', () => {
     expect(summary!.args.p_channel_id).toBe(CH);
     expect(summary!.args.p_source_import_job_id).toBe(SRCJOB);
     expect(summary!.args.p_expected_line_count).toBe(plan.expectedLineItems);
+    // The frozen mapping identity is part of the replay binding.
+    expect(summary!.args.p_mapping_version).toBe(plan.mappingVersion);
+    expect(summary!.args.p_plan_sha256).toBe(plan.planSha256);
+    expect(plan.planSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('passes the frozen mapping identity to begin', async () => {
+    const plan = fixturePlan();
+    const { client, calls } = makeFakeClient();
+    await commitAcquisitionPlan(client as never, WS, CH, SRCJOB, plan, 'acq-key-00001');
+    const begin = calls.find((c) => c.fn === 'begin_acquisition_import_job');
+    expect(begin!.args.p_mapping_version).toBe(plan.mappingVersion);
+    expect(begin!.args.p_plan_sha256).toBe(plan.planSha256);
   });
 });
 

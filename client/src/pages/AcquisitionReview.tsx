@@ -18,6 +18,7 @@ import { AlertTriangle, History, Info, Layers, ListChecks, Users } from 'lucide-
 import { createAcquisitionTransport } from '../lib/acquisitionApi';
 import {
   AcquisitionReviewController,
+  formatDetailValue,
   type AcquisitionReviewState,
 } from '../lib/acquisitionReview';
 import { STAGING_NOTICE, getProvenanceUiConfig } from '../lib/provenanceConfig';
@@ -504,8 +505,8 @@ function DetailList({
       ) : (
         <ul className="space-y-0.5">
           {rows.slice(0, 25).map((r, i) => (
-            <li key={String(r.id ?? i)} className="font-mono">
-              {keys.map((k) => `${k}=${String(r[k] ?? '—')}`).join('  ')}
+            <li key={String(r.id ?? i)} className="font-mono break-all">
+              {keys.map((k) => `${k}=${formatDetailValue(r[k])}`).join('  ')}
             </li>
           ))}
         </ul>
