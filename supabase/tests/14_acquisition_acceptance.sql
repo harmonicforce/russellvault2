@@ -110,10 +110,12 @@ select pg_temp.put('channel',
   (public.register_channel('aaaa0000-0000-4000-8000-000000000001', 'Whatnot', 'marketplace')->>'id')::uuid);
 select pg_temp.logout();
 select pg_temp.login('a2222222-2222-2222-2222-222222222222');
+-- The frozen plan_sha256 is the DB-computed digest of the exact plan staged
+-- below; finalize will recompute it from the staged rows and must agree.
 select pg_temp.put('job', (public.begin_acquisition_import_job(
   'aaaa0000-0000-4000-8000-000000000001', pg_temp.get('channel'),
   '66660000-0000-4000-8000-000000000001', 'acq-key-accept-1', 2,
-  '1.0.0', repeat('a', 64))->>'id')::uuid);
+  '1.0.0', 'e58c2162fd87af44449b457c866596da73f1d7df089af191eda700d117e516e3')->>'id')::uuid);
 
 -- F3: an order citing a source record from ANOTHER job is refused ------------------------
 select throws_ok(
@@ -290,7 +292,9 @@ select is((select count(*)::int from public.acquisition_cost_components
   where acquisition_import_job_id = pg_temp.get('job')), 3,
   'F3: the rejected mixed batch inserted nothing');
 
--- ===== F4: unknown-cost allocation guards =====
+-- ===== F4 setup: stage the shared components (allocation is post-commit) =====
+-- Governed corrections and allocations may not touch a job while it is preview;
+-- the shared components below are STAGED here and ALLOCATED after the commit.
 -- The lot-scoped shipping component staged above is UNKNOWN (amount NULL).
 select pg_temp.put('unknown_c', (select id from public.acquisition_cost_components
   where lot_id = pg_temp.get('lot_a') and component_type = 'shipping'));
@@ -298,24 +302,9 @@ select pg_temp.put('unknown_c', (select id from public.acquisition_cost_componen
 select is((select amount_state::text from public.acquisition_cost_components
   where id = pg_temp.get('unknown_c')), 'unknown', 'the shipping component is unknown');
 
-select throws_ok(
-  format($$select public.propose_cost_allocation(%L, 'equal_split', jsonb_build_array(
-    jsonb_build_object('line_item_id',%L::uuid,'amount_minor',100)))$$,
-    pg_temp.get('unknown_c'), pg_temp.get('line_a')),
-  '23514', null, 'F4: an unknown-amount component cannot be allocated');
-select is((select attribution_state::text from public.acquisition_cost_components
-  where id = pg_temp.get('unknown_c')), 'unresolved', 'F4: the component stays unresolved');
-select is((select count(*)::int from public.acquisition_cost_allocations
-  where cost_component_id = pg_temp.get('unknown_c')), 0, 'F4: no allocation rows were created');
-
--- confirm is likewise refused for an unknown component (no candidates could exist).
-select throws_ok(
-  format($$select public.confirm_cost_allocation(%L, 100)$$, pg_temp.get('unknown_c')),
-  '23514', null, 'F4: an unknown-amount component cannot be confirmed as allocated');
-
--- Documented-free must not be a backdoor: stage a separate order-scoped
--- documented_free component (amount 0, evidence). It is not 'known', so it too
--- cannot be allocated — zero-with-evidence is never an unknown shortcut.
+-- An order-scoped documented_free component (amount 0, evidence). It is not
+-- 'known', so post-commit allocation must still refuse it — zero-with-evidence
+-- is never an unknown shortcut.
 select lives_ok(
   format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(jsonb_build_object(
     'order_id',%L::uuid,'component_type','discount','amount_state','documented_free',
@@ -324,15 +313,8 @@ select lives_ok(
   'a documented-free shared component stages');
 select pg_temp.put('free_c', (select id from public.acquisition_cost_components
   where order_id = pg_temp.get('ord_a') and component_type = 'discount'));
-select throws_ok(
-  format($$select public.propose_cost_allocation(%L, 'equal_split', jsonb_build_array(
-    jsonb_build_object('line_item_id',%L::uuid,'amount_minor',0)))$$,
-    pg_temp.get('free_c'), pg_temp.get('line_a')),
-  '23514', null, 'F4: a documented-free component cannot be used as an unknown allocation shortcut');
 
--- A KNOWN shared component still allocates and conserves within one minor unit:
--- stage an order-scoped known shipping component (300) and split it fully to
--- line_a (which sits under ORD-A's lot).
+-- An order-scoped KNOWN shipping component (300) to be allocated post-commit.
 select lives_ok(
   format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(jsonb_build_object(
     'order_id',%L::uuid,'component_type','shipping','amount_state','known',
@@ -340,20 +322,16 @@ select lives_ok(
   'a known shared component stages');
 select pg_temp.put('known_c', (select id from public.acquisition_cost_components
   where order_id = pg_temp.get('ord_a') and component_type = 'shipping'));
-select lives_ok(
+
+-- GF2: allocation and confirmation are refused while the job is still preview.
+select throws_ok(
   format($$select public.propose_cost_allocation(%L, 'manual_single', jsonb_build_array(
     jsonb_build_object('line_item_id',%L::uuid,'amount_minor',300)))$$,
     pg_temp.get('known_c'), pg_temp.get('line_a')),
-  'F4: a known shared component can be proposed');
-select lives_ok(
+  '23514', null, 'GF2: a known component cannot be allocated while the job is preview');
+select throws_ok(
   format($$select public.confirm_cost_allocation(%L, 300)$$, pg_temp.get('known_c')),
-  'F4: a known shared component confirms and conserves to the minor unit');
-select is((select attribution_state::text from public.acquisition_cost_components
-  where id = pg_temp.get('known_c')), 'allocated', 'F4: the known component is now allocated');
--- The unknown component is still untouched and unresolved.
-select is((select attribution_state::text from public.acquisition_cost_components
-  where id = pg_temp.get('unknown_c')), 'unresolved',
-  'F4: the unknown component remains unresolved throughout');
+  '23514', null, 'GF2: a component cannot be confirmed while the job is preview');
 
 -- ===== F2 (final patch): complete cost provenance + zero-state enforcement =====
 -- Five components exist on the job so far (3 from F1's first stage + 2 shared
@@ -407,6 +385,53 @@ select lives_ok(
     'currency','USD','source_record_id','77770000-0000-4000-8000-000000000002')))$$,
     pg_temp.get('job'), pg_temp.get('line_b')),
   'F2: a valid known-positive direct component stages');
+
+-- ===== Commit the frozen plan, then prove post-commit allocation capabilities =====
+-- Finalize recomputes the plan digest from the staged rows and compares it with
+-- the frozen plan_sha256; the six reconciliation counts must also agree.
+select lives_ok(
+  format($$select public.finalize_acquisition_import_job(%L,
+    'acq-key-accept-1', 2, 2, 2, 7, 0, 3)$$,
+    pg_temp.get('job')),
+  'the frozen plan finalizes: staged rows match the digest and the six counts');
+select is((select status::text from public.acquisition_import_jobs where id = pg_temp.get('job')),
+  'committed', 'the job is committed');
+
+-- F4: an UNKNOWN-amount component still cannot be allocated (post-commit).
+select throws_ok(
+  format($$select public.propose_cost_allocation(%L, 'equal_split', jsonb_build_array(
+    jsonb_build_object('line_item_id',%L::uuid,'amount_minor',100)))$$,
+    pg_temp.get('unknown_c'), pg_temp.get('line_a')),
+  '23514', null, 'F4: an unknown-amount component cannot be allocated');
+select is((select attribution_state::text from public.acquisition_cost_components
+  where id = pg_temp.get('unknown_c')), 'unresolved', 'F4: the component stays unresolved');
+select is((select count(*)::int from public.acquisition_cost_allocations
+  where cost_component_id = pg_temp.get('unknown_c')), 0, 'F4: no allocation rows were created');
+select throws_ok(
+  format($$select public.confirm_cost_allocation(%L, 100)$$, pg_temp.get('unknown_c')),
+  '23514', null, 'F4: an unknown-amount component cannot be confirmed as allocated');
+
+-- F4: a documented-free component is not an unknown-allocation shortcut.
+select throws_ok(
+  format($$select public.propose_cost_allocation(%L, 'equal_split', jsonb_build_array(
+    jsonb_build_object('line_item_id',%L::uuid,'amount_minor',0)))$$,
+    pg_temp.get('free_c'), pg_temp.get('line_a')),
+  '23514', null, 'F4: a documented-free component cannot be used as an unknown allocation shortcut');
+
+-- F4: a KNOWN shared component allocates and conserves within one minor unit.
+select lives_ok(
+  format($$select public.propose_cost_allocation(%L, 'manual_single', jsonb_build_array(
+    jsonb_build_object('line_item_id',%L::uuid,'amount_minor',300)))$$,
+    pg_temp.get('known_c'), pg_temp.get('line_a')),
+  'F4: a known shared component can be proposed post-commit');
+select lives_ok(
+  format($$select public.confirm_cost_allocation(%L, 300)$$, pg_temp.get('known_c')),
+  'F4: a known shared component confirms and conserves to the minor unit');
+select is((select attribution_state::text from public.acquisition_cost_components
+  where id = pg_temp.get('known_c')), 'allocated', 'F4: the known component is now allocated');
+select is((select attribution_state::text from public.acquisition_cost_components
+  where id = pg_temp.get('unknown_c')), 'unresolved',
+  'F4: the unknown component remains unresolved throughout');
 
 select pg_temp.logout();
 select * from finish();

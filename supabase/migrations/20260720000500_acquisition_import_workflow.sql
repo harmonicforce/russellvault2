@@ -835,6 +835,139 @@ $$;
 revoke all on function public.stage_acquisition_cost_components(uuid, jsonb) from public, anon;
 grant execute on function public.stage_acquisition_cost_components(uuid, jsonb) to authenticated;
 
+-- Canonical plan digest, recomputed from STAGED rows ------------------------------------
+-- The database half of the plan-identity contract. It rebuilds the exact same
+-- canonical text as server/src/acquisition/planDigest.ts and hashes it, so the
+-- claimed plan_sha256 can be PROVEN against what is actually staged rather than
+-- trusted. Length-prefixed fields (no escaping/delimiter ambiguity) and stable
+-- section sorts make the two implementations byte-identical.
+--
+--   dg_f  : null -> '~';  text -> octet_length || ':' || text
+--   dg_sd : '{' || key-count || for each key (bytewise) dg_f(key) dg_f(value::text)
+create function app.dg_f(p text)
+returns text language sql immutable
+set search_path = ''
+as $$
+  select case when p is null then '~' else octet_length(p)::text || ':' || p end
+$$;
+revoke all on function app.dg_f(text) from public;
+
+create function app.dg_sd(p jsonb)
+returns text language sql immutable
+set search_path = ''
+as $$
+  select '{' || (select count(*)::text from jsonb_object_keys(coalesce(p, '{}'::jsonb)))
+    || coalesce((
+         select string_agg(app.dg_f(k) || app.dg_f((p->k)::text), '' order by k collate "C")
+         from jsonb_object_keys(coalesce(p, '{}'::jsonb)) k
+       ), '')
+$$;
+revoke all on function app.dg_sd(jsonb) from public;
+
+create function app.compute_acquisition_plan_digest(p_import_job_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_job public.acquisition_import_jobs%rowtype;
+  v_ss uuid;
+  v_orders integer; v_lots integer; v_lines integer; v_comps integer;
+  v_cand integer; v_ucost integer;
+  v_c text;
+begin
+  select * into v_job from public.acquisition_import_jobs where id = p_import_job_id;
+  if v_job.id is null then
+    raise exception 'acquisition import job not found' using errcode = '42501';
+  end if;
+  select j.source_system_id into v_ss from public.import_jobs j where j.id = v_job.source_import_job_id;
+
+  select count(*)::int into v_orders
+  from public.acquisition_orders where acquisition_import_job_id = v_job.id;
+  select count(*)::int into v_lots
+  from public.acquisition_lots lt join public.acquisition_orders o on o.id = lt.order_id
+  where o.acquisition_import_job_id = v_job.id;
+  select count(*)::int into v_lines
+  from public.acquisition_line_items where acquisition_import_job_id = v_job.id;
+  select count(*)::int into v_comps
+  from public.acquisition_cost_components where acquisition_import_job_id = v_job.id;
+  select count(*)::int into v_ucost
+  from public.acquisition_cost_components
+  where acquisition_import_job_id = v_job.id and attribution_state = 'unresolved';
+  select count(*)::int into v_cand from (
+    select normalized_handle from public.supplier_aliases
+    where workspace_id = v_job.workspace_id and source_system_id = v_ss
+    group by normalized_handle having count(distinct supplier_id) > 1
+  ) g;
+
+  v_c := 'ACQPLAN1' || app.dg_f(v_job.mapping_version);
+
+  v_c := v_c || 'ORD' || app.dg_f(v_orders::text) || coalesce((
+    select string_agg(
+      app.dg_f(o.source_order_reference) ||
+      app.dg_f((select min(a.raw_handle) from public.supplier_aliases a
+                where a.workspace_id = o.workspace_id and a.source_system_id = o.source_system_id
+                  and a.supplier_id = o.supplier_id)) ||
+      app.dg_f(o.order_status::text) || app.dg_f(o.source_reported_status),
+      '' order by o.source_order_reference collate "C")
+    from public.acquisition_orders o where o.acquisition_import_job_id = v_job.id), '');
+
+  v_c := v_c || 'LOT' || app.dg_f(v_lots::text) || coalesce((
+    select string_agg(
+      app.dg_f(o.source_order_reference) || app.dg_f(lt.sequence_no::text) || app.dg_f(lt.label),
+      '' order by o.source_order_reference collate "C", lt.sequence_no)
+    from public.acquisition_lots lt join public.acquisition_orders o on o.id = lt.order_id
+    where o.acquisition_import_job_id = v_job.id), '');
+
+  v_c := v_c || 'LIN' || app.dg_f(v_lines::text) || coalesce((
+    select string_agg(
+      app.dg_f(li.public_id) || app.dg_f(o.source_order_reference) || app.dg_f(li.quantity::text) ||
+      app.dg_f(li.description) || app.dg_f(li.reference_number) || app.dg_sd(li.source_detail) ||
+      app.dg_f(li.source_record_id::text) || app.dg_f(li.external_identifier_id::text) ||
+      app.dg_f(lt.sequence_no::text),
+      '' order by li.public_id collate "C")
+    from public.acquisition_line_items li
+    join public.acquisition_lot_lines ll on ll.line_item_id = li.id and ll.state = 'active'
+    join public.acquisition_lots lt on lt.id = ll.lot_id
+    join public.acquisition_orders o on o.id = lt.order_id
+    where li.acquisition_import_job_id = v_job.id), '');
+
+  v_c := v_c || 'CMP' || app.dg_f(v_comps::text) || coalesce((
+    select string_agg(
+      app.dg_f(s.scope_kind) || app.dg_f(s.scope_key) || app.dg_f(s.component_type::text) ||
+      app.dg_f(s.amount_state::text) || app.dg_f(s.amount_minor::text) || app.dg_f(s.currency) ||
+      app.dg_f(s.evidence_note) || app.dg_f(s.source_record_id::text),
+      '' order by s.scope_key collate "C", s.component_type::text collate "C",
+                 coalesce(s.source_record_id::text, '') collate "C")
+    from (
+      select c.component_type, c.amount_state, c.amount_minor, c.currency, c.evidence_note,
+             c.source_record_id,
+             case when c.line_item_id is not null then 'line'
+                  when c.lot_id is not null then 'lot' else 'order' end as scope_kind,
+             case
+               when c.line_item_id is not null then
+                 (select li.public_id from public.acquisition_line_items li where li.id = c.line_item_id)
+               when c.lot_id is not null then
+                 (select o.source_order_reference || '#' || lt.sequence_no
+                  from public.acquisition_lots lt join public.acquisition_orders o on o.id = lt.order_id
+                  where lt.id = c.lot_id)
+               else
+                 (select o.source_order_reference from public.acquisition_orders o where o.id = c.order_id)
+             end as scope_key
+      from public.acquisition_cost_components c
+      where c.acquisition_import_job_id = v_job.id
+    ) s), '');
+
+  v_c := v_c || 'EXP' || app.dg_f(v_orders::text) || app.dg_f(v_lots::text) ||
+         app.dg_f(v_lines::text) || app.dg_f(v_comps::text) || app.dg_f(v_cand::text) ||
+         app.dg_f(v_ucost::text);
+
+  return encode(sha256(convert_to(v_c, 'UTF8')), 'hex');
+end
+$$;
+revoke all on function app.compute_acquisition_plan_digest(uuid) from public;
+
 -- Finalize ----------------------------------------------------------------------------
 -- The ONLY path to committed status. Recounts what is actually stored and
 -- compares against SIX mandatory, non-nullable expected counts — mirroring
@@ -972,6 +1105,62 @@ begin
       )
   ) then
     raise exception 'one or more line items have no cost component at all; not committing'
+      using errcode = 'check_violation';
+  end if;
+
+  -- PLACEMENT INTEGRITY: every line has EXACTLY ONE active placement, and every
+  -- active placement points to a lot of THIS job. A line with zero or multiple
+  -- active placements, or a placement into another job's lot, is refused.
+  if exists (
+    select 1 from public.acquisition_line_items li
+    where li.acquisition_import_job_id = v_job.id
+      and (select count(*) from public.acquisition_lot_lines ll
+           where ll.line_item_id = li.id and ll.state = 'active') <> 1
+  ) then
+    raise exception 'every line item must have exactly one active lot placement; not committing'
+      using errcode = 'check_violation';
+  end if;
+  if exists (
+    select 1
+    from public.acquisition_lot_lines ll
+    join public.acquisition_line_items li on li.id = ll.line_item_id
+    join public.acquisition_lots lt on lt.id = ll.lot_id
+    join public.acquisition_orders o on o.id = lt.order_id
+    where li.acquisition_import_job_id = v_job.id and ll.state = 'active'
+      and o.acquisition_import_job_id <> v_job.id
+  ) then
+    raise exception 'a line item is actively placed in a lot outside this acquisition job'
+      using errcode = 'check_violation';
+  end if;
+
+  -- NO PRE-COMMIT CORRECTION HISTORY: while the job is preview the only mutation
+  -- path is staging, so a superseded placement, a reversed component, an
+  -- allocation, or a reversing/replacement component tied to this job means the
+  -- frozen plan was tampered with. Refuse to commit any such job.
+  if exists (
+    select 1 from public.acquisition_lot_lines ll
+    join public.acquisition_line_items li on li.id = ll.line_item_id
+    where li.acquisition_import_job_id = v_job.id and ll.state <> 'active'
+  ) or exists (
+    select 1 from public.acquisition_cost_components c
+    where c.acquisition_import_job_id = v_job.id
+      and (c.reversed_at is not null or c.reverses_id is not null)
+  ) or exists (
+    select 1 from public.acquisition_cost_allocations al
+    join public.acquisition_cost_components c on c.id = al.cost_component_id
+    where c.acquisition_import_job_id = v_job.id
+  ) then
+    raise exception 'this acquisition job carries pre-commit correction/allocation history; '
+      'not committing'
+      using errcode = 'check_violation';
+  end if;
+
+  -- PLAN-IDENTITY VERIFICATION: the database recomputes the canonical plan
+  -- digest from the actually-staged rows and requires it to equal the frozen
+  -- plan_sha256. A mismatch means the staged facts are not the plan that was
+  -- claimed at begin — the job stays in preview and no commit event is written.
+  if app.compute_acquisition_plan_digest(v_job.id) is distinct from v_job.plan_sha256 then
+    raise exception 'staged rows do not match the frozen plan digest; not committing'
       using errcode = 'check_violation';
   end if;
 

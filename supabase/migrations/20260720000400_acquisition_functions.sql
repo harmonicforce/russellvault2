@@ -159,6 +159,28 @@ $$;
 
 revoke all on function app.ensure_supplier_alias(uuid, uuid, text, uuid, uuid, text) from public;
 
+-- Governed corrections may only touch a COMMITTED job ------------------------------
+-- While a job is preview, the ONLY mutation path is the staged-import RPCs, so
+-- the frozen plan digest keeps describing exactly what is staged. Corrections,
+-- allocations, and re-homings are post-commit operations; refusing them on a
+-- preview job stops any pre-commit tampering with the frozen plan.
+create function app.require_committed_acquisition_job(p_job_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if (select status from public.acquisition_import_jobs where id = p_job_id)
+       is distinct from 'committed' then
+    raise exception 'this action requires a COMMITTED acquisition import job; the frozen plan '
+      'cannot be altered while the job is preview'
+      using errcode = 'check_violation';
+  end if;
+end
+$$;
+revoke all on function app.require_committed_acquisition_job(uuid) from public;
+
 -- Cost allocation: propose ---------------------------------------------------------
 -- Records an explicit, caller-supplied split of a shared component's amount
 -- across specific line items as CANDIDATE rows. This function computes and
@@ -205,6 +227,7 @@ begin
   if v_component.id is null then
     raise exception 'cost component not found or not authorized' using errcode = '42501';
   end if;
+  perform app.require_committed_acquisition_job(v_component.acquisition_import_job_id);
   if v_component.attribution_state = 'direct' then
     raise exception 'a directly-attributed cost component cannot be allocated'
       using errcode = 'check_violation';
@@ -337,6 +360,7 @@ begin
   if v_component.id is null then
     raise exception 'cost component not found or not authorized' using errcode = '42501';
   end if;
+  perform app.require_committed_acquisition_job(v_component.acquisition_import_job_id);
   -- An unknown or null-amount component can never be confirmed as allocated: it
   -- has no amount to conserve against, and the caller''s expected total must not
   -- be allowed to stand in for the missing figure.
@@ -423,6 +447,7 @@ begin
   if v_component.id is null then
     raise exception 'cost component not found or not authorized' using errcode = '42501';
   end if;
+  perform app.require_committed_acquisition_job(v_component.acquisition_import_job_id);
   if v_component.attribution_state <> 'allocated' then
     raise exception 'cost component has no confirmed allocation to reverse'
       using errcode = 'check_violation';
@@ -495,6 +520,7 @@ begin
   if v_old.id is null then
     raise exception 'cost component not found or not authorized' using errcode = '42501';
   end if;
+  perform app.require_committed_acquisition_job(v_old.acquisition_import_job_id);
   if v_old.reversed_at is not null then
     raise exception 'cost component is already reversed' using errcode = 'check_violation';
   end if;
@@ -592,6 +618,9 @@ begin
   if v_old.id is null then
     raise exception 'lot-line placement not found or not authorized' using errcode = '42501';
   end if;
+  perform app.require_committed_acquisition_job(
+    (select acquisition_import_job_id from public.acquisition_line_items
+     where id = v_old.line_item_id));
   if v_old.state <> 'active' then
     raise exception 'lot-line placement is already %', v_old.state
       using errcode = 'check_violation';

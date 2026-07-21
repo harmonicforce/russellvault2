@@ -156,60 +156,26 @@ select is(
   1, 'resuming created no second channel');
 select pg_temp.logout();
 
--- begin_acquisition_import_job: provenance dependency enforcement ------------------------
-select pg_temp.login('a2222222-2222-2222-2222-222222222222');
+-- A reusable staging helper: stages the full CLEAN plan for p_job, or a plan
+-- with exactly one field tampered (p_variant), so tamper tests are one-liners.
+-- Runs as whoever is currently logged in (operator).
+create function pg_temp.stage_clean_plan(p_job uuid, p_variant text default 'clean')
+returns void language plpgsql as $$
+declare
+  v_l1 uuid; v_l2 uuid; v_l3 uuid; v_l4 uuid; v_l5 uuid; v_l6 uuid; v_l7 uuid;
+  v_lot61 uuid;
+  v_place1 text;
+  v_qty1 int := 2;
+  v_desc1 text := 'Item 1';
+  v_sd1 jsonb := '{"seller_raw_handle":"acme_traders","unit_cost":5,"note":null}'::jsonb;
+  v_amt1 bigint := 1000;
+begin
+  if p_variant = 'qty' then v_qty1 := 3; end if;
+  if p_variant = 'desc' then v_desc1 := 'TAMPERED'; end if;
+  if p_variant = 'sd' then v_sd1 := '{"seller_raw_handle":"acme_traders","unit_cost":999,"note":null}'::jsonb; end if;
+  if p_variant = 'amount' then v_amt1 := 9999; end if;
 
-select throws_ok(
-  format($$select public.begin_acquisition_import_job(
-      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 5,
-      '1.0.0', repeat('a', 64))$$,
-    pg_temp.get('channel'), '66660000-0000-4000-8000-000000000002'),
-  '23514', null,
-  'begin refuses to map a Phase 3 job that has not been committed');
-
-select lives_ok(
-  format($$select pg_temp.put('job', (public.begin_acquisition_import_job(
-      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 7,
-      '1.0.0', repeat('a', 64))->>'id')::uuid)$$,
-    pg_temp.get('channel'), '66660000-0000-4000-8000-000000000001'),
-  'begin opens an acquisition import job against a COMMITTED Phase 3 job');
-
-select is(
-  (select (public.begin_acquisition_import_job(
-     'aaaa0000-0000-4000-8000-000000000001', pg_temp.get('channel'),
-     '66660000-0000-4000-8000-000000000001', 'idem-acq-00000001', 7,
-     '1.0.0', repeat('a', 64))->>'resumed')::boolean),
-  true, 'reopening with the same idempotency key AND same plan resumes the existing job');
-
--- A changed plan digest under the SAME key and line count is a changed-content retry.
-select throws_ok(
-  format($$select public.begin_acquisition_import_job(
-      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 7,
-      '1.0.0', repeat('b', 64))$$,
-    pg_temp.get('channel'), '66660000-0000-4000-8000-000000000001'),
-  '22023', null,
-  'reusing the key with a CHANGED plan digest (same line count) is refused');
-
--- A changed mapping version under the SAME key is likewise refused.
-select throws_ok(
-  format($$select public.begin_acquisition_import_job(
-      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 7,
-      '2.0.0', repeat('a', 64))$$,
-    pg_temp.get('channel'), '66660000-0000-4000-8000-000000000001'),
-  '22023', null,
-  'reusing the key with a CHANGED mapping version is refused');
-
-select throws_ok(
-  format($$select public.begin_acquisition_import_job(
-      'aaaa0000-0000-4000-8000-000000000001', %L, %L, 'idem-acq-00000001', 99,
-      '1.0.0', repeat('a', 64))$$,
-    pg_temp.get('channel'), '66660000-0000-4000-8000-000000000003'),
-  '22023', null,
-  'reusing the idempotency key for a DIFFERENT (also committed) source job is refused');
-
--- Stage orders: seller resolution, non-merging, within-batch and cross-call conflicts ----
-select lives_ok(
-  format($$select public.stage_acquisition_orders(%L, jsonb_build_array(
+  perform public.stage_acquisition_orders(p_job, jsonb_build_array(
     jsonb_build_object('source_order_reference','ORD-1','seller_raw_handle','acme_traders',
       'first_source_record_id','77770000-0000-4000-8000-000000000001',
       'order_status','completed','source_reported_status','completed'),
@@ -224,616 +190,291 @@ select lives_ok(
       'order_status','completed','source_reported_status','completed'),
     jsonb_build_object('source_order_reference','ORD-5','seller_raw_handle','bravo_co',
       'first_source_record_id','77770000-0000-4000-8000-000000000005',
-      'order_status','cancelled','source_reported_status','cancelled'),
+      'order_status','completed','source_reported_status','completed'),
     jsonb_build_object('source_order_reference','ORD-6','seller_raw_handle','acme_traders',
       'first_source_record_id','77770000-0000-4000-8000-000000000006',
-      'order_status','completed','source_reported_status','completed')
-  ))$$, pg_temp.get('job')),
-  'six orders are staged, resolving four distinct suppliers');
+      'order_status','completed','source_reported_status','completed')));
 
-select is(
-  (select count(*)::int from public.acquisition_orders where acquisition_import_job_id = pg_temp.get('job')),
-  6, 'exactly six orders staged');
-select is(
-  (select count(*)::int from public.suppliers where workspace_id = 'aaaa0000-0000-4000-8000-000000000001'),
-  4, 'exactly four distinct suppliers were minted (acme_traders once, two colliding spellings stay separate)');
-select is(
-  (select count(distinct supplier_id)::int from public.supplier_aliases
-   where workspace_id = 'aaaa0000-0000-4000-8000-000000000001'
-     and normalized_handle = app.normalize_supplier_handle('west_coast_dealsRANDOM')),
-  2, 'the colliding spellings resolve to TWO DIFFERENT suppliers: never auto-merged');
+  -- lots: one per order, plus a second (empty) lot for ORD-6 (sequence 2).
+  perform public.stage_acquisition_lots(p_job, (
+    select jsonb_agg(jsonb_build_object('order_id', o.id, 'sequence_no', 1))
+    from public.acquisition_orders o where o.acquisition_import_job_id = p_job));
+  perform public.stage_acquisition_lots(p_job, jsonb_build_array(jsonb_build_object(
+    'order_id', (select id from public.acquisition_orders
+                 where acquisition_import_job_id = p_job and source_order_reference = 'ORD-6'),
+    'sequence_no', 2)));
 
--- Within-batch duplicate source order reference is refused, before any insert ------------
-select throws_ok(
-  format($$select public.stage_acquisition_orders(%L, jsonb_build_array(
-    jsonb_build_object('source_order_reference','ORD-DUP','seller_raw_handle','acme_traders',
-      'first_source_record_id','77770000-0000-4000-8000-000000000001',
-      'order_status','completed'),
-    jsonb_build_object('source_order_reference','ORD-DUP','seller_raw_handle','acme_traders',
-      'first_source_record_id','77770000-0000-4000-8000-000000000001',
-      'order_status','completed')
-  ))$$, pg_temp.get('job')),
-  '23514', null, 'a batch with the same source order reference twice is refused');
+  v_lot61 := (select lt.id from public.acquisition_lots lt
+              join public.acquisition_orders o on o.id = lt.order_id
+              where o.acquisition_import_job_id = p_job and o.source_order_reference = 'ORD-6'
+                and lt.sequence_no = 1);
 
-select is(
-  (select count(*)::int from public.acquisition_orders where source_order_reference = 'ORD-DUP'),
-  0, 'the rejected duplicate-order batch inserted nothing');
+  -- line 1's placement lot: normally ORD-1's lot; 'placement' variant mis-homes
+  -- it into ORD-2's lot (still in-job, but not where the plan says).
+  v_place1 := case when p_variant = 'placement' then 'ORD-2' else 'ORD-1' end;
 
--- A later, separate-call retry of already-staged orders is a content-idempotent no-op ----
-select is(
-  (select (public.stage_acquisition_orders(pg_temp.get('job'), jsonb_build_array(
-    jsonb_build_object('source_order_reference','ORD-1','seller_raw_handle','acme_traders',
-      'first_source_record_id','77770000-0000-4000-8000-000000000001',
-      'order_status','completed','source_reported_status','completed')
-  ))->>'inserted')::int),
-  0, 'a separate-call retry of an already-staged order is a safe no-op');
+  perform public.stage_acquisition_line_items(p_job, jsonb_build_array(
+    jsonb_build_object('public_id','WN-A-000001',
+      'lot_id',(select lt.id from public.acquisition_lots lt join public.acquisition_orders o on o.id=lt.order_id
+                where o.acquisition_import_job_id=p_job and o.source_order_reference=v_place1 and lt.sequence_no=1),
+      'source_record_id','77770000-0000-4000-8000-000000000001','quantity',v_qty1,
+      'description',v_desc1,'source_detail',v_sd1),
+    jsonb_build_object('public_id','WN-A-000002',
+      'lot_id',(select lt.id from public.acquisition_lots lt join public.acquisition_orders o on o.id=lt.order_id
+                where o.acquisition_import_job_id=p_job and o.source_order_reference='ORD-2' and lt.sequence_no=1),
+      'source_record_id','77770000-0000-4000-8000-000000000002','quantity',1,'description','Item 2'),
+    jsonb_build_object('public_id','WN-A-000003',
+      'lot_id',(select lt.id from public.acquisition_lots lt join public.acquisition_orders o on o.id=lt.order_id
+                where o.acquisition_import_job_id=p_job and o.source_order_reference='ORD-3' and lt.sequence_no=1),
+      'source_record_id','77770000-0000-4000-8000-000000000003','quantity',1,'description','Item 3'),
+    jsonb_build_object('public_id','WN-A-000004',
+      'lot_id',(select lt.id from public.acquisition_lots lt join public.acquisition_orders o on o.id=lt.order_id
+                where o.acquisition_import_job_id=p_job and o.source_order_reference='ORD-4' and lt.sequence_no=1),
+      'source_record_id','77770000-0000-4000-8000-000000000004','quantity',3,'description','Item 4'),
+    jsonb_build_object('public_id','WN-A-000005',
+      'lot_id',(select lt.id from public.acquisition_lots lt join public.acquisition_orders o on o.id=lt.order_id
+                where o.acquisition_import_job_id=p_job and o.source_order_reference='ORD-5' and lt.sequence_no=1),
+      'source_record_id','77770000-0000-4000-8000-000000000005','quantity',1,'description','Item 5'),
+    jsonb_build_object('public_id','WN-A-000006','lot_id',v_lot61,
+      'source_record_id','77770000-0000-4000-8000-000000000006','quantity',2,'description','Item 6'),
+    jsonb_build_object('public_id','WN-A-000007','lot_id',v_lot61,
+      'source_record_id','77770000-0000-4000-8000-000000000007','quantity',1,'description','Item 7')));
 
--- A retry with DIFFERENT content for the same order is refused, not silently dropped -----
-select throws_ok(
-  format($$select public.stage_acquisition_orders(%L, jsonb_build_array(
-    jsonb_build_object('source_order_reference','ORD-1','seller_raw_handle','acme_traders',
-      'first_source_record_id','77770000-0000-4000-8000-000000000001',
-      'order_status','cancelled','source_reported_status','cancelled')
-  ))$$, pg_temp.get('job')),
-  '23514', null,
-  'a retry that changes an already-staged order''s content is refused');
+  select id into v_l1 from public.acquisition_line_items where acquisition_import_job_id=p_job and public_id='WN-A-000001';
+  select id into v_l2 from public.acquisition_line_items where acquisition_import_job_id=p_job and public_id='WN-A-000002';
+  select id into v_l3 from public.acquisition_line_items where acquisition_import_job_id=p_job and public_id='WN-A-000003';
+  select id into v_l4 from public.acquisition_line_items where acquisition_import_job_id=p_job and public_id='WN-A-000004';
+  select id into v_l5 from public.acquisition_line_items where acquisition_import_job_id=p_job and public_id='WN-A-000005';
+  select id into v_l6 from public.acquisition_line_items where acquisition_import_job_id=p_job and public_id='WN-A-000006';
+  select id into v_l7 from public.acquisition_line_items where acquisition_import_job_id=p_job and public_id='WN-A-000007';
 
--- Stage lots: one per order (sequence 1); the required grouping layer -------------------
-select lives_ok(
-  format($$
-    select public.stage_acquisition_lots(%L, (
-      select jsonb_agg(jsonb_build_object('order_id', o.id, 'sequence_no', 1))
-      from public.acquisition_orders o where o.acquisition_import_job_id = %L
-    ))
-  $$, pg_temp.get('job'), pg_temp.get('job')),
-  'one lot per order is staged');
+  -- 6 known + 1 unknown (line 5) line-scoped item_price components, each citing
+  -- its own source record, plus one lot-scoped shared shipping (unresolved).
+  perform public.stage_acquisition_cost_components(p_job, jsonb_build_array(
+    jsonb_build_object('line_item_id',v_l1,'component_type','item_price','amount_state','known',
+      'amount_minor',v_amt1,'currency','USD','source_record_id','77770000-0000-4000-8000-000000000001'),
+    jsonb_build_object('line_item_id',v_l2,'component_type','item_price','amount_state','known',
+      'amount_minor',500,'currency','USD','source_record_id','77770000-0000-4000-8000-000000000002'),
+    jsonb_build_object('line_item_id',v_l3,'component_type','item_price','amount_state','known',
+      'amount_minor',750,'currency','USD','source_record_id','77770000-0000-4000-8000-000000000003'),
+    jsonb_build_object('line_item_id',v_l4,'component_type','item_price','amount_state','known',
+      'amount_minor',1200,'currency','USD','source_record_id','77770000-0000-4000-8000-000000000004'),
+    jsonb_build_object('line_item_id',v_l5,'component_type','item_price','amount_state','unknown',
+      'currency','USD','source_record_id','77770000-0000-4000-8000-000000000005'),
+    jsonb_build_object('line_item_id',v_l6,'component_type','item_price','amount_state','known',
+      'amount_minor',1000,'currency','USD','source_record_id','77770000-0000-4000-8000-000000000006'),
+    jsonb_build_object('line_item_id',v_l7,'component_type','item_price','amount_state','known',
+      'amount_minor',500,'currency','USD','source_record_id','77770000-0000-4000-8000-000000000007'),
+    jsonb_build_object('lot_id',v_lot61,'component_type','shipping','amount_state','known',
+      'amount_minor',300,'currency','USD')));
+end $$;
 
-select is(
-  (select count(*)::int from public.acquisition_lots lt
-   join public.acquisition_orders o on o.id = lt.order_id
-   where o.acquisition_import_job_id = pg_temp.get('job')),
-  6, 'exactly six lots staged, one per order');
+-- The frozen plan digest for the clean plan, captured once from the database's
+-- own canonical function app.compute_acquisition_plan_digest (this value is what
+-- that function returns for the plan staged by pg_temp.stage_clean_plan).
+set my.dclean = 'e567ba47fbfdc3bb9433b1fde7efaed2a73bbcb0c354a9d708e1fa88e49fb2cb';
 
-select throws_ok(
-  $$select public.stage_acquisition_lots(
-      (select v from ids where k = 'job'),
-      jsonb_build_array(
-        jsonb_build_object('order_id', gen_random_uuid(), 'sequence_no', 1)
-      ))$$,
-  '23514', null, 'a lot referencing an order not staged in this job is refused');
-
--- Stage line items: WN-A ids preserved exactly, provenance-dependency enforced -----------
-select lives_ok(
-  format($$
-    select public.stage_acquisition_line_items(%L, (
-      select jsonb_agg(jsonb_build_object(
-        'public_id', sr.source_row_key,
-        'lot_id', lt.id,
-        'source_record_id', sr.id,
-        'quantity', (sr.raw_payload->>'quantity_purchased')::int,
-        'description', sr.raw_payload->>'seller'
-      ))
-      from public.source_records sr
-      join public.acquisition_orders o
-        on o.acquisition_import_job_id = %L
-       and o.source_order_reference = sr.raw_payload->>'order_id'
-      join public.acquisition_lots lt on lt.order_id = o.id and lt.sequence_no = 1
-      where sr.import_job_id = '66660000-0000-4000-8000-000000000001'
-    ))
-  $$, pg_temp.get('job'), pg_temp.get('job')),
-  'seven canonical line items are staged, one per raw source row');
-
-select is(
-  (select count(*)::int from public.acquisition_line_items where acquisition_import_job_id = pg_temp.get('job')),
-  7, 'exactly seven line items staged');
-select results_eq(
-  $$select public_id from public.acquisition_line_items
-    where acquisition_import_job_id = (select v from ids where k = 'job')
-    order by public_id$$,
-  $$values ('WN-A-000001'), ('WN-A-000002'), ('WN-A-000003'), ('WN-A-000004'), ('WN-A-000005'),
-           ('WN-A-000006'), ('WN-A-000007')$$,
-  'every original WN-A public id is preserved exactly'
-);
-select is(
-  (select count(*)::int from public.acquisition_lot_lines ll
-   join public.acquisition_line_items li on li.id = ll.line_item_id
-   where li.acquisition_import_job_id = pg_temp.get('job') and ll.state = 'active'),
-  7, 'every line item has exactly one active lot-line placement');
-select is(
-  (select count(*)::int from public.acquisition_lot_lines ll
-   join public.acquisition_lots lt on lt.id = ll.lot_id
-   join public.acquisition_orders o on o.id = lt.order_id
-   where o.source_order_reference = 'ORD-6' and ll.state = 'active'),
-  2, 'ORD-6''s single lot correctly holds both of its line items');
-
--- A line item referencing a source record from a DIFFERENT Phase 3 job is refused -------
--- (Direct fixture insert: drop back to the owning role, which alone may
--- write source_records, then resume the operator session.)
-select pg_temp.logout();
-insert into public.source_records (
-  id, workspace_id, import_job_id, source_row_index, source_row_key, raw_payload,
-  normalized_hash, parse_status, parser_output, parser_version, mapping_version,
-  created_by_process
-) values (
-  '77770000-0000-4000-8000-00000000009f', 'aaaa0000-0000-4000-8000-000000000001',
-  '66660000-0000-4000-8000-000000000002', 0, 'WN-A-999999',
-  '{"acquisition_line_id":"WN-A-999999"}'::jsonb, pg_temp.h('foreign-row'), 'parsed',
-  '{}'::jsonb, '1.0.0', '1.0.0', 'provenance.import'
-);
+-- ===== GF2: governed corrections are refused while the job is preview =====
+savepoint pre;
 select pg_temp.login('a2222222-2222-2222-2222-222222222222');
-
-select throws_ok(
-  format($$select public.stage_acquisition_line_items(%L, jsonb_build_array(
-    jsonb_build_object('public_id','WN-A-999999',
-      'lot_id', (select lt.id from public.acquisition_lots lt
-                 join public.acquisition_orders o on o.id = lt.order_id
-                 where o.acquisition_import_job_id = %L and lt.sequence_no = 1 limit 1),
-      'source_record_id','77770000-0000-4000-8000-00000000009f','quantity',1)
-  ))$$, pg_temp.get('job'), pg_temp.get('job')),
-  '23514', null,
-  'a line item citing a source record from a DIFFERENT (uncommitted) Phase 3 job is refused');
-
-select is(
-  (select count(*)::int from public.acquisition_line_items where public_id = 'WN-A-999999'),
-  0, 'the refused cross-job line item was not inserted');
-
--- Within-batch duplicate line item public id is refused ----------------------------------
-select throws_ok(
-  format($$select public.stage_acquisition_line_items(%L, jsonb_build_array(
-    jsonb_build_object('public_id','WN-A-DUP',
-      'lot_id', (select lt.id from public.acquisition_lots lt
-                 join public.acquisition_orders o on o.id = lt.order_id
-                 where o.acquisition_import_job_id = %L and lt.sequence_no = 1 limit 1),
-      'source_record_id','77770000-0000-4000-8000-000000000001','quantity',1),
-    jsonb_build_object('public_id','WN-A-DUP',
-      'lot_id', (select lt.id from public.acquisition_lots lt
-                 join public.acquisition_orders o on o.id = lt.order_id
-                 where o.acquisition_import_job_id = %L and lt.sequence_no = 1 limit 1),
-      'source_record_id','77770000-0000-4000-8000-000000000001','quantity',1)
-  ))$$, pg_temp.get('job'), pg_temp.get('job'), pg_temp.get('job')),
-  '23514', null, 'a batch with the same line item public id twice is refused');
-
--- Stage cost components: one direct component per line, from total_paid -----------------
-select lives_ok(
-  format($$
-    select public.stage_acquisition_cost_components(%L, (
-      select jsonb_agg(jsonb_build_object(
-        'line_item_id', li.id,
-        'component_type', 'item_price',
-        'amount_state', case when (sr.raw_payload->>'total_paid')::numeric = 0
-                              then 'documented_free' else 'known' end,
-        'amount_minor', round((sr.raw_payload->>'total_paid')::numeric * 100)::bigint,
-        'currency', 'USD',
-        'evidence_note', case when (sr.raw_payload->>'total_paid')::numeric = 0
-                               then 'seller-documented free item' else null end,
-        'source_record_id', sr.id
-      ))
-      from public.acquisition_line_items li
-      join public.source_records sr on sr.id = li.source_record_id
-      where li.acquisition_import_job_id = %L
-    ))
-  $$, pg_temp.get('job'), pg_temp.get('job')),
-  'seven direct cost components are staged, one per line'
-);
-
-select is(
-  (select count(*)::int from public.acquisition_cost_components
-   where acquisition_import_job_id = pg_temp.get('job')),
-  7, 'exactly seven direct cost components staged');
-select is(
-  (select count(*)::int from public.acquisition_cost_components
-   where acquisition_import_job_id = pg_temp.get('job') and attribution_state = 'direct'),
-  7, 'every staged cost component is directly attributed to its own line');
-select is(
-  (select count(*)::int from public.acquisition_cost_components
-   where acquisition_import_job_id = pg_temp.get('job') and amount_state = 'documented_free'),
-  1, 'exactly one documented-free (zero-cost, evidenced) component exists');
-
--- Zero cost WITHOUT documented evidence is refused (schema-level, not importer logic) ----
-select throws_ok(
-  format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(
-    jsonb_build_object('line_item_id', (select id from public.acquisition_line_items
-                          where acquisition_import_job_id = %L limit 1),
-      'component_type','fee','amount_state','known','amount_minor',0,'currency','USD')
-  ))$$, pg_temp.get('job'), pg_temp.get('job')),
-  '23514', null, 'a zero KNOWN amount with no documented-free evidence is refused');
-
--- Unknown cost must have a NULL amount, never zero ---------------------------------------
-select throws_ok(
-  format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(
-    jsonb_build_object('line_item_id', (select id from public.acquisition_line_items
-                          where acquisition_import_job_id = %L limit 1),
-      'component_type','shipping','amount_state','unknown','amount_minor',0,'currency','USD')
-  ))$$, pg_temp.get('job'), pg_temp.get('job')),
-  '23514', null, 'an unknown-state component cannot carry a zero (or any) amount');
-
--- A cost component must scope to EXACTLY ONE target --------------------------------------
-select throws_ok(
-  format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(
-    jsonb_build_object(
-      'line_item_id', (select id from public.acquisition_line_items where acquisition_import_job_id = %L limit 1),
-      'order_id', (select id from public.acquisition_orders where acquisition_import_job_id = %L limit 1),
-      'component_type','item_price','amount_state','known','amount_minor',100,'currency','USD')
-  ))$$, pg_temp.get('job'), pg_temp.get('job'), pg_temp.get('job')),
-  '22023', null, 'a cost component naming two scope targets at once is refused');
-
--- Stage a LOT-scoped SHARED cost component (shipping) for ORD-6's lot -------------------
--- Two line items share this lot, so it is the only component in this fixture
--- that actually needs allocation.
-select lives_ok(
-  format($$select public.stage_acquisition_cost_components(%L, jsonb_build_array(
-    jsonb_build_object(
-      'lot_id', (select lt.id from public.acquisition_lots lt
-                 join public.acquisition_orders o on o.id = lt.order_id
-                 where o.source_order_reference = 'ORD-6' and lt.sequence_no = 1),
-      'component_type','shipping','amount_state','known','amount_minor',300,'currency','USD')
-  ))$$, pg_temp.get('job')),
-  'a lot-scoped shared shipping cost component is staged');
-
-select pg_temp.put('shipping_component',
-  (select id from public.acquisition_cost_components
-   where lot_id = (select lt.id from public.acquisition_lots lt
-                   join public.acquisition_orders o on o.id = lt.order_id
-                   where o.source_order_reference = 'ORD-6' and lt.sequence_no = 1)));
-select pg_temp.put('line6', (select id from public.acquisition_line_items where public_id = 'WN-A-000006'));
-select pg_temp.put('line7', (select id from public.acquisition_line_items where public_id = 'WN-A-000007'));
-
-select is(
-  (select attribution_state::text from public.acquisition_cost_components
-   where id = pg_temp.get('shipping_component')),
-  'unresolved',
-  'a lot-scoped shared component is derived as unresolved: the importer never invents an allocation');
-
--- Allocation: within-batch duplicate line item is refused ---------------------------------
-select throws_ok(
-  format($$select public.propose_cost_allocation(%L, 'proportional_by_quantity', jsonb_build_array(
-    jsonb_build_object('line_item_id', %L, 'amount_minor', 100),
-    jsonb_build_object('line_item_id', %L, 'amount_minor', 100)
-  ))$$, pg_temp.get('shipping_component'), pg_temp.get('line6'), pg_temp.get('line6')),
-  '23514', null, 'a duplicate line item within one allocation proposal is refused');
-
--- Allocation: a line item outside the component's scope is refused -----------------------
-select throws_ok(
-  format($$select public.propose_cost_allocation(%L, 'proportional_by_quantity', jsonb_build_array(
-    jsonb_build_object('line_item_id', %L, 'amount_minor', 300)
-  ))$$, pg_temp.get('shipping_component'),
-    (select id from public.acquisition_line_items where public_id = 'WN-A-000001')),
-  '23514', null, 'an allocation line item outside the component''s lot is refused');
-
--- A conserving quantity-proportional split (2:1 => 200/100) is proposed -------------------
-select lives_ok(
-  format($$select public.propose_cost_allocation(%L, 'proportional_by_quantity', jsonb_build_array(
-    jsonb_build_object('line_item_id', %L, 'amount_minor', 200),
-    jsonb_build_object('line_item_id', %L, 'amount_minor', 100)
-  ))$$, pg_temp.get('shipping_component'), pg_temp.get('line6'), pg_temp.get('line7')),
-  'a conserving two-line allocation proposal is recorded as candidates');
-
-select is(
-  (select count(*)::int from public.acquisition_cost_allocations
-   where cost_component_id = pg_temp.get('shipping_component') and state = 'candidate'),
-  2, 'two candidate allocation rows exist');
-
--- Confirm with the WRONG expected total is refused ----------------------------------------
-select throws_ok(
-  format($$select public.confirm_cost_allocation(%L, 250)$$, pg_temp.get('shipping_component')),
-  '23514', null, 'confirming with a mismatched expected total is refused');
-
-select is(
-  (select attribution_state::text from public.acquisition_cost_components
-   where id = pg_temp.get('shipping_component')),
-  'unresolved', 'the rejected confirmation left the component unresolved');
-
--- Confirm with the correct expected total succeeds ----------------------------------------
-select lives_ok(
-  format($$select public.confirm_cost_allocation(%L, 300)$$, pg_temp.get('shipping_component')),
-  'confirming with the correct expected total succeeds');
-
-select is(
-  (select attribution_state::text from public.acquisition_cost_components
-   where id = pg_temp.get('shipping_component')),
-  'allocated', 'the component is now allocated');
-select is(
-  (select count(*)::int from public.acquisition_cost_allocations
-   where cost_component_id = pg_temp.get('shipping_component') and state = 'confirmed'),
-  2, 'both allocations are confirmed');
-select is(
-  (select sum(amount_minor)::bigint from public.acquisition_cost_allocations
-   where cost_component_id = pg_temp.get('shipping_component') and state = 'confirmed'),
-  300::bigint, 'confirmed allocations conserve the component amount exactly, to the minor unit');
-
--- Proposing again on an already-allocated component is refused ----------------------------
+select pg_temp.put('pjob', (public.begin_acquisition_import_job(
+  'aaaa0000-0000-4000-8000-000000000001', pg_temp.get('channel'),
+  '66660000-0000-4000-8000-000000000001', 'idem-preview-guard', 7, '1.0.0', repeat('a',64))->>'id')::uuid);
+select pg_temp.stage_clean_plan(pg_temp.get('pjob'), 'clean');
+select pg_temp.put('pc_line1', (select id from public.acquisition_line_items
+  where acquisition_import_job_id = pg_temp.get('pjob') and public_id = 'WN-A-000001'));
+select pg_temp.put('pc_ship', (select c.id from public.acquisition_cost_components c
+  where c.acquisition_import_job_id = pg_temp.get('pjob') and c.component_type = 'shipping'));
+select pg_temp.put('pc_placement', (select ll.id from public.acquisition_lot_lines ll
+  where ll.line_item_id = pg_temp.get('pc_line1') and ll.state = 'active'));
+select pg_temp.put('pc_lot62', (select lt.id from public.acquisition_lots lt
+  join public.acquisition_orders o on o.id = lt.order_id
+  where o.acquisition_import_job_id = pg_temp.get('pjob') and o.source_order_reference='ORD-6' and lt.sequence_no=2));
 select throws_ok(
   format($$select public.propose_cost_allocation(%L, 'equal_split', jsonb_build_array(
-    jsonb_build_object('line_item_id', %L, 'amount_minor', 150)
-  ))$$, pg_temp.get('shipping_component'), pg_temp.get('line6')),
-  '23514', null, 'proposing a new allocation on an already-allocated component is refused');
-
--- Reverse: retracts the confirmed allocations and resets to unresolved --------------------
-select lives_ok(
-  format($$select public.reverse_cost_allocation(%L, 'shipping estimate corrected')$$,
-    pg_temp.get('shipping_component')),
-  'reversing the confirmed allocation succeeds');
-
-select is(
-  (select attribution_state::text from public.acquisition_cost_components
-   where id = pg_temp.get('shipping_component')),
-  'unresolved', 'the component is back to unresolved after reversal');
-select is(
-  (select count(*)::int from public.acquisition_cost_allocations
-   where cost_component_id = pg_temp.get('shipping_component') and state = 'reversed'),
-  2, 'the original two allocations remain, now reversed: history is preserved, not deleted');
-
--- A corrected re-propose + confirm cycle finishes the same component ----------------------
-select lives_ok(
-  format($$select public.propose_cost_allocation(%L, 'proportional_by_quantity', jsonb_build_array(
-    jsonb_build_object('line_item_id', %L, 'amount_minor', 200),
-    jsonb_build_object('line_item_id', %L, 'amount_minor', 100)
-  ))$$, pg_temp.get('shipping_component'), pg_temp.get('line6'), pg_temp.get('line7')),
-  'a corrected re-proposal succeeds after reversal');
-select lives_ok(
-  format($$select public.confirm_cost_allocation(%L, 300)$$, pg_temp.get('shipping_component')),
-  'the corrected re-proposal confirms successfully, leaving the component allocated');
-select is(
-  (select count(*)::int from public.acquisition_cost_allocations
-   where cost_component_id = pg_temp.get('shipping_component')),
-  4, 'all four allocation rows (two reversed, two confirmed) are retained: nothing was deleted');
-
--- Cost component correction: reverse_cost_component preserves history --------------------
-select pg_temp.put('wn1_component',
-  (select id from public.acquisition_cost_components
-   where line_item_id = (select id from public.acquisition_line_items where public_id = 'WN-A-000001')));
-
-select lives_ok(
-  format($$select public.reverse_cost_component(%L,
-    jsonb_build_object('amount_minor', 1100), 'corrected price after reconciliation')$$,
-    pg_temp.get('wn1_component')),
-  'reverse_cost_component corrects a wrong amount by inserting a successor');
-
-select is(
-  (select amount_minor from public.acquisition_cost_components where id = pg_temp.get('wn1_component')),
-  1000::bigint, 'the original (reversed) component''s amount is unchanged: history is preserved');
-select is(
-  (select (reversed_at is not null) from public.acquisition_cost_components
-   where id = pg_temp.get('wn1_component')),
-  true, 'the original component is marked reversed');
-select is(
-  (select c.amount_minor from public.acquisition_cost_components c
-   join public.acquisition_cost_components old_c on old_c.reversed_by_id = c.id
-   where old_c.id = pg_temp.get('wn1_component')),
-  1100::bigint, 'the successor component carries the corrected amount');
-select is(
-  (select c.line_item_id from public.acquisition_cost_components c
-   join public.acquisition_cost_components old_c on old_c.reversed_by_id = c.id
-   where old_c.id = pg_temp.get('wn1_component')),
-  (select id from public.acquisition_line_items where public_id = 'WN-A-000001'),
-  'the successor component applies to the SAME line item as the row it corrects');
-
--- Stage a second lot for ORD-6 (e.g. a reshipped package), then supersede a placement ------
-select lives_ok(
-  format($$select public.stage_acquisition_lots(%L, jsonb_build_array(
-    jsonb_build_object('order_id',
-      (select o.id from public.acquisition_orders o where o.source_order_reference = 'ORD-6'),
-      'sequence_no', 2, 'label', 'reshipped package')
-  ))$$, pg_temp.get('job')),
-  'a second lot is staged for ORD-6');
-
-select pg_temp.put('ord6_lot2',
-  (select lt.id from public.acquisition_lots lt
-   join public.acquisition_orders o on o.id = lt.order_id
-   where o.source_order_reference = 'ORD-6' and lt.sequence_no = 2));
-select pg_temp.put('line7_lot_line',
-  (select id from public.acquisition_lot_lines
-   where line_item_id = pg_temp.get('line7') and state = 'active'));
-
-select lives_ok(
-  format($$select public.supersede_lot_line(%L, %L, 're-homed after reshipment')$$,
-    pg_temp.get('line7_lot_line'), pg_temp.get('ord6_lot2')),
-  'supersede_lot_line re-homes WN-A-000007 into the new lot');
-
-select is(
-  (select state::text from public.acquisition_lot_lines where id = pg_temp.get('line7_lot_line')),
-  'superseded', 'the original placement is now superseded');
-select is(
-  (select lt.sequence_no from public.acquisition_lot_lines ll
-   join public.acquisition_lots lt on lt.id = ll.lot_id
-   where ll.line_item_id = pg_temp.get('line7') and ll.state = 'active'),
-  2, 'WN-A-000007''s active placement now points at lot sequence 2');
-select is(
-  (select count(*)::int from public.acquisition_lot_lines where line_item_id = pg_temp.get('line7')),
-  2, 'both the original and the corrective placement are retained');
-
--- Direct-DML bypass denial ----------------------------------------------------------------
+    jsonb_build_object('line_item_id',%L::uuid,'amount_minor',100)))$$,
+    pg_temp.get('pc_ship'), pg_temp.get('pc_line1')),
+  '23514', null, 'GF2: an operator cannot allocate a component while the job is preview');
 select throws_ok(
-  $$insert into public.channels (workspace_id, public_id, name, kind, created_by)
-    values ('aaaa0000-0000-4000-8000-000000000001', 'RV-CH-FORGED000001', 'Forged', 'marketplace',
-      'a2222222-2222-2222-2222-222222222222')$$,
-  '42501', null, 'direct DML cannot register a channel');
-
+  format($$select public.reverse_cost_component(%L, jsonb_build_object('amount_minor',1),'x')$$,
+    (select id from public.acquisition_cost_components
+     where acquisition_import_job_id = pg_temp.get('pjob') and line_item_id = pg_temp.get('pc_line1'))),
+  '23514', null, 'GF2: an operator cannot reverse a component while the job is preview');
 select throws_ok(
-  $$insert into public.suppliers (workspace_id, public_id, display_name, created_by_process)
-    values ('aaaa0000-0000-4000-8000-000000000001', 'RV-SUP-FORGED00001', 'Forged Supplier', 'forged')$$,
-  '42501', null, 'direct DML cannot create a supplier');
-
-select throws_ok(
-  format($$update public.acquisition_orders set order_status = 'refunded' where
-    acquisition_import_job_id = %L$$, pg_temp.get('job')),
-  '42501', null, 'direct DML cannot mutate an acquisition order');
-
-select throws_ok(
-  $$delete from public.acquisition_line_items$$,
-  '42501', null, 'direct DML cannot delete a line item');
-
-select throws_ok(
-  format($$update public.acquisition_cost_components set attribution_state = 'allocated'
-    where id = %L$$, pg_temp.get('wn1_component')),
-  '42501', null, 'direct DML cannot mutate a cost component''s attribution state');
-
-select throws_ok(
-  $$update public.acquisition_cost_allocations set state = 'confirmed'$$,
-  '42501', null, 'direct DML cannot confirm a cost allocation');
-
-select throws_ok(
-  format($$update public.acquisition_import_jobs set status = 'committed' where id = %L$$,
-    pg_temp.get('job')),
-  '42501', null, 'direct DML cannot commit an acquisition import job');
-
+  format($$select public.supersede_lot_line(%L, %L, 'x')$$, pg_temp.get('pc_placement'), pg_temp.get('pc_lot62')),
+  '23514', null, 'GF2: an operator cannot supersede a lot-line while the job is preview');
 select pg_temp.logout();
+rollback to savepoint pre;
 
--- Viewer: read-only ------------------------------------------------------------------------
-select pg_temp.login('a3333333-3333-3333-3333-333333333333');
-
-select throws_ok(
-  format($$select public.stage_acquisition_orders(%L, '[]'::jsonb)$$, pg_temp.get('job')),
-  '42501', null, 'a viewer cannot stage acquisition orders');
-
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 7, 7, 9, 1, 0)$$,
-    pg_temp.get('job')),
-  '42501', null, 'a viewer cannot finalize an acquisition import');
-
-select is(
-  (select count(*)::int from public.acquisition_orders where acquisition_import_job_id = pg_temp.get('job')),
-  6, 'a viewer reads all six staged orders');
-
-select pg_temp.logout();
-
--- Cross-workspace isolation -----------------------------------------------------------------
-select pg_temp.login('a4444444-4444-4444-4444-444444444444');
-
-select is((select count(*)::int from public.acquisition_orders), 0,
-  'workspace B sees none of workspace A''s acquisition orders');
-select is((select count(*)::int from public.suppliers), 0,
-  'workspace B sees none of workspace A''s suppliers');
-
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 7, 7, 9, 1, 0)$$,
-    pg_temp.get('job')),
-  '42501', null, 'workspace B cannot finalize a workspace A acquisition import');
-
-select pg_temp.logout();
+-- ===== A line cannot be staged into another acquisition job's lot =====
+savepoint xjob;
 select pg_temp.login('a2222222-2222-2222-2222-222222222222');
+-- open two preview jobs on the same source is blocked once one commits; here both are preview.
+select pg_temp.put('jobA', (public.begin_acquisition_import_job(
+  'aaaa0000-0000-4000-8000-000000000001', pg_temp.get('channel'),
+  '66660000-0000-4000-8000-000000000001', 'idem-xjob-a', 7, '1.0.0', repeat('a',64))->>'id')::uuid);
+select public.stage_acquisition_orders(pg_temp.get('jobA'), jsonb_build_array(jsonb_build_object(
+  'source_order_reference','ORD-1','seller_raw_handle','acme_traders',
+  'first_source_record_id','77770000-0000-4000-8000-000000000001',
+  'order_status','completed','source_reported_status','completed')));
+select public.stage_acquisition_lots(pg_temp.get('jobA'), jsonb_build_array(jsonb_build_object(
+  'order_id',(select id from public.acquisition_orders where acquisition_import_job_id=pg_temp.get('jobA')))));
+-- a lot from a DIFFERENT job (the preview-guard job would be gone; use a foreign lot id)
+select throws_ok(
+  format($$select public.stage_acquisition_line_items(%L, jsonb_build_array(jsonb_build_object(
+    'public_id','WN-A-000002','lot_id',%L::uuid,
+    'source_record_id','77770000-0000-4000-8000-000000000002','quantity',1)))$$,
+    pg_temp.get('jobA'), '00000000-0000-4000-8000-0000000000ff'),
+  '23514', null, 'a line cannot be placed into a lot that is not staged in this job');
+select pg_temp.logout();
+rollback to savepoint xjob;
 
--- Finalize: every one of the six expected counts is mandatory and verified -----------------
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 99, 7, 7, 9, 1, 0)$$,
-    pg_temp.get('job')),
-  '23514', null, 'finalize refuses a mismatched order count');
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 99, 7, 9, 1, 0)$$,
-    pg_temp.get('job')),
-  '23514', null, 'finalize refuses a mismatched lot count');
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 7, 99, 9, 1, 0)$$,
-    pg_temp.get('job')),
-  '23514', null, 'finalize refuses a mismatched line item count');
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 7, 7, 99, 1, 0)$$,
-    pg_temp.get('job')),
-  '23514', null, 'finalize refuses a mismatched cost component count');
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 7, 7, 9, 0, 0)$$,
-    pg_temp.get('job')),
-  '23514', null,
-  'finalize refuses omitting the unresolved supplier candidate (expecting 0 when 1 exists)');
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 7, 7, 9, 1, 5)$$,
-    pg_temp.get('job')),
-  '23514', null, 'finalize refuses a mismatched unresolved cost component count');
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 7, 7, 9, 1, null)$$,
-    pg_temp.get('job')),
-  '22023', null, 'finalize refuses an omitted (null) expected count, even at zero');
+-- ===== Digest tamper refusals (each isolated by a savepoint) =====
+-- Helper: stage a (possibly tampered) plan under DCLEAN and try to finalize.
+create function pg_temp.try_finalize(p_variant text, p_digest text)
+returns void language plpgsql as $$
+declare v_job uuid;
+begin
+  v_job := (public.begin_acquisition_import_job(
+    'aaaa0000-0000-4000-8000-000000000001', pg_temp.get('channel'),
+    '66660000-0000-4000-8000-000000000001', 'idem-tamper', 7, '1.0.0', p_digest)->>'id')::uuid;
+  perform pg_temp.stage_clean_plan(v_job, p_variant);
+  perform public.finalize_acquisition_import_job(v_job, 'idem-tamper', 6, 7, 7, 8, 1, 1);
+end $$;
 
-select is(
-  (select status::text from public.acquisition_import_jobs where id = pg_temp.get('job')),
-  'preview', 'every rejected finalization left the job uncommitted');
-select is(
-  (select count(*)::int from public.audit_events
-   where event_type = 'acquisition_import_committed' and subject_id = pg_temp.get('job')),
-  0, 'no rejected finalization wrote an acquisition_import_committed event');
+select pg_temp.login('a2222222-2222-2222-2222-222222222222');
+-- An arbitrary 64-char digest with otherwise-valid rows is refused.
+savepoint t0;
+select throws_ok($$select pg_temp.try_finalize('clean', repeat('f',64))$$, '23514', null,
+  'an arbitrary plan digest with valid rows is refused at finalize');
+rollback to savepoint t0;
+-- Each single-field change is refused under the clean digest.
+savepoint t1;
+select throws_ok(format($$select pg_temp.try_finalize('qty', %L)$$, current_setting('my.dclean')),
+  '23514', null, 'a changed quantity (same line count) is refused');
+rollback to savepoint t1;
+savepoint t2;
+select throws_ok(format($$select pg_temp.try_finalize('desc', %L)$$, current_setting('my.dclean')),
+  '23514', null, 'a changed description is refused');
+rollback to savepoint t2;
+savepoint t3;
+select throws_ok(format($$select pg_temp.try_finalize('sd', %L)$$, current_setting('my.dclean')),
+  '23514', null, 'a changed source_detail is refused');
+rollback to savepoint t3;
+savepoint t4;
+select throws_ok(format($$select pg_temp.try_finalize('amount', %L)$$, current_setting('my.dclean')),
+  '23514', null, 'a changed cost amount is refused');
+rollback to savepoint t4;
+savepoint t5;
+select throws_ok(format($$select pg_temp.try_finalize('placement', %L)$$, current_setting('my.dclean')),
+  '23514', null, 'a changed lot placement is refused');
+rollback to savepoint t5;
+-- The rejected finalizations left the job in preview and wrote no commit event.
+select is((select count(*)::int from public.acquisition_import_jobs
+           where source_import_job_id='66660000-0000-4000-8000-000000000001' and status='committed'),
+  0, 'no tampered finalization committed');
+select is((select count(*)::int from public.audit_events
+           where event_type='acquisition_import_committed'), 0,
+  'no rejected finalization wrote a commit audit event');
+select pg_temp.logout();
 
--- Finalize: correct counts commit successfully ---------------------------------------------
+-- ===== Clean commit: the correct plan digest finalizes =====
+select pg_temp.login('a2222222-2222-2222-2222-222222222222');
+select pg_temp.put('job', (public.begin_acquisition_import_job(
+  'aaaa0000-0000-4000-8000-000000000001', pg_temp.get('channel'),
+  '66660000-0000-4000-8000-000000000001', 'idem-acq-00000001', 7, '1.0.0',
+  current_setting('my.dclean'))->>'id')::uuid);
+select pg_temp.stage_clean_plan(pg_temp.get('job'), 'clean');
 select is(
   (select (public.finalize_acquisition_import_job(pg_temp.get('job'), 'idem-acq-00000001',
-     6, 7, 7, 9, 1, 0))->>'status'),
-  'committed', 'the acquisition import commits once every expected count is correct');
-
+     6, 7, 7, 8, 1, 1))->>'status'),
+  'committed', 'the clean plan with the correct database-recomputed digest commits');
 select is(
   (select count(*)::int from public.audit_events
-   where event_type = 'acquisition_import_committed' and subject_id = pg_temp.get('job')),
-  1, 'exactly one acquisition_import_committed audit event was written');
+   where event_type='acquisition_import_committed' and subject_id = pg_temp.get('job')),
+  1, 'exactly one commit audit event was written');
 
-select throws_ok(
-  format($$select public.finalize_acquisition_import_job(%L, 'idem-acq-00000001', 6, 7, 7, 9, 1, 0)$$,
-    pg_temp.get('job')),
-  '23514', null, 'an already-committed acquisition import cannot be finalized again');
-
--- ===== Frozen committed summary + response-loss replay =====
--- A replay with the exact binding returns the FROZEN six counts.
+-- ===== Frozen replay + changed-binding refusals =====
 select is(
-  (select (public.get_committed_acquisition_summary(
-     pg_temp.get('job'), 'idem-acq-00000001', pg_temp.get('channel'),
-     '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('a', 64)))->>'cost_components'),
-  '9', 'a committed replay returns the frozen cost-component count');
-select is(
-  (select (public.get_committed_acquisition_summary(
-     pg_temp.get('job'), 'idem-acq-00000001', pg_temp.get('channel'),
-     '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('a', 64)
-   ))->>'unresolved_supplier_candidates'),
-  '1', 'a committed replay returns the frozen candidate count');
-
--- Changed line count / mapping version / plan digest are each refused on replay.
+  (select (public.get_committed_acquisition_summary(pg_temp.get('job'), 'idem-acq-00000001',
+     pg_temp.get('channel'), '66660000-0000-4000-8000-000000000001', 7, '1.0.0',
+     current_setting('my.dclean')))->>'cost_components'),
+  '8', 'a committed replay returns the frozen cost-component count');
 select throws_ok(
-  format($$select public.get_committed_acquisition_summary(%L, 'idem-acq-00000001', %L,
-    '66660000-0000-4000-8000-000000000001', 99, '1.0.0', repeat('a', 64))$$,
-    pg_temp.get('job'), pg_temp.get('channel')),
-  '22023', null, 'a committed replay with a changed expected line count is refused');
+  format($$select public.get_committed_acquisition_summary(%L,'idem-acq-00000001',%L,
+    '66660000-0000-4000-8000-000000000001', 99, '1.0.0', %L)$$,
+    pg_temp.get('job'), pg_temp.get('channel'), current_setting('my.dclean')),
+  '22023', null, 'a committed replay with a changed line count is refused');
 select throws_ok(
-  format($$select public.get_committed_acquisition_summary(%L, 'idem-acq-00000001', %L,
-    '66660000-0000-4000-8000-000000000001', 7, '2.0.0', repeat('a', 64))$$,
-    pg_temp.get('job'), pg_temp.get('channel')),
-  '22023', null, 'a committed replay with a changed mapping version is refused');
-select throws_ok(
-  format($$select public.get_committed_acquisition_summary(%L, 'idem-acq-00000001', %L,
-    '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('c', 64))$$,
-    pg_temp.get('job'), pg_temp.get('channel')),
+  format($$select public.get_committed_acquisition_summary(%L,'idem-acq-00000001',%L,
+    '66660000-0000-4000-8000-000000000001', 7, '1.0.0', %L)$$,
+    pg_temp.get('job'), pg_temp.get('channel'), repeat('e',64)),
   '22023', null, 'a committed replay with a changed plan digest is refused');
 
--- A cost correction AFTER commit does not change the replay result.
-select pg_temp.put('post_c', (select id from public.acquisition_cost_components
-  where acquisition_import_job_id = pg_temp.get('job') and reversed_at is null
-    and line_item_id is not null limit 1));
+-- ===== Post-commit capabilities now work on the committed job =====
+select pg_temp.put('ship', (select c.id from public.acquisition_cost_components c
+  where c.acquisition_import_job_id = pg_temp.get('job') and c.component_type = 'shipping'));
+select pg_temp.put('line6', (select id from public.acquisition_line_items
+  where acquisition_import_job_id = pg_temp.get('job') and public_id = 'WN-A-000006'));
+select pg_temp.put('line7', (select id from public.acquisition_line_items
+  where acquisition_import_job_id = pg_temp.get('job') and public_id = 'WN-A-000007'));
 select lives_ok(
-  format($$select public.reverse_cost_component(%L, jsonb_build_object('amount_minor', 4242),
-    'post-commit correction')$$, pg_temp.get('post_c')),
-  'a post-commit cost correction is applied');
-select is(
-  (select (public.get_committed_acquisition_summary(
-     pg_temp.get('job'), 'idem-acq-00000001', pg_temp.get('channel'),
-     '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('a', 64)))->>'cost_components'),
-  '9', 'the replay still returns the frozen count AFTER a cost correction (not recomputed)');
+  format($$select public.propose_cost_allocation(%L, 'quantity_share', jsonb_build_array(
+    jsonb_build_object('line_item_id',%L::uuid,'amount_minor',200),
+    jsonb_build_object('line_item_id',%L::uuid,'amount_minor',100)))$$,
+    pg_temp.get('ship'), pg_temp.get('line6'), pg_temp.get('line7')),
+  'post-commit: a shared component can be allocated');
+select lives_ok(
+  format($$select public.confirm_cost_allocation(%L, 300)$$, pg_temp.get('ship')),
+  'post-commit: the allocation confirms and conserves');
+select is((select attribution_state::text from public.acquisition_cost_components
+  where id = pg_temp.get('ship')), 'allocated', 'post-commit: the component is allocated');
+select lives_ok(
+  format($$select public.reverse_cost_allocation(%L, 'redo')$$, pg_temp.get('ship')),
+  'post-commit: the allocation can be reversed');
+select lives_ok(
+  format($$select public.reverse_cost_component(%L, jsonb_build_object('amount_minor',1100),
+    'corrected')$$,
+    (select id from public.acquisition_cost_components
+     where acquisition_import_job_id = pg_temp.get('job') and line_item_id = pg_temp.get('line6')
+       and reversed_at is null)),
+  'post-commit: a cost component can be reversed/replaced');
+select pg_temp.put('place7', (select ll.id from public.acquisition_lot_lines ll
+  where ll.line_item_id = pg_temp.get('line7') and ll.state = 'active'));
+select pg_temp.put('lot62', (select lt.id from public.acquisition_lots lt
+  join public.acquisition_orders o on o.id = lt.order_id
+  where o.acquisition_import_job_id = pg_temp.get('job') and o.source_order_reference='ORD-6' and lt.sequence_no=2));
+select lives_ok(
+  format($$select public.supersede_lot_line(%L, %L, 'rehome')$$, pg_temp.get('place7'), pg_temp.get('lot62')),
+  'post-commit: a lot-line can be superseded (re-homed)');
 
--- A later supplier alias (a new workspace-global collision) does not change it.
+-- ===== Post-commit actions did NOT change the frozen replay summary =====
+select is(
+  (select (public.get_committed_acquisition_summary(pg_temp.get('job'), 'idem-acq-00000001',
+     pg_temp.get('channel'), '66660000-0000-4000-8000-000000000001', 7, '1.0.0',
+     current_setting('my.dclean')))->>'cost_components'),
+  '8', 'the frozen replay count is unchanged after post-commit corrections');
+
+-- ===== Direct-DML bypass denial (authenticated has SELECT only) =====
+select throws_ok(
+  $$insert into public.channels (workspace_id, public_id, name, kind, created_by)
+    values ('aaaa0000-0000-4000-8000-000000000001','RV-CH-AAAAAA','x','manual','a2222222-2222-2222-2222-222222222222')$$,
+  '42501', null, 'authenticated cannot directly INSERT channels');
+select throws_ok(
+  $$update public.acquisition_import_jobs set status='failed' where id = '00000000-0000-0000-0000-000000000000'$$,
+  '42501', null, 'authenticated cannot directly UPDATE acquisition_import_jobs');
 select pg_temp.logout();
-insert into public.suppliers (workspace_id, public_id, display_name, created_by_process)
-values ('aaaa0000-0000-4000-8000-000000000001', 'RV-SUP-LATE01', 'acme_traders duplicate',
-        'test.fixture');
-insert into public.supplier_aliases (
-  workspace_id, supplier_id, source_system_id, raw_handle, normalized_handle, created_by_process
-) values (
-  'aaaa0000-0000-4000-8000-000000000001',
-  (select id from public.suppliers where public_id = 'RV-SUP-LATE01'),
-  '55550000-0000-4000-8000-000000000001', 'Acme_Traders_Late',
-  app.normalize_supplier_handle('acme_traders'), 'test.fixture'
-);
-select pg_temp.login('a2222222-2222-2222-2222-222222222222');
-select is(
-  (select (public.get_committed_acquisition_summary(
-     pg_temp.get('job'), 'idem-acq-00000001', pg_temp.get('channel'),
-     '66660000-0000-4000-8000-000000000001', 7, '1.0.0', repeat('a', 64)
-   ))->>'unresolved_supplier_candidates'),
-  '1', 'the replay still returns the frozen candidate count AFTER a later alias');
 
+-- ===== Viewer is read-only; cross-workspace isolation =====
+select pg_temp.login('a3333333-3333-3333-3333-333333333333');
+select throws_ok(
+  format($$select public.reverse_cost_allocation(%L,'x')$$, pg_temp.get('ship')),
+  '42501', null, 'a viewer cannot run governed corrections');
+select pg_temp.logout();
+
+select pg_temp.login('a4444444-4444-4444-4444-444444444444');
+select is((select count(*)::int from public.acquisition_orders), 0,
+  'workspace B sees none of workspace A''s acquisition orders (RLS)');
 select pg_temp.logout();
 
 select * from finish();

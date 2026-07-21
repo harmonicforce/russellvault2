@@ -75,7 +75,9 @@ select is(
        'enforce_lot_line_transition', 'enforce_lot_line_supersession_coherence',
        'enforce_cost_component_transition', 'enforce_cost_component_reversal_coherence',
        'enforce_cost_allocation_initial_state', 'enforce_cost_allocation_transition',
-       'enforce_acquisition_committed_summary_frozen'
+       'enforce_acquisition_committed_summary_frozen',
+       'dg_f', 'dg_sd', 'compute_acquisition_plan_digest',
+       'require_committed_acquisition_job'
      )
      and not exists (
        select 1 from unnest(coalesce(p.proconfig, array[]::text[])) cfg
