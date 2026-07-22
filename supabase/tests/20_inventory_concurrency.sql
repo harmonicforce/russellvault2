@@ -37,6 +37,23 @@ insert into sess_sql values
   ('sub',    $q$select set_config('request.jwt.claim.sub','ee222222-2222-4222-8222-222222222222',false)$q$),
   ('claims', $q$select set_config('request.jwt.claims', json_build_object('sub','ee222222-2222-4222-8222-222222222222','role','authenticated')::text, false)$q$);
 
+-- dblink connection string for the concurrent sessions. dblink refuses a
+-- password-less connection for a NON-superuser role (dblink_security_check), so
+-- the two tiers differ: the PostgreSQL-shim runs the suite as a superuser (bare
+-- dbname is accepted), while the Docker-local Supabase stack runs it as the
+-- non-superuser "postgres" role and must authenticate over TCP with the fixed,
+-- well-known Supabase-local development credential (postgres/postgres — never a
+-- real secret; the local stack prints this URL itself). Either way the peer
+-- session then adopts the operator via the JWT GUCs + set role authenticated.
+create temp table dbconn (conn text);
+grant all on table dbconn to public;
+insert into dbconn values (
+  case when current_setting('is_superuser') = 'on'
+    then 'dbname=' || current_database()
+    else format('host=127.0.0.1 port=%s dbname=%s user=postgres password=postgres',
+                current_setting('port'), current_database())
+  end);
+
 -- Act as the operator to build the committed identity fixture.
 select set_config('request.jwt.claim.sub', 'ee222222-2222-4222-8222-222222222222', false);
 select set_config('request.jwt.claims',
@@ -68,11 +85,12 @@ declare
   v_lot   text := (select v::text from cids where k = 'lot1');
   v_sub   text := (select sql from sess_sql where k = 'sub');
   v_claim text := (select sql from sess_sql where k = 'claims');
+  v_conn  text := (select conn from dbconn);
   v_b1 int; v_b2 int; v_guard int := 0;
   v_winner text; v_loser text; v_res text;
 begin
-  perform dblink_connect('m1', 'dbname=' || current_database());
-  perform dblink_connect('m2', 'dbname=' || current_database());
+  perform dblink_connect('m1', v_conn);
+  perform dblink_connect('m2', v_conn);
   perform dblink_exec('m1', 'begin');
   perform dblink_exec('m2', 'begin');
   perform * from dblink('m1', v_sub) as t(x text);
@@ -147,11 +165,12 @@ declare
   v_b1 int; v_b2 int; v_guard int := 0;
   v_winner text; v_loser text;
   v_id text; v_created boolean;
+  v_conn  text := (select conn from dbconn);
   v_call text := $q$select (j->>'id')::text as id, (j->>'created')::boolean as created
                  from public.register_product('eeee0000-0000-4000-8000-000000000001','tcg','Race','tcg|race|||','{}') as j$q$;
 begin
-  perform dblink_connect('p1', 'dbname=' || current_database());
-  perform dblink_connect('p2', 'dbname=' || current_database());
+  perform dblink_connect('p1', v_conn);
+  perform dblink_connect('p2', v_conn);
   perform dblink_exec('p1', 'begin');
   perform dblink_exec('p2', 'begin');
   perform * from dblink('p1', v_sub) as t(x text);
@@ -229,9 +248,10 @@ declare
                  from public.register_sellable_sku('eeee0000-0000-4000-8000-000000000001', %L::uuid,
                    '{"condition_or_quality":"Near Mint"}') as j$q$,
     (select v::text from cids where k = 'rprod'));
+  v_conn  text := (select conn from dbconn);
 begin
-  perform dblink_connect('s1', 'dbname=' || current_database());
-  perform dblink_connect('s2', 'dbname=' || current_database());
+  perform dblink_connect('s1', v_conn);
+  perform dblink_connect('s2', v_conn);
   perform dblink_exec('s1', 'begin');
   perform dblink_exec('s2', 'begin');
   perform * from dblink('s1', v_sub) as t(x text);
