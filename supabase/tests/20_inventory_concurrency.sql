@@ -38,20 +38,27 @@ insert into sess_sql values
   ('claims', $q$select set_config('request.jwt.claims', json_build_object('sub','ee222222-2222-4222-8222-222222222222','role','authenticated')::text, false)$q$);
 
 -- dblink connection string for the concurrent sessions. dblink refuses a
--- password-less connection for a NON-superuser role (dblink_security_check), so
--- the two tiers differ: the PostgreSQL-shim runs the suite as a superuser (bare
--- dbname is accepted), while the Docker-local Supabase stack runs it as the
--- non-superuser "postgres" role and must authenticate over TCP with the fixed,
--- well-known Supabase-local development credential (postgres/postgres — never a
--- real secret; the local stack prints this URL itself). Either way the peer
--- session then adopts the operator via the JWT GUCs + set role authenticated.
+-- connection for a NON-superuser role unless the server actually challenged for
+-- a password (dblink_security_check), so the two tiers differ:
+--   * PostgreSQL shim: the suite runs as a superuser, so the bare dbname form is
+--     accepted (no password needed).
+--   * Docker-local Supabase stack: the suite runs as the non-superuser
+--     "postgres" role, and its loopback pg_hba path is trust (no challenge), so
+--     a 127.0.0.1 connection is rejected even WITH a password. We instead
+--     reconnect to the very endpoint this backend is already served on
+--     (inet_server_addr()/inet_server_port() — the scram-guarded container
+--     network address), supplying the fixed, well-known Supabase-local dev
+--     credential (postgres/postgres; not a secret — the stack prints this URL).
+-- Either way the peer session adopts the operator via the JWT GUCs + set role.
 create temp table dbconn (conn text);
 grant all on table dbconn to public;
 insert into dbconn values (
   case when current_setting('is_superuser') = 'on'
     then 'dbname=' || current_database()
-    else format('host=127.0.0.1 port=%s dbname=%s user=postgres password=postgres',
-                current_setting('port'), current_database())
+    else format('host=%s port=%s dbname=%s user=postgres password=postgres',
+                coalesce(host(inet_server_addr()), '127.0.0.1'),
+                coalesce(inet_server_port()::text, current_setting('port')),
+                current_database())
   end);
 
 -- Act as the operator to build the committed identity fixture.
