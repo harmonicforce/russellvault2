@@ -1,7 +1,7 @@
 import { NavLink, Route, Routes } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingBag, Link2, Tag, DollarSign, ShieldCheck, Vault,
-  FileSearch,
+  FileSearch, Layers,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
@@ -13,6 +13,7 @@ import Checks from './pages/Checks';
 import ReadOnlyBanner from './components/ReadOnlyBanner';
 import AuthShell from './components/AuthShell';
 import ImportReview from './pages/ImportReview';
+import AcquisitionReview from './pages/AcquisitionReview';
 import { isProvenanceUiEnabled } from './lib/provenanceConfig';
 
 const NAV = [
@@ -33,12 +34,20 @@ const PROVENANCE_ENABLED = isProvenanceUiEnabled(
   import.meta.env as unknown as Record<string, string | undefined>
 );
 
-const PROVENANCE_NAV = {
-  to: '/import-review',
-  label: 'Import Review',
-  icon: FileSearch,
-  end: false,
-};
+const PROVENANCE_NAV = [
+  {
+    to: '/import-review',
+    label: 'Import Review',
+    icon: FileSearch,
+    end: false,
+  },
+  {
+    to: '/acquisition-review',
+    label: 'Acquisition Review',
+    icon: Layers,
+    end: false,
+  },
+];
 
 export default function App() {
   return (
@@ -55,7 +64,7 @@ export default function App() {
             </div>
           </div>
           <nav className="flex-1 overflow-y-auto py-3 px-2 flex flex-col gap-0.5">
-            {[...NAV, ...(PROVENANCE_ENABLED ? [PROVENANCE_NAV] : [])].map((item) => (
+            {[...NAV, ...(PROVENANCE_ENABLED ? PROVENANCE_NAV : [])].map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
@@ -89,6 +98,9 @@ export default function App() {
             <Route path="/checks" element={<Checks />} />
             {PROVENANCE_ENABLED && (
               <Route path="/import-review" element={<ImportReview />} />
+            )}
+            {PROVENANCE_ENABLED && (
+              <Route path="/acquisition-review" element={<AcquisitionReview />} />
             )}
           </Routes>
         </main>

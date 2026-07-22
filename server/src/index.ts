@@ -16,6 +16,7 @@ import dashboardRouter from './routes/dashboard.js';
 import checksRouter from './routes/checks.js';
 import lookupsRouter from './routes/lookups.js';
 import provenanceRouter from './routes/provenance.js';
+import acquisitionRouter from './routes/acquisition.js';
 
 seedIfEmpty();
 migrateProductType();
@@ -40,6 +41,11 @@ app.use(express.json({ limit: '2mb' }));
 // weakens, or bypasses any legacy SQLite write; `legacyWritesEnabled` is
 // untouched by provenance activity.
 app.use('/api/provenance', provenanceRouter);
+// Phase 4 acquisition staging shares the same rationale and gates as the Phase 3
+// provenance router: mounted before the legacy write guard, 404 by default, and
+// it never touches SQLite — it reads/writes only the shadow Postgres database
+// under the caller's own JWT. Nothing here enables or weakens any legacy write.
+app.use('/api/acquisition', acquisitionRouter);
 
 app.use('/api', legacyWriteGuard);
 
