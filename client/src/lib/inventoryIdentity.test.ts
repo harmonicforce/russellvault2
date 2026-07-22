@@ -1,5 +1,41 @@
 import { describe, it, expect } from 'vitest';
-import { describeIdentityRecord, summarizeLotDetail } from './inventoryIdentity';
+import { describeIdentityRecord, summarizeLotDetail, summarizeItemDetail } from './inventoryIdentity';
+
+describe('summarizeItemDetail — full serialized-item chain + scan code', () => {
+  const base = {
+    product: { public_id: 'RV-PROD-A' },
+    sku: { public_id: 'RV-SKU-A' },
+    lot: { public_id: 'RV-S-000001' },
+    item: { public_id: 'RV-ITEM-A', scan_sku: 'RV-7K3F9Q2' },
+    location: { public_id: 'RV-LOC-A' },
+  };
+
+  it('renders the complete Product → SKU → Lot → Item → Location chain', () => {
+    const s = summarizeItemDetail(base);
+    expect(s.chain.map((c) => c.kindLabel)).toEqual([
+      'Product Catalog',
+      'Sellable SKU',
+      'Inventory Lot',
+      'Serialized Item',
+      'Storage Location',
+    ]);
+    expect(s.chain[3].publicId).toBe('RV-ITEM-A');
+    expect(s.scanSku).toBe('RV-7K3F9Q2');
+  });
+
+  it('marks a missing optional location null without fabricating one', () => {
+    const s = summarizeItemDetail({ ...base, location: null });
+    expect(s.chain[4].publicId).toBeNull();
+    // the item and its scan code are still surfaced
+    expect(s.chain[3].publicId).toBe('RV-ITEM-A');
+    expect(s.scanSku).toBe('RV-7K3F9Q2');
+  });
+
+  it('shows a null scan code when the item lacks one', () => {
+    const s = summarizeItemDetail({ ...base, item: { public_id: 'RV-ITEM-A' } });
+    expect(s.scanSku).toBeNull();
+  });
+});
 
 describe('summarizeLotDetail — joined identity chain + capacity', () => {
   const base = {

@@ -12,15 +12,17 @@ import { getProvenanceUiConfig, STAGING_NOTICE } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
 import {
   createInventoryIdentityTransport,
+  createItemChainLookup,
   type IdentityLookupResult,
   type InventoryIdentityTransport,
 } from '../lib/inventoryIdentityApi';
 import {
   describeIdentityRecord,
   summarizeLotDetail,
+  summarizeItemDetail,
   type IdentityRecord,
 } from '../lib/inventoryIdentity';
-import type { LotDetail } from '../lib/inventoryIdentityApi';
+import type { ItemDetail, LotDetail } from '../lib/inventoryIdentityApi';
 
 function IdentityCard({ result }: { result: IdentityLookupResult }) {
   const d = describeIdentityRecord(result.kind, result.record);
@@ -72,7 +74,14 @@ export default function InventoryIdentity() {
   const [lots, setLots] = useState<IdentityRecord[]>([]);
   const [lotId, setLotId] = useState('');
   const [lotDetail, setLotDetail] = useState<LotDetail | null>(null);
+  const [itemId, setItemId] = useState('');
+  const [itemDetail, setItemDetail] = useState<ItemDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const itemChain = useMemo(
+    () => (transport ? createItemChainLookup(transport) : null),
+    [transport]
+  );
 
   const run = useCallback(
     async (fn: () => Promise<void>) => {
@@ -137,7 +146,15 @@ export default function InventoryIdentity() {
           <button
             className="rounded bg-accent px-3 py-1 text-sm font-medium text-white"
             onClick={() =>
-              run(async () => setPidResult(await transport.lookupPublicId(workspaceId, publicId)))
+              run(async () => {
+                setPidResult(null);
+                setItemDetail(null);
+                const r = await transport.lookupPublicId(workspaceId, publicId);
+                setPidResult(r);
+                if (itemChain && r.kind === 'item') {
+                  setItemDetail((await itemChain.fromLookup(workspaceId, r)).detail);
+                }
+              })
             }
           >
             Resolve
@@ -160,7 +177,15 @@ export default function InventoryIdentity() {
           <button
             className="rounded bg-accent px-3 py-1 text-sm font-medium text-white"
             onClick={() =>
-              run(async () => setScanResult(await transport.lookupScan(workspaceId, scanSku)))
+              run(async () => {
+                setScanResult(null);
+                setItemDetail(null);
+                const r = await transport.lookupScan(workspaceId, scanSku);
+                setScanResult(r);
+                if (itemChain && r.kind === 'item') {
+                  setItemDetail((await itemChain.fromLookup(workspaceId, r)).detail);
+                }
+              })
             }
           >
             Find item
@@ -218,6 +243,51 @@ export default function InventoryIdentity() {
             </ol>
             <div className="mt-2 text-ink-muted">
               Capacity: <span className="font-mono">{summarizeLotDetail(lotDetail).capacityLabel}</span>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">
+          <ScanLine className="h-4 w-4" /> Item identity chain (Product → SKU → Lot → Item → Location)
+        </h2>
+        <p className="text-xs text-ink-muted">
+          Populated automatically when a scan or public-id lookup above resolves a serialized item, or
+          load it directly by internal item id.
+        </p>
+        <div className="flex gap-2">
+          <input
+            className="flex-1 rounded border border-hairline bg-surface-0 px-2 py-1 font-mono text-sm"
+            value={itemId}
+            onChange={(e) => setItemId(e.target.value)}
+            placeholder="item internal id"
+          />
+          <button
+            className="rounded bg-accent px-3 py-1 text-sm font-medium text-white"
+            onClick={() =>
+              run(async () => {
+                setItemDetail(null);
+                if (itemChain) setItemDetail((await itemChain.byItemId(workspaceId, itemId)).detail);
+              })
+            }
+          >
+            Load chain
+          </button>
+        </div>
+        {itemDetail && (
+          <div className="rounded-lg border border-hairline bg-surface-1 p-3 text-sm">
+            <ol className="space-y-1">
+              {summarizeItemDetail(itemDetail).chain.map((step) => (
+                <li key={step.kindLabel} className="flex items-center gap-2">
+                  <span className="w-32 text-ink-muted">{step.kindLabel}</span>
+                  <span className="font-mono">{step.publicId ?? '—'}</span>
+                </li>
+              ))}
+            </ol>
+            <div className="mt-2 text-ink-muted">
+              Scan SKU:{' '}
+              <span className="font-mono">{summarizeItemDetail(itemDetail).scanSku ?? '—'}</span>
             </div>
           </div>
         )}

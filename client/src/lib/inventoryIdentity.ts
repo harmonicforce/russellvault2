@@ -38,6 +38,21 @@ export interface LotDetailSummary {
   readonly atCapacity: boolean;
 }
 
+export interface ItemDetailLike {
+  readonly product: IdentityRecord | null;
+  readonly sku: IdentityRecord | null;
+  readonly lot: IdentityRecord | null;
+  readonly item: IdentityRecord;
+  readonly location: IdentityRecord | null;
+}
+
+export interface ItemDetailSummary {
+  /** The full serialized-unit chain, top to bottom, each labeled by grain. */
+  readonly chain: ReadonlyArray<{ kindLabel: string; publicId: string | null }>;
+  /** The unit's opaque, non-sequential scan code (or null). */
+  readonly scanSku: string | null;
+}
+
 /**
  * Summarize a joined lot detail as a clearly-labeled Product → SKU → Lot →
  * Location chain plus a serialized capacity read-out — for the diagnostic panel.
@@ -60,6 +75,27 @@ export function summarizeLotDetail(detail: LotDetailLike): LotDetailSummary {
       (detail.atCapacity ? ' (full)' : '');
   }
   return { chain, capacityLabel, atCapacity: detail.atCapacity };
+}
+
+/**
+ * Summarize a joined item detail as the complete Product → SKU → Lot →
+ * serialized Item → Location chain, surfacing the item's public id (in the
+ * chain) and its opaque scan SKU — for the diagnostic item-chain panel.
+ * Any absent grain (a fail-closed null) renders as a null public id, never a
+ * fabricated one.
+ */
+export function summarizeItemDetail(detail: ItemDetailLike): ItemDetailSummary {
+  const pid = (r: IdentityRecord | null): string | null =>
+    r && r['public_id'] != null ? String(r['public_id']) : null;
+  const chain = [
+    { kindLabel: 'Product Catalog', publicId: pid(detail.product) },
+    { kindLabel: 'Sellable SKU', publicId: pid(detail.sku) },
+    { kindLabel: 'Inventory Lot', publicId: pid(detail.lot) },
+    { kindLabel: 'Serialized Item', publicId: pid(detail.item) },
+    { kindLabel: 'Storage Location', publicId: pid(detail.location) },
+  ];
+  const scan = detail.item['scan_sku'];
+  return { chain, scanSku: scan != null && scan !== '' ? String(scan) : null };
 }
 
 const KIND_LABEL: Record<IdentityKind, string> = {

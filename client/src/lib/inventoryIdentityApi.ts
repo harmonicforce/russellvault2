@@ -5,7 +5,8 @@
 // is no mutation endpoint and no service-role key anywhere in this path; the
 // legacy SQLite inventory remains authoritative and untouched.
 
-import type { IdentityKind, IdentityRecord } from './inventoryIdentity';
+import type { IdentityKind, IdentityRecord, ItemDetailSummary } from './inventoryIdentity';
+import { summarizeItemDetail } from './inventoryIdentity';
 
 export type TokenProvider = () => Promise<string | null>;
 
@@ -38,6 +39,47 @@ export interface InventoryIdentityTransport {
   lookupScan(workspaceId: string, scanSku: string): Promise<IdentityLookupResult>;
   lotDetail(workspaceId: string, lotId: string): Promise<LotDetail>;
   itemDetail(workspaceId: string, itemId: string): Promise<ItemDetail>;
+}
+
+/** A resolved serialized-item chain: the raw joined detail plus its summary. */
+export interface ItemChain {
+  readonly detail: ItemDetail;
+  readonly summary: ItemDetailSummary;
+}
+
+/**
+ * Read-only helper that resolves the full serialized-item identity chain from
+ * either an exact unit scan code or an internal item id, then summarizes it. It
+ * holds no state, so a caller (the diagnostic page) can clear any prior chain
+ * before invoking and let a rejection leave the surface empty — failing closed.
+ */
+export function createItemChainLookup(transport: InventoryIdentityTransport): {
+  byScan(workspaceId: string, scanSku: string): Promise<ItemChain>;
+  byItemId(workspaceId: string, itemId: string): Promise<ItemChain>;
+  fromLookup(workspaceId: string, result: IdentityLookupResult): Promise<ItemChain>;
+} {
+  const resolve = async (workspaceId: string, itemId: string): Promise<ItemChain> => {
+    const detail = await transport.itemDetail(workspaceId, itemId);
+    return { detail, summary: summarizeItemDetail(detail) };
+  };
+  const idOf = (result: IdentityLookupResult): string => {
+    if (result.kind !== 'item' || result.record['id'] == null) {
+      throw new Error('that lookup did not resolve to a serialized item');
+    }
+    return String(result.record['id']);
+  };
+  return {
+    async byScan(workspaceId, scanSku) {
+      const result = await transport.lookupScan(workspaceId, scanSku);
+      return resolve(workspaceId, idOf(result));
+    },
+    byItemId(workspaceId, itemId) {
+      return resolve(workspaceId, itemId);
+    },
+    fromLookup(workspaceId, result) {
+      return resolve(workspaceId, idOf(result));
+    },
+  };
 }
 
 async function request<T>(
