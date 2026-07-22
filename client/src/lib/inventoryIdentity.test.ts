@@ -1,5 +1,49 @@
 import { describe, it, expect } from 'vitest';
-import { describeIdentityRecord } from './inventoryIdentity';
+import { describeIdentityRecord, summarizeLotDetail } from './inventoryIdentity';
+
+describe('summarizeLotDetail — joined identity chain + capacity', () => {
+  const base = {
+    product: { public_id: 'RV-PROD-A' },
+    sku: { public_id: 'RV-SKU-A' },
+    lot: { public_id: 'RV-C-000001', quantity: 3 },
+    location: { public_id: 'RV-LOC-A' },
+  };
+
+  it('renders the full Product → SKU → Lot → Location chain', () => {
+    const s = summarizeLotDetail({ ...base, serializedChildCount: 0, capacity: null, atCapacity: false });
+    expect(s.chain.map((c) => c.kindLabel)).toEqual([
+      'Product Catalog',
+      'Sellable SKU',
+      'Inventory Lot',
+      'Storage Location',
+    ]);
+    expect(s.chain[0].publicId).toBe('RV-PROD-A');
+    expect(s.chain[2].publicId).toBe('RV-C-000001');
+  });
+
+  it('labels a lot-managed lot (no serialized capacity)', () => {
+    const s = summarizeLotDetail({ ...base, serializedChildCount: 0, capacity: null, atCapacity: false });
+    expect(s.capacityLabel).toBe('lot-managed (3)');
+    expect(s.atCapacity).toBe(false);
+  });
+
+  it('labels a partially serialized lot as below capacity', () => {
+    const s = summarizeLotDetail({ ...base, serializedChildCount: 1, capacity: 2, atCapacity: false });
+    expect(s.capacityLabel).toBe('1 / 2 serialized units');
+    expect(s.atCapacity).toBe(false);
+  });
+
+  it('labels a full serialized lot as at capacity', () => {
+    const s = summarizeLotDetail({ ...base, serializedChildCount: 2, capacity: 2, atCapacity: true });
+    expect(s.capacityLabel).toBe('2 / 2 serialized units (full)');
+    expect(s.atCapacity).toBe(true);
+  });
+
+  it('marks a missing location in the chain as null (fail-closed rendering)', () => {
+    const s = summarizeLotDetail({ ...base, location: null, serializedChildCount: 0, capacity: null, atCapacity: false });
+    expect(s.chain[3].publicId).toBeNull();
+  });
+});
 
 describe('describeIdentityRecord distinguishes the identity grains', () => {
   it('labels a Product distinctly', () => {

@@ -20,6 +20,48 @@ export interface IdentityDescription {
   readonly facts: ReadonlyArray<{ label: string; value: string }>;
 }
 
+export interface LotDetailLike {
+  readonly product: IdentityRecord | null;
+  readonly sku: IdentityRecord | null;
+  readonly lot: IdentityRecord;
+  readonly location: IdentityRecord | null;
+  readonly serializedChildCount: number;
+  readonly capacity: number | null;
+  readonly atCapacity: boolean;
+}
+
+export interface LotDetailSummary {
+  /** The identity chain, top to bottom, each labeled by grain. */
+  readonly chain: ReadonlyArray<{ kindLabel: string; publicId: string | null }>;
+  /** e.g. "2 / 2 serialized units (full)" or "lot-managed (3)". */
+  readonly capacityLabel: string;
+  readonly atCapacity: boolean;
+}
+
+/**
+ * Summarize a joined lot detail as a clearly-labeled Product → SKU → Lot →
+ * Location chain plus a serialized capacity read-out — for the diagnostic panel.
+ */
+export function summarizeLotDetail(detail: LotDetailLike): LotDetailSummary {
+  const pid = (r: IdentityRecord | null): string | null =>
+    r && r['public_id'] != null ? String(r['public_id']) : null;
+  const chain = [
+    { kindLabel: 'Product Catalog', publicId: pid(detail.product) },
+    { kindLabel: 'Sellable SKU', publicId: pid(detail.sku) },
+    { kindLabel: 'Inventory Lot', publicId: pid(detail.lot) },
+    { kindLabel: 'Storage Location', publicId: pid(detail.location) },
+  ];
+  let capacityLabel: string;
+  if (detail.capacity === null) {
+    capacityLabel = `lot-managed (${String(detail.lot['quantity'] ?? '')})`;
+  } else {
+    capacityLabel =
+      `${detail.serializedChildCount} / ${detail.capacity} serialized units` +
+      (detail.atCapacity ? ' (full)' : '');
+  }
+  return { chain, capacityLabel, atCapacity: detail.atCapacity };
+}
+
 const KIND_LABEL: Record<IdentityKind, string> = {
   product: 'Product Catalog',
   sku: 'Sellable SKU',

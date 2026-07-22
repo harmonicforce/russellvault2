@@ -47,7 +47,8 @@ select is(
        'register_product', 'register_sellable_sku', 'register_storage_location',
        'retire_storage_location', 'stage_inventory_lot', 'mint_serialized_item',
        'require_inventory_writer', 'sku_fingerprint', 'compute_sku_fingerprint',
-       'gen_scan_sku', 'enforce_location_acyclic', 'dg_fld')
+       'gen_scan_sku', 'enforce_location_acyclic', 'dg_fld', 'norm_identity', 'dg_norm',
+       'sku_identity_jsonb')
      and not exists (
        select 1 from unnest(coalesce(p.proconfig, array[]::text[])) cfg
        where cfg in ('search_path=', 'search_path=""'))),

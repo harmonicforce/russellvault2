@@ -9,25 +9,33 @@
 // PRINCIPLES
 //   * Lot grain is preserved: every fixture row becomes exactly one lot, and
 //     its existing RV-C / RV-S public id is carried verbatim.
-//   * Product identifies the general product (card / sealed box); Sellable SKU
-//     identifies the exact interchangeable configuration (condition + grade +
-//     packaging). Lots that share a configuration share a SKU.
+//   * Product identifies the general product; Sellable SKU identifies the exact
+//     interchangeable configuration. Lots group into one SKU iff their database
+//     fingerprint inputs are equal — the grouping key here is exactly
+//     app.sku_fingerprint's input, via the shared identity contract.
 //   * Hybrid serialization: only rows the source already tracks as serialized
-//     (graded / certified units) get a serialized child. Interchangeable
-//     lot-managed quantity stays lot-only. Nothing is mass-serialized.
-//   * No fabricated facts: source null / "not stated" sentinels become NULL,
-//     never an invented default.
-//   * Ambiguity is reported, never merged away: two rows that resolve to the
-//     same product key but disagree on a product-level fact are flagged.
+//     get a serialized child. Nothing is mass-serialized.
+//   * No fabricated facts: source null / "not stated" sentinels become NULL.
+//   * Ambiguity is reported, never merged away: two rows that normalize to the
+//     same product key or SKU fingerprint but carry DIFFERENT raw identity facts
+//     are flagged as a normalized-key collision rather than silently taking the
+//     first row's attributes.
 //
 // This module performs NO database access and NO network access.
 
 import type { JsonValue } from '../provenance/hash.js';
+import {
+  normalizeIdentityField,
+  productCanonicalKey,
+  skuFingerprint,
+  type InventoryVertical,
+  type SkuAttrs,
+} from './identity.js';
 
 export const INVENTORY_MAPPING_VERSION = '1.0.0';
 export const INVENTORY_IDENTITY_SCHEMA_VERSION = 'IDSKU1';
 
-export type InventoryVertical = 'tcg' | 'footwear' | 'other';
+export type { InventoryVertical } from './identity.js';
 export type TrackingMode = 'lot_managed' | 'serialized';
 
 export interface InventoryFixtureRow {
@@ -37,17 +45,19 @@ export interface InventoryFixtureRow {
 export interface PlannedProduct {
   readonly canonicalKey: string;
   readonly vertical: InventoryVertical;
+  /** Deterministic normalized display name (never the first raw row's casing). */
   readonly displayName: string;
+  /** Normalized identity-driving product attributes. */
   readonly attrs: Record<string, string | null>;
 }
 
 export interface PlannedSku {
   readonly productKey: string;
   readonly vertical: InventoryVertical;
-  // The deterministic identity-driving attributes, in the same governed set the
-  // database hashes into the fingerprint. Used here only to group lots.
+  /** Normalized identity-driving SKU attributes (the fingerprint inputs). */
   readonly attrs: Record<string, string | null>;
-  readonly skuGroupKey: string;
+  /** The SKU fingerprint = app.sku_fingerprint of these inputs. */
+  readonly fingerprint: string;
 }
 
 export interface PlannedSerializedItem {
@@ -59,17 +69,20 @@ export interface PlannedSerializedItem {
 export interface PlannedLot {
   readonly publicId: string;
   readonly productKey: string;
-  readonly skuGroupKey: string;
+  readonly fingerprint: string;
   readonly trackingMode: TrackingMode;
   readonly quantity: number;
   readonly locationCode: string | null;
   readonly recordOrigin: string | null;
-  readonly fingerprintInputs: Record<string, string | null>;
   readonly serialized: PlannedSerializedItem | null;
 }
 
 export interface MappingAmbiguity {
-  readonly kind: 'product_fact_conflict' | 'missing_identity';
+  readonly kind:
+    | 'missing_identity'
+    | 'product_vertical_conflict'
+    | 'normalized_product_collision'
+    | 'normalized_sku_collision';
   readonly publicId: string;
   readonly detail: string;
 }
@@ -118,11 +131,6 @@ function text(row: InventoryFixtureRow, field: string): string | null {
   return s;
 }
 
-/** A stable slug for building deterministic canonical keys. */
-function slug(v: string | null): string {
-  return (v ?? '').toLowerCase().replace(/\s+/g, ' ').trim().replace(/[|]/g, '/');
-}
-
 function mapVertical(raw: string | null): InventoryVertical {
   const s = (raw ?? '').toLowerCase();
   if (s.includes('tcg') || s.includes('pokemon') || s.includes('card')) return 'tcg';
@@ -145,6 +153,12 @@ function mapTrackingMode(raw: string | null): TrackingMode {
   return (raw ?? '').toLowerCase().startsWith('serial') ? 'serialized' : 'lot_managed';
 }
 
+function normalizeAttrs(attrs: SkuAttrs): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const [k, v] of Object.entries(attrs)) out[k] = normalizeIdentityField(v ?? null);
+  return out;
+}
+
 /**
  * Build the inventory identity plan from the repository inventory fixture.
  * Rows are processed in a deterministic order (by lot public id) so the plan is
@@ -161,6 +175,10 @@ export function buildInventoryIdentityPlan(
   const seenLotIds = new Set<string>();
   let serializedCount = 0;
 
+  // Collision tracking: distinct RAW identity tuples per normalized key.
+  const productRaw = new Map<string, { tuples: Set<string>; firstLot: string }>();
+  const skuRaw = new Map<string, { tuples: Set<string>; firstLot: string }>();
+
   const ordered = [...rows].sort((a, b) =>
     String(a['inventory_lot_id'] ?? '').localeCompare(String(b['inventory_lot_id'] ?? ''))
   );
@@ -176,14 +194,13 @@ export function buildInventoryIdentityPlan(
     seenLotIds.add(publicId);
 
     const vertical = mapVertical(text(row, 'business_vertical'));
-    const productName = text(row, 'product_name');
-    const setName = text(row, 'variant_model_set');
-    const cardNumber = text(row, 'card_number');
-    const subject = text(row, 'featured_subject');
-    const language = text(row, 'language');
+    const rawName = text(row, 'product_name');
+    const rawSet = text(row, 'variant_model_set');
+    const rawNumber = text(row, 'card_number');
+    const rawSubject = text(row, 'featured_subject');
+    const rawLanguage = text(row, 'language');
 
-    if (productName === null) {
-      // Cannot identify a product without at least a name — reported, not guessed.
+    if (rawName === null) {
       ambiguities.push({
         kind: 'missing_identity',
         publicId,
@@ -191,40 +208,42 @@ export function buildInventoryIdentityPlan(
       });
     }
 
-    // Product canonical key: the general product, independent of condition/grade.
-    const productKey = [
-      vertical,
-      slug(productName),
-      slug(setName),
-      slug(cardNumber),
-      slug(subject),
-      slug(language),
-    ].join('|');
+    const productKey = productCanonicalKey(vertical, {
+      name: rawName,
+      set: rawSet,
+      number: rawNumber,
+      subject: rawSubject,
+      language: rawLanguage,
+    });
 
-    const productAttrs: Record<string, string | null> = {
-      set_name: setName,
-      card_number: cardNumber,
-      featured_subject: subject,
-      language,
-    };
+    const productAttrs: Record<string, string | null> = normalizeAttrs({
+      set_name: rawSet,
+      card_number: rawNumber,
+      featured_subject: rawSubject,
+      language: rawLanguage,
+    });
     const existingProduct = products.get(productKey);
     if (!existingProduct) {
       products.set(productKey, {
         canonicalKey: productKey,
         vertical,
-        displayName: productName ?? `(unnamed ${vertical} product)`,
+        displayName: normalizeIdentityField(rawName) ?? `(unnamed ${vertical} product)`,
         attrs: productAttrs,
       });
     } else if (existingProduct.vertical !== vertical) {
       ambiguities.push({
-        kind: 'product_fact_conflict',
+        kind: 'product_vertical_conflict',
         publicId,
         detail: `product key ${productKey} maps to both ${existingProduct.vertical} and ${vertical}`,
       });
     }
+    // Track raw product facts under this normalized key.
+    const pr = productRaw.get(productKey) ?? { tuples: new Set<string>(), firstLot: publicId };
+    pr.tuples.add(JSON.stringify([rawName, rawSet, rawNumber, rawSubject, rawLanguage]));
+    productRaw.set(productKey, pr);
 
-    // SKU identity-driving attributes (the exact interchangeable configuration).
-    const skuAttrs: Record<string, string | null> =
+    // SKU identity-driving attributes and their fingerprint (= grouping key).
+    const rawSkuAttrs: SkuAttrs =
       vertical === 'footwear'
         ? {
             shoe_size: text(row, 'shoe_size'),
@@ -240,16 +259,23 @@ export function buildInventoryIdentityPlan(
             seal_or_packaging_condition: text(row, 'seal_or_packaging_condition'),
             product_format: text(row, 'product_format') ?? text(row, 'category'),
           };
-    const skuGroupKey =
-      productKey +
-      '#' +
-      Object.keys(skuAttrs)
-        .sort()
-        .map((k) => `${k}=${slug(skuAttrs[k])}`)
-        .join('&');
-    if (!skus.has(skuGroupKey)) {
-      skus.set(skuGroupKey, { productKey, vertical, attrs: skuAttrs, skuGroupKey });
+    const fingerprint = skuFingerprint(
+      INVENTORY_IDENTITY_SCHEMA_VERSION,
+      vertical,
+      productKey,
+      rawSkuAttrs
+    );
+    if (!skus.has(fingerprint)) {
+      skus.set(fingerprint, {
+        productKey,
+        vertical,
+        attrs: normalizeAttrs(rawSkuAttrs),
+        fingerprint,
+      });
     }
+    const sr = skuRaw.get(fingerprint) ?? { tuples: new Set<string>(), firstLot: publicId };
+    sr.tuples.add(JSON.stringify(rawSkuAttrs));
+    skuRaw.set(fingerprint, sr);
 
     const trackingMode = mapTrackingMode(text(row, 'tracking_mode'));
     const locationCode = text(row, 'location_code');
@@ -268,14 +294,34 @@ export function buildInventoryIdentityPlan(
     lots.push({
       publicId,
       productKey,
-      skuGroupKey,
+      fingerprint,
       trackingMode,
       quantity: readQuantity(row),
       locationCode,
       recordOrigin: text(row, 'record_origin'),
-      fingerprintInputs: skuAttrs,
       serialized,
     });
+  }
+
+  // Report normalized-key collisions: same normalized identity, disagreeing raw
+  // facts. Reported honestly rather than silently merged on the first row.
+  for (const [key, info] of productRaw) {
+    if (info.tuples.size > 1) {
+      ambiguities.push({
+        kind: 'normalized_product_collision',
+        publicId: info.firstLot,
+        detail: `product key ${key} was reached by ${info.tuples.size} differing raw fact sets`,
+      });
+    }
+  }
+  for (const [fp, info] of skuRaw) {
+    if (info.tuples.size > 1) {
+      ambiguities.push({
+        kind: 'normalized_sku_collision',
+        publicId: info.firstLot,
+        detail: `sku fingerprint ${fp.slice(0, 12)}… was reached by ${info.tuples.size} differing raw attribute sets`,
+      });
+    }
   }
 
   return {

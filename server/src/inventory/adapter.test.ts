@@ -39,10 +39,10 @@ describe('the 1,487-lot inventory fixture maps deterministically', () => {
   });
 
   it('maps every lot to exactly one sellable SKU and one product', () => {
-    const skuKeys = new Set(plan.skus.map((s) => s.skuGroupKey));
+    const skuKeys = new Set(plan.skus.map((s) => s.fingerprint));
     const productKeys = new Set(plan.products.map((p) => p.canonicalKey));
     for (const lot of plan.lots) {
-      expect(skuKeys.has(lot.skuGroupKey)).toBe(true);
+      expect(skuKeys.has(lot.fingerprint)).toBe(true);
       expect(productKeys.has(lot.productKey)).toBe(true);
     }
     // SKUs and products dedup below the lot count (interchangeable configs merge).

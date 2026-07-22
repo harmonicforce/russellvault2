@@ -165,6 +165,101 @@ router.get(
   })
 );
 
+// Fetch exactly one row by a column, workspace-scoped, failing closed. Returns
+// null only when the row genuinely does not exist (not on a query error).
+async function oneBy(
+  client: ReturnType<typeof caller>['client'],
+  workspaceId: string,
+  table: string,
+  column: string,
+  value: string | null
+): Promise<Record<string, unknown> | null> {
+  if (value === null) return null;
+  const { data, error } = await client
+    .from(table)
+    .select('*')
+    .eq('workspace_id', workspaceId)
+    .eq(column, value)
+    .limit(1);
+  if (error) throw new SourceReadError(error.message, 400);
+  return data && data.length > 0 ? (data[0] as Record<string, unknown>) : null;
+}
+
+async function childCount(
+  client: ReturnType<typeof caller>['client'],
+  workspaceId: string,
+  lotId: string
+): Promise<number> {
+  const { count, error } = await client
+    .from('inventory_items')
+    .select('id', { count: 'exact', head: true })
+    .eq('workspace_id', workspaceId)
+    .eq('lot_id', lotId);
+  if (error) throw new SourceReadError(error.message, 400);
+  return count ?? 0;
+}
+
+// Joined lot identity: Product -> Sellable SKU -> Lot -> Location, plus the
+// serialized child count and capacity. Every subordinate query fails closed.
+router.get(
+  '/lots/:id/detail',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const lotId = String(req.params.id);
+    const lot = await oneBy(client, workspaceId, 'inventory_lots', 'id', lotId);
+    if (!lot) throw new SourceReadError('inventory lot not found', 404);
+    const sku = await oneBy(client, workspaceId, 'sellable_skus', 'id', String(lot['sku_id']));
+    const product = sku
+      ? await oneBy(client, workspaceId, 'product_catalog', 'id', String(sku['product_id']))
+      : null;
+    const location = await oneBy(
+      client,
+      workspaceId,
+      'storage_locations',
+      'id',
+      lot['location_id'] ? String(lot['location_id']) : null
+    );
+    const children = await childCount(client, workspaceId, lotId);
+    const serialized = lot['tracking_mode'] === 'serialized';
+    res.json({
+      staging: true,
+      authoritative: false,
+      product,
+      sku,
+      lot,
+      location,
+      serializedChildCount: children,
+      capacity: serialized ? Number(lot['quantity']) : null,
+      atCapacity: serialized ? children >= Number(lot['quantity']) : false,
+    });
+  })
+);
+
+// Joined item identity: Product -> Sellable SKU -> Lot -> Item -> Location.
+router.get(
+  '/items/:id/detail',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const item = await oneBy(client, workspaceId, 'inventory_items', 'id', String(req.params.id));
+    if (!item) throw new SourceReadError('inventory item not found', 404);
+    const lot = await oneBy(client, workspaceId, 'inventory_lots', 'id', String(item['lot_id']));
+    const sku = await oneBy(client, workspaceId, 'sellable_skus', 'id', String(item['sku_id']));
+    const product = sku
+      ? await oneBy(client, workspaceId, 'product_catalog', 'id', String(sku['product_id']))
+      : null;
+    const location = await oneBy(
+      client,
+      workspaceId,
+      'storage_locations',
+      'id',
+      lot && lot['location_id'] ? String(lot['location_id']) : null
+    );
+    res.json({ staging: true, authoritative: false, product, sku, lot, item, location });
+  })
+);
+
 // Exact unit scan-SKU lookup — one authorized serialized item or a not-found.
 router.get(
   '/lookup/scan/:scanSku',

@@ -24,6 +24,7 @@ const TOKENS: Record<string, { userId: string; memberships: Record<string, strin
 };
 
 let FAIL_TABLE: string | null = null;
+let CHILD_COUNT = 0;
 
 function makeFakeClient(token: string) {
   const identity = TOKENS[token];
@@ -35,23 +36,34 @@ function makeFakeClient(token: string) {
     if (filters.workspace_id && filters.workspace_id !== WS_A) return [];
     if (table === 'product_catalog') {
       if (filters.public_id && filters.public_id !== 'RV-PROD-AAA111') return [];
-      return [{ id: 'prod-1', public_id: 'RV-PROD-AAA111', business_vertical: 'tcg', display_name: 'Card' }];
+      if (filters.id && filters.id !== 'prod-1') return [];
+      return [{ id: 'prod-1', public_id: 'RV-PROD-AAA111', business_vertical: 'tcg', display_name: 'Card', product_canonical_key: 'tcg|card|||' }];
     }
     if (table === 'sellable_skus') {
       if (filters.public_id && filters.public_id !== 'RV-SKU-AAA111') return [];
-      return [{ id: 'sku-1', public_id: 'RV-SKU-AAA111', fingerprint: 'f' }];
+      if (filters.id && filters.id !== 'sku-1') return [];
+      return [{ id: 'sku-1', public_id: 'RV-SKU-AAA111', product_id: 'prod-1', fingerprint: 'f' }];
     }
     if (table === 'inventory_lots') {
+      // lot-1: lot-managed qty 3; lot-ser: serialized qty 2.
+      const lots: Record<string, unknown> = {
+        'lot-1': { id: 'lot-1', public_id: 'RV-C-000001', sku_id: 'sku-1', tracking_mode: 'lot_managed', quantity: 3, location_id: 'loc-1' },
+        'lot-ser': { id: 'lot-ser', public_id: 'RV-C-000002', sku_id: 'sku-1', tracking_mode: 'serialized', quantity: 2, location_id: 'loc-1' },
+      };
+      if (filters.id) return lots[filters.id] ? [lots[filters.id]] : [];
       if (filters.public_id && filters.public_id !== 'RV-C-000001') return [];
-      return [{ id: 'lot-1', public_id: 'RV-C-000001', sku_id: 'sku-1', tracking_mode: 'lot_managed', quantity: 1 }];
+      return [lots['lot-1']];
     }
     if (table === 'inventory_items') {
+      if (filters.lot_id !== undefined) return Array.from({ length: CHILD_COUNT }, (_, i) => ({ id: `it-${i}` }));
       if (filters.scan_sku && filters.scan_sku !== 'RV-7K3F9Q2') return [];
       if (filters.public_id && filters.public_id !== 'RV-ITEM-AAA111') return [];
-      return [{ id: 'item-1', public_id: 'RV-ITEM-AAA111', scan_sku: 'RV-7K3F9Q2', lot_id: 'lot-1' }];
+      if (filters.id && filters.id !== 'item-1') return [];
+      return [{ id: 'item-1', public_id: 'RV-ITEM-AAA111', scan_sku: 'RV-7K3F9Q2', lot_id: 'lot-ser', sku_id: 'sku-1' }];
     }
     if (table === 'storage_locations') {
       if (filters.public_id && filters.public_id !== 'RV-LOC-AAA111') return [];
+      if (filters.id && filters.id !== 'loc-1') return [];
       return [{ id: 'loc-1', public_id: 'RV-LOC-AAA111', location_code: 'A' }];
     }
     return [];
@@ -109,6 +121,7 @@ afterAll(() => {
 
 beforeEach(() => {
   FAIL_TABLE = null;
+  CHILD_COUNT = 0;
   process.env.SHADOW_IMPORT = 'repository-fixtures';
   process.env.SUPABASE_URL = 'http://127.0.0.1:54321';
   process.env.SUPABASE_ANON_KEY = 'test-anon-key';
@@ -194,5 +207,64 @@ describe('fail-closed', () => {
     FAIL_TABLE = 'inventory_lots';
     const res = await req('/api/inventory-identity/lots', 'operator-token');
     expect(res.status).toBe(400);
+  });
+});
+
+describe('joined lot/item identity detail', () => {
+  it('returns the complete Product → SKU → Lot → Location join for a lot-managed lot', async () => {
+    const res = await req('/api/inventory-identity/lots/lot-1/detail', 'operator-token');
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.product.public_id).toBe('RV-PROD-AAA111');
+    expect(body.sku.public_id).toBe('RV-SKU-AAA111');
+    expect(body.lot.public_id).toBe('RV-C-000001');
+    expect(body.location.public_id).toBe('RV-LOC-AAA111');
+    // A lot-managed lot has no serialized capacity.
+    expect(body.capacity).toBeNull();
+    expect(body.atCapacity).toBe(false);
+  });
+
+  it('reports a partially serialized lot as below capacity', async () => {
+    CHILD_COUNT = 1;
+    const res = await req('/api/inventory-identity/lots/lot-ser/detail', 'operator-token');
+    const body = await res.json();
+    expect(body.capacity).toBe(2);
+    expect(body.serializedChildCount).toBe(1);
+    expect(body.atCapacity).toBe(false);
+  });
+
+  it('reports a full serialized lot as at capacity', async () => {
+    CHILD_COUNT = 2;
+    const res = await req('/api/inventory-identity/lots/lot-ser/detail', 'operator-token');
+    const body = await res.json();
+    expect(body.serializedChildCount).toBe(2);
+    expect(body.atCapacity).toBe(true);
+  });
+
+  it('404s a missing lot', async () => {
+    const res = await req('/api/inventory-identity/lots/nope/detail', 'operator-token');
+    expect(res.status).toBe(404);
+  });
+
+  it('fails closed when a subordinate join query errors', async () => {
+    FAIL_TABLE = 'sellable_skus';
+    const res = await req('/api/inventory-identity/lots/lot-1/detail', 'operator-token');
+    expect(res.status).toBe(400);
+  });
+
+  it('returns the complete Product → SKU → Lot → Item → Location join for an item', async () => {
+    const res = await req('/api/inventory-identity/items/item-1/detail', 'operator-token');
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.product.public_id).toBe('RV-PROD-AAA111');
+    expect(body.sku.public_id).toBe('RV-SKU-AAA111');
+    expect(body.lot.public_id).toBe('RV-C-000002');
+    expect(body.item.scan_sku).toBe('RV-7K3F9Q2');
+    expect(body.location.public_id).toBe('RV-LOC-AAA111');
+  });
+
+  it('404s a missing item', async () => {
+    const res = await req('/api/inventory-identity/items/nope/detail', 'operator-token');
+    expect(res.status).toBe(404);
   });
 });

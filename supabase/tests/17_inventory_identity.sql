@@ -99,8 +99,15 @@ select public.register_storage_location('aaaa0000-0000-4000-8000-000000000001', 
 select public.register_storage_location('aaaa0000-0000-4000-8000-000000000001', 'C', 'B', 'Bin C');
 select pg_temp.put('locA', (select id from public.storage_locations where location_code='A'));
 select pg_temp.put('locC', (select id from public.storage_locations where location_code='C'));
-select is((public.register_storage_location('aaaa0000-0000-4000-8000-000000000001', 'A', null, null)->>'created')::text,
-  'false', 'registering an existing location code find-or-creates (no reuse)');
+select is((public.register_storage_location('aaaa0000-0000-4000-8000-000000000001', 'A', null, 'Room A')->>'created')::text,
+  'false', 'an identical location retry find-or-creates (no reuse)');
+-- A changed hierarchy/label for an existing code conflicts, not a false success.
+select throws_ok(
+  $$select public.register_storage_location('aaaa0000-0000-4000-8000-000000000001', 'A', 'B', 'Room A')$$,
+  '23514', null, 'a changed parent for an existing location code conflicts');
+select throws_ok(
+  $$select public.register_storage_location('aaaa0000-0000-4000-8000-000000000001', 'A', null, 'Renamed A')$$,
+  '23514', null, 'a changed display name for an existing location code conflicts');
 select pg_temp.logout();
 
 -- self-parenting rejected (table check)
@@ -127,7 +134,7 @@ $$, '23505', null, 'a retired location code cannot be reused');
 -- ===== Serialized items: scan identity, cert/serial fail-closed, double-count guard =====
 select pg_temp.login('a2222222-2222-2222-2222-222222222222');
 select public.stage_inventory_lot('aaaa0000-0000-4000-8000-000000000001', 'RV-C-900001',
-  pg_temp.get('gradedsku'), 'serialized', 1, 'A', 'Imported Legacy', '1.0.0', null);
+  pg_temp.get('gradedsku'), 'serialized', 3, 'A', 'Imported Legacy', '1.0.0', null);
 select public.stage_inventory_lot('aaaa0000-0000-4000-8000-000000000001', 'RV-C-900002',
   pg_temp.get('sku'), 'lot_managed', 5, 'A', 'Imported Legacy', '1.0.0', null);
 select pg_temp.put('slot', (select id from public.inventory_lots where public_id='RV-C-900001'));

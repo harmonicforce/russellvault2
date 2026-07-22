@@ -15,7 +15,12 @@ import {
   type IdentityLookupResult,
   type InventoryIdentityTransport,
 } from '../lib/inventoryIdentityApi';
-import { describeIdentityRecord, type IdentityRecord } from '../lib/inventoryIdentity';
+import {
+  describeIdentityRecord,
+  summarizeLotDetail,
+  type IdentityRecord,
+} from '../lib/inventoryIdentity';
+import type { LotDetail } from '../lib/inventoryIdentityApi';
 
 function IdentityCard({ result }: { result: IdentityLookupResult }) {
   const d = describeIdentityRecord(result.kind, result.record);
@@ -65,6 +70,8 @@ export default function InventoryIdentity() {
   const [pidResult, setPidResult] = useState<IdentityLookupResult | null>(null);
   const [scanResult, setScanResult] = useState<IdentityLookupResult | null>(null);
   const [lots, setLots] = useState<IdentityRecord[]>([]);
+  const [lotId, setLotId] = useState('');
+  const [lotDetail, setLotDetail] = useState<LotDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const run = useCallback(
@@ -177,6 +184,41 @@ export default function InventoryIdentity() {
             {lots.map((lot) => (
               <IdentityCard key={String(lot.id)} result={{ kind: 'lot', record: lot }} />
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">
+          <Boxes className="h-4 w-4" /> Lot identity chain (Product → SKU → Lot → Location)
+        </h2>
+        <div className="flex gap-2">
+          <input
+            className="flex-1 rounded border border-hairline bg-surface-0 px-2 py-1 font-mono text-sm"
+            value={lotId}
+            onChange={(e) => setLotId(e.target.value)}
+            placeholder="lot internal id"
+          />
+          <button
+            className="rounded bg-accent px-3 py-1 text-sm font-medium text-white"
+            onClick={() => run(async () => setLotDetail(await transport.lotDetail(workspaceId, lotId)))}
+          >
+            Load chain
+          </button>
+        </div>
+        {lotDetail && (
+          <div className="rounded-lg border border-hairline bg-surface-1 p-3 text-sm">
+            <ol className="space-y-1">
+              {summarizeLotDetail(lotDetail).chain.map((step) => (
+                <li key={step.kindLabel} className="flex items-center gap-2">
+                  <span className="w-32 text-ink-muted">{step.kindLabel}</span>
+                  <span className="font-mono">{step.publicId ?? '—'}</span>
+                </li>
+              ))}
+            </ol>
+            <div className="mt-2 text-ink-muted">
+              Capacity: <span className="font-mono">{summarizeLotDetail(lotDetail).capacityLabel}</span>
+            </div>
           </div>
         )}
       </section>

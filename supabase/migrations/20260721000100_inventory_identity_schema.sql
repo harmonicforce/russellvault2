@@ -222,6 +222,11 @@ create table public.inventory_items (
   grading_company text check (grading_company is null or char_length(grading_company) <= 60),
   certificate_number text check (certificate_number is null or char_length(certificate_number) <= 120),
   serial_number text check (serial_number is null or char_length(serial_number) <= 120),
+  -- Certificate scope: a certificate identity is only meaningful with its
+  -- grading company, so a non-null certificate requires a non-blank company.
+  -- Uniqueness is then scoped to (workspace, grading company, certificate).
+  constraint inventory_items_certificate_requires_company
+    check (certificate_number is null or (grading_company is not null and btrim(grading_company) <> '')),
   created_by_process text not null check (created_by_process ~ '^[a-z][a-z0-9_.:-]{1,63}$'),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),

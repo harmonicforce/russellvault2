@@ -14,10 +14,30 @@ export interface IdentityLookupResult {
   readonly record: IdentityRecord;
 }
 
+export interface LotDetail {
+  readonly product: IdentityRecord | null;
+  readonly sku: IdentityRecord | null;
+  readonly lot: IdentityRecord;
+  readonly location: IdentityRecord | null;
+  readonly serializedChildCount: number;
+  readonly capacity: number | null;
+  readonly atCapacity: boolean;
+}
+
+export interface ItemDetail {
+  readonly product: IdentityRecord | null;
+  readonly sku: IdentityRecord | null;
+  readonly lot: IdentityRecord | null;
+  readonly item: IdentityRecord;
+  readonly location: IdentityRecord | null;
+}
+
 export interface InventoryIdentityTransport {
   listLots(workspaceId: string, limit: number, offset: number): Promise<IdentityRecord[]>;
   lookupPublicId(workspaceId: string, publicId: string): Promise<IdentityLookupResult>;
   lookupScan(workspaceId: string, scanSku: string): Promise<IdentityLookupResult>;
+  lotDetail(workspaceId: string, lotId: string): Promise<LotDetail>;
+  itemDetail(workspaceId: string, itemId: string): Promise<ItemDetail>;
 }
 
 async function request<T>(
@@ -66,6 +86,12 @@ export function createInventoryIdentityTransport(
         getToken,
         `/lookup/scan/${encodeURIComponent(scanSku)}?${ws(workspaceId)}`
       );
+    },
+    lotDetail(workspaceId, lotId) {
+      return request<LotDetail>(getToken, `/lots/${encodeURIComponent(lotId)}/detail?${ws(workspaceId)}`);
+    },
+    itemDetail(workspaceId, itemId) {
+      return request<ItemDetail>(getToken, `/items/${encodeURIComponent(itemId)}/detail?${ws(workspaceId)}`);
     },
   };
 }

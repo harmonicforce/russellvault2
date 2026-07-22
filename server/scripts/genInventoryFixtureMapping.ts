@@ -36,12 +36,15 @@ function main(): void {
   ) as InventoryFixtureRow[];
   const plan = buildInventoryIdentityPlan(rows);
   const productByKey = new Map<string, PlannedProduct>(plan.products.map((p) => [p.canonicalKey, p]));
+  const skuByFingerprint = new Map(plan.skus.map((s) => [s.fingerprint, s]));
 
   const values: string[] = [];
   for (const lot of plan.lots) {
     const p = productByKey.get(lot.productKey);
     if (!p) throw new Error(`no product for ${lot.publicId}`);
-    const a = lot.fingerprintInputs;
+    const sku = skuByFingerprint.get(lot.fingerprint);
+    if (!sku) throw new Error(`no sku for ${lot.publicId}`);
+    const a = sku.attrs;
     const pa = p.attrs;
     values.push(
       `(${q(lot.publicId)},${q(p.vertical)},${q(lot.productKey)},${q(p.displayName)},` +
