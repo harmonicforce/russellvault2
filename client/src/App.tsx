@@ -1,7 +1,7 @@
 import { NavLink, Route, Routes } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingBag, Link2, Tag, DollarSign, ShieldCheck, Vault,
-  FileSearch, Layers,
+  FileSearch, Layers, Boxes,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
@@ -14,6 +14,7 @@ import ReadOnlyBanner from './components/ReadOnlyBanner';
 import AuthShell from './components/AuthShell';
 import ImportReview from './pages/ImportReview';
 import AcquisitionReview from './pages/AcquisitionReview';
+import InventoryIdentity from './pages/InventoryIdentity';
 import { isProvenanceUiEnabled } from './lib/provenanceConfig';
 
 const NAV = [
@@ -45,6 +46,12 @@ const PROVENANCE_NAV = [
     to: '/acquisition-review',
     label: 'Acquisition Review',
     icon: Layers,
+    end: false,
+  },
+  {
+    to: '/inventory-identity',
+    label: 'Identity Diagnostics',
+    icon: Boxes,
     end: false,
   },
 ];
@@ -101,6 +108,9 @@ export default function App() {
             )}
             {PROVENANCE_ENABLED && (
               <Route path="/acquisition-review" element={<AcquisitionReview />} />
+            )}
+            {PROVENANCE_ENABLED && (
+              <Route path="/inventory-identity" element={<InventoryIdentity />} />
             )}
           </Routes>
         </main>
