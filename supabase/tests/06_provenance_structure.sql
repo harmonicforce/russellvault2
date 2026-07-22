@@ -383,23 +383,25 @@ select ok(
   'the shared crosswalk review implementation is not granted to authenticated'
 );
 
--- Neither Phase 3 nor Phase 4 creates any Phase-5 commerce-domain schema -------------------------
--- (acquisition_* / channels / suppliers are Phase 4 deliverables and are asserted
---  in 12_acquisition_structure.sql; this tripwire now guards the Phase 5 boundary.)
+-- Phase 5 delivers the product / SKU / lot / item / location identity core
+-- (asserted in 16_inventory_structure.sql). The tripwire now guards the Phase 6+
+-- commerce boundary: no listing / sale / marketplace / COGS / cost-basis /
+-- purchase table has leaked in yet. (product_* and inventory_* are legitimate
+-- Phase 5 tables and are deliberately excluded from this pattern.)
 select is(
   (select count(*)::int
    from information_schema.tables
    where table_schema = 'public'
-     and table_name ~ '(cost_basis|costbasis|cogs|product|inventory|listing|sale|marketplace|purchase)'),
+     and table_name ~ '(cost_basis|costbasis|cogs|listing|sale|marketplace|purchase)'),
   0,
-  'no cost-basis, COGS, product, inventory, listing, sale, marketplace, or purchase table exists'
+  'no COGS, cost-basis, listing, sale, marketplace, or purchase table exists yet (Phase 6+)'
 );
 
--- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) migrations recorded, Phase 2/3 intact ------------------
+-- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) + Phase 5 (4) migrations recorded ----------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  15,
-  'fifteen migrations are recorded: five from Phase 2, five from Phase 3, five from Phase 4'
+  19,
+  'nineteen migrations are recorded: five each from Phases 2/3/4 and four from Phase 5'
 );
 
 select results_eq(
@@ -419,8 +421,12 @@ select results_eq(
     ('20260720000200_acquisition_append_only'),
     ('20260720000300_acquisition_rls'),
     ('20260720000400_acquisition_functions'),
-    ('20260720000500_acquisition_import_workflow')$$,
-  'the ten Phase 2/3 migrations are unmodified and the five Phase 4 migrations follow them'
+    ('20260720000500_acquisition_import_workflow'),
+    ('20260721000100_inventory_identity_schema'),
+    ('20260721000200_inventory_identity_append_only'),
+    ('20260721000300_inventory_identity_rls'),
+    ('20260721000400_inventory_identity_functions')$$,
+  'the fifteen Phase 2/3/4 migrations are unmodified and the four Phase 5 migrations follow them'
 );
 
 select * from finish();

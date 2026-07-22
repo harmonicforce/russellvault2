@@ -17,6 +17,7 @@ import checksRouter from './routes/checks.js';
 import lookupsRouter from './routes/lookups.js';
 import provenanceRouter from './routes/provenance.js';
 import acquisitionRouter from './routes/acquisition.js';
+import inventoryIdentityRouter from './routes/inventoryIdentity.js';
 
 seedIfEmpty();
 migrateProductType();
@@ -46,6 +47,12 @@ app.use('/api/provenance', provenanceRouter);
 // it never touches SQLite — it reads/writes only the shadow Postgres database
 // under the caller's own JWT. Nothing here enables or weakens any legacy write.
 app.use('/api/acquisition', acquisitionRouter);
+// Phase 5 inventory-identity is a STRICTLY READ-ONLY shadow diagnostic surface,
+// mounted before the legacy write guard with the same gates as provenance /
+// acquisition. It never touches SQLite: it reads only the shadow Postgres
+// identity hierarchy under the caller's own JWT. The legacy /api/inventory
+// router below remains the authoritative inventory system of record, unchanged.
+app.use('/api/inventory-identity', inventoryIdentityRouter);
 
 app.use('/api', legacyWriteGuard);
 
