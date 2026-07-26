@@ -30,10 +30,12 @@ create temp table t (k text primary key, v text);
 grant all on table t to public;
 insert into t values ('ws', 'aaaa0000-0000-4000-8000-000000000001');
 insert into t values ('sess', (public.create_intake_session((select v from t where k='ws')::uuid, 's')->>'id'));
+select public.register_storage_location((select v from t where k='ws')::uuid, 'BIN-1', null, 'Bin 1');
 insert into t values ('g', (public.upsert_intake_group((select v from t where k='ws')::uuid,
-  (select v from t where k='sess')::uuid, null, 'raw_tcg', 'Eevee Jungle #51', 1, 'lot_managed', 0,
-  '{"set_name":"Jungle","card_number":"51"}'::jsonb, '{}'::jsonb, 'stated', 'Near Mint', 'BIN-1',
-  false, false, false)->>'id'));
+  (select v from t where k='sess')::uuid, null, null, 'raw_tcg', 'Eevee Jungle #51', 1, 'lot_managed', 0,
+  '{"set_name":"Jungle","card_number":"51"}'::jsonb, '{}'::jsonb,
+  '{"source_kind":"personal_collection"}'::jsonb, 'Near Mint', 'BIN-1',
+  false, false, false, false)->>'id'));
 insert into t values ('rc', (public.commit_intake_group((select v from t where k='ws')::uuid,
   (select v from t where k='g')::uuid, 'rls-key-0001',
   (select version from public.intake_draft_groups where id=(select v from t where k='g')::uuid),
@@ -50,8 +52,8 @@ select is((select count(*)::int from public.intake_draft_groups
   'a viewer can READ intake drafts in their workspace');
 select throws_ok(
   $$select public.upsert_intake_group('aaaa0000-0000-4000-8000-000000000001',
-    (select v from t where k='sess')::uuid, null, 'raw_tcg', 'x', 1, 'lot_managed', 0,
-    '{}', '{}', 'stated', null, null, false, false, false)$$,
+    (select v from t where k='sess')::uuid, null, null, 'raw_tcg', 'x', 1, 'lot_managed', 0,
+    '{}', '{}', '{}', null, null, false, false, false, false)$$,
   '42501', null, 'a viewer cannot create a draft group');
 select throws_ok(
   $$select public.create_intake_session('aaaa0000-0000-4000-8000-000000000001', 'nope')$$,

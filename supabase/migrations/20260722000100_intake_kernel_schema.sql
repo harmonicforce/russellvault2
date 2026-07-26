@@ -82,6 +82,12 @@ create table public.intake_field_registry (
   label text not null check (char_length(label) between 1 and 200),
   -- Which draft container the field is written into.
   scope text not null check (scope in ('product', 'sku', 'entry', 'group')),
+  -- The canonical attribute key inside the scope's draft bag (product_attrs /
+  -- sku_attrs / entry_attrs). For identity fields this equals the final segment
+  -- of maps_to; for non-identity governed fields it is a standalone bag key.
+  -- The authoritative evaluator resolves every value by attr_key, never by an
+  -- ungoverned free key.
+  attr_key text not null check (attr_key ~ '^[a-z][a-z0-9_]{1,62}$'),
   -- NULL vertical = applies to every vertical.
   business_vertical public.inventory_vertical,
   data_type text not null check (data_type in ('text', 'integer', 'boolean', 'reference')),
@@ -94,7 +100,10 @@ create table public.intake_field_registry (
   -- A factual fact that must never be given a fabricated default value.
   is_factual boolean not null default false,
   created_at timestamptz not null default now(),
-  check ((data_type = 'reference') = (reference_list_key is not null))
+  check ((data_type = 'reference') = (reference_list_key is not null)),
+  -- An identity-driving field must map into a typed Phase 5 column and its
+  -- attr_key must be that column's name (no EAV identity).
+  check (not is_identity_driving or (maps_to is not null and attr_key = split_part(maps_to, '.', 3)))
 );
 
 -- Reference lists / options (governed allowed values) -----------------------------------
@@ -186,6 +195,12 @@ create table public.intake_draft_groups (
   -- How many serialized children a commit will mint (0 for a pure lot).
   serialized_child_count integer not null default 0 check (serialized_child_count >= 0),
   source_state public.intake_source_state not null default 'unknown',
+  -- Governed, explicit source evidence explaining a STATED source. Must carry a
+  -- governed source_kind when source_state = 'stated' (validated in the kernel
+  -- against a reference list); the bare word "stated" can never bypass review.
+  -- For 'candidate' the acquisition-line links are the evidence; for 'unknown'
+  -- it stays empty. Financially inert.
+  source_evidence jsonb not null default '{}'::jsonb,
   -- Explicit, never-defaulted factual condition. NULL means "not stated".
   condition_state text check (condition_state is null or char_length(condition_state) <= 120),
   -- Optional location assignment (a Phase 5 storage-location code).
@@ -195,6 +210,9 @@ create table public.intake_draft_groups (
   owner_tagged boolean not null default false,
   unique_condition boolean not null default false,
   requires_item_media boolean not null default false,
+  -- Premium / security-sensitive unit: forces serialization per the approved
+  -- hybrid policy.
+  security_sensitive boolean not null default false,
   -- Set once at commit; immutable thereafter.
   applied_rule_version text check (applied_rule_version is null
     or applied_rule_version ~ '^INTAKE_RULES_[0-9]+$'),
@@ -218,7 +236,14 @@ create table public.intake_draft_groups (
   foreign key (committed_lot_id, workspace_id)
     references public.inventory_lots (id, workspace_id) on delete restrict,
   constraint intake_draft_groups_attrs_are_objects
-    check (jsonb_typeof(product_attrs) = 'object' and jsonb_typeof(sku_attrs) = 'object'),
+    check (jsonb_typeof(product_attrs) = 'object' and jsonb_typeof(sku_attrs) = 'object'
+      and jsonb_typeof(source_evidence) = 'object'),
+  -- A stated source must carry governed, explicit evidence (a source_kind); a
+  -- non-stated source carries none. The kernel additionally validates the
+  -- source_kind value against a governed reference list.
+  constraint intake_draft_groups_stated_has_evidence check (
+    (source_state = 'stated') = (jsonb_typeof(source_evidence->'source_kind') = 'string')
+  ),
   -- A committed group must carry its resulting identity + governance stamps; a
   -- non-committed group must not (no partial or fabricated committed linkage).
   constraint intake_draft_groups_committed_linked check (
@@ -261,6 +286,9 @@ create table public.intake_entries (
   updated_at timestamptz not null default now(),
   unique (workspace_id, public_id),
   unique (id, workspace_id),
+  -- Lets a candidate link carry a composite FK proving its entry belongs to the
+  -- SAME group as the link (an entry cannot be cross-linked into another group).
+  unique (id, group_id),
   unique (workspace_id, group_id, entry_index),
   foreign key (group_id, workspace_id)
     references public.intake_draft_groups (id, workspace_id) on delete restrict,
@@ -304,6 +332,10 @@ create table public.intake_candidate_links (
     references public.intake_draft_groups (id, workspace_id) on delete restrict,
   foreign key (entry_id, workspace_id)
     references public.intake_entries (id, workspace_id) on delete restrict,
+  -- A candidate's entry (when present) must belong to the SAME group as the
+  -- link. Enforced structurally by a composite FK into intake_entries (id, group_id).
+  foreign key (entry_id, group_id)
+    references public.intake_entries (id, group_id) on delete restrict,
   foreign key (acquisition_line_item_id, workspace_id)
     references public.acquisition_line_items (id, workspace_id) on delete restrict,
   constraint intake_candidate_links_evidence_is_object check (jsonb_typeof(evidence) = 'object')

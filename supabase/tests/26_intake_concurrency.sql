@@ -48,25 +48,33 @@ select set_config('request.jwt.claims',
   json_build_object('sub','dd222222-2222-4222-8222-222222222222','role','authenticated')::text, false);
 set role authenticated;
 insert into cids values ('sess', (public.create_intake_session('dddd0000-0000-4000-8000-000000000001','conc')->>'id'));
+select public.register_storage_location('dddd0000-0000-4000-8000-000000000001', 'BIN-1', null, 'Bin 1');
 -- G1 (identical-converge) and G2 (conflict) — distinct products.
 insert into cids values ('g1', (public.upsert_intake_group('dddd0000-0000-4000-8000-000000000001',
-  (select v from cids where k='sess')::uuid, null, 'raw_tcg', 'Conc One #1', 1, 'lot_managed', 0,
-  '{"set_name":"ConcSet","card_number":"1"}'::jsonb, '{}'::jsonb, 'stated', 'Near Mint', 'BIN-1',
-  false, false, false)->>'id'));
+  (select v from cids where k='sess')::uuid, null, null, 'raw_tcg', 'Conc One #1', 1, 'lot_managed', 0,
+  '{"set_name":"ConcSet","card_number":"1"}'::jsonb, '{}'::jsonb,
+  '{"source_kind":"personal_collection"}'::jsonb, 'Near Mint', 'BIN-1',
+  false, false, false, false)->>'id'));
 insert into cids values ('g2', (public.upsert_intake_group('dddd0000-0000-4000-8000-000000000001',
-  (select v from cids where k='sess')::uuid, null, 'raw_tcg', 'Conc Two #2', 1, 'lot_managed', 0,
-  '{"set_name":"ConcSet","card_number":"2"}'::jsonb, '{}'::jsonb, 'stated', 'Near Mint', 'BIN-1',
-  false, false, false)->>'id'));
+  (select v from cids where k='sess')::uuid, null, null, 'raw_tcg', 'Conc Two #2', 1, 'lot_managed', 0,
+  '{"set_name":"ConcSet","card_number":"2"}'::jsonb, '{}'::jsonb,
+  '{"source_kind":"personal_collection"}'::jsonb, 'Near Mint', 'BIN-1',
+  false, false, false, false)->>'id'));
 -- G3a / G3b — IDENTICAL product+SKU identity, so a concurrent commit must
 -- converge on one SKU.
 insert into cids values ('g3a', (public.upsert_intake_group('dddd0000-0000-4000-8000-000000000001',
-  (select v from cids where k='sess')::uuid, null, 'raw_tcg', 'Same Identity #9', 1, 'lot_managed', 0,
+  (select v from cids where k='sess')::uuid, null, null, 'raw_tcg', 'Same Identity #9', 1, 'lot_managed', 0,
   '{"set_name":"SameSet","card_number":"9"}'::jsonb, '{"condition_or_quality":"Near Mint"}'::jsonb,
-  'stated', 'Near Mint', 'BIN-1', false, false, false)->>'id'));
+  '{"source_kind":"personal_collection"}'::jsonb, 'Near Mint', 'BIN-1', false, false, false, false)->>'id'));
 insert into cids values ('g3b', (public.upsert_intake_group('dddd0000-0000-4000-8000-000000000001',
-  (select v from cids where k='sess')::uuid, null, 'raw_tcg', 'Same Identity #9', 1, 'lot_managed', 0,
+  (select v from cids where k='sess')::uuid, null, null, 'raw_tcg', 'Same Identity #9', 1, 'lot_managed', 0,
   '{"set_name":"SameSet","card_number":"9"}'::jsonb, '{"condition_or_quality":"Near Mint"}'::jsonb,
-  'stated', 'Near Mint', 'BIN-1', false, false, false)->>'id'));
+  '{"source_kind":"personal_collection"}'::jsonb, 'Near Mint', 'BIN-1', false, false, false, false)->>'id'));
+-- G4 — a draft for the concurrent-EDIT race (one winner, one stale conflict).
+insert into cids values ('g4', (public.upsert_intake_group('dddd0000-0000-4000-8000-000000000001',
+  (select v from cids where k='sess')::uuid, null, null, 'raw_tcg', 'Edit Race #4', 1, 'lot_managed', 0,
+  '{"set_name":"EditSet","card_number":"4"}'::jsonb, '{}'::jsonb,
+  '{"source_kind":"personal_collection"}'::jsonb, 'Near Mint', 'BIN-1', false, false, false, false)->>'id'));
 -- Precompute each group's content hash (version is 1 for all).
 insert into cids values ('h1', public.preview_intake_commit('dddd0000-0000-4000-8000-000000000001',(select v from cids where k='g1')::uuid)->>'content_hash');
 insert into cids values ('h2', public.preview_intake_commit('dddd0000-0000-4000-8000-000000000001',(select v from cids where k='g2')::uuid)->>'content_hash');
@@ -219,6 +227,56 @@ select is((select count(*)::int from public.sellable_skus s
            where s.workspace_id = 'dddd0000-0000-4000-8000-000000000001' and s.is_active
              and s.id = (select sku from r3 limit 1)::uuid), 1,
   'exactly one active SKU row exists for the concurrently-raced identity');
+
+-- ================= PROOF 4 — concurrent draft EDIT: one winner, one conflict ======
+-- Two devices edit the SAME draft group with the SAME expected_version. The
+-- group FOR UPDATE lock serializes them: one edit wins (version bumps), the
+-- other blocks then returns a structured stale_version conflict — never a silent
+-- overwrite.
+create temp table r4 (who text primary key, outcome text, version text);
+grant all on table r4 to public;
+do $$
+declare
+  v_sub text := (select sql from sess_sql where k='sub');
+  v_claim text := (select sql from sess_sql where k='claims');
+  v_conn text := (select conn from dbconn);
+  v_call text := format($q$select coalesce(j->>'outcome','ok'), j->>'version' from public.upsert_intake_group(
+    'dddd0000-0000-4000-8000-000000000001', %L::uuid, %L::uuid, 1, 'raw_tcg', 'Edit Race #4', 1,
+    'lot_managed', 0, '{"set_name":"EditSet","card_number":"4"}'::jsonb, '{}'::jsonb,
+    '{"source_kind":"personal_collection"}'::jsonb, 'Lightly Played', 'BIN-1',
+    false, false, false, false) as j$q$,
+    (select v from cids where k='sess'), (select v from cids where k='g4'));
+  v_b1 int; v_b2 int; v_guard int := 0; v_winner text; v_loser text; v_o text; v_v text;
+begin
+  perform dblink_connect('d1', v_conn); perform dblink_connect('d2', v_conn);
+  perform dblink_exec('d1','begin'); perform dblink_exec('d2','begin');
+  perform * from dblink('d1', v_sub) t(x text); perform * from dblink('d1', v_claim) t(x text);
+  perform dblink_exec('d1','set role authenticated');
+  perform * from dblink('d2', v_sub) t(x text); perform * from dblink('d2', v_claim) t(x text);
+  perform dblink_exec('d2','set role authenticated');
+  perform dblink_send_query('d1', v_call); perform dblink_send_query('d2', v_call);
+  loop
+    v_guard := v_guard + 1; v_b1 := dblink_is_busy('d1'); v_b2 := dblink_is_busy('d2');
+    exit when v_b1 = 0 or v_b2 = 0 or v_guard > 400; perform pg_sleep(0.05);
+  end loop;
+  if v_b1 = 0 then v_winner := 'd1'; v_loser := 'd2'; else v_winner := 'd2'; v_loser := 'd1'; end if;
+  select o, vv into v_o, v_v from dblink_get_result(v_winner) as g(o text, vv text);
+  perform * from dblink_get_result(v_winner) as g(o text, vv text);
+  insert into r4 values (v_winner, v_o, v_v);
+  perform dblink_exec(v_winner, 'commit');
+  select o, vv into v_o, v_v from dblink_get_result(v_loser) as g(o text, vv text);
+  perform * from dblink_get_result(v_loser) as g(o text, vv text);
+  insert into r4 values (v_loser, v_o, v_v);
+  perform dblink_exec(v_loser, 'commit');
+  perform dblink_disconnect('d1'); perform dblink_disconnect('d2');
+end $$;
+
+select is((select count(*)::int from r4 where outcome = 'ok'), 1,
+  'exactly one concurrent edit won');
+select is((select count(*)::int from r4 where outcome = 'conflict'), 1,
+  'the other concurrent edit returned a structured stale_version conflict');
+select is((select version from public.intake_draft_groups where id = (select v from cids where k='g4')::uuid), 2,
+  'the winning edit bumped the version exactly once (no double increment, no overwrite)');
 
 -- Teardown (bypass append-only + FK restrictions).
 set session_replication_role = replica;

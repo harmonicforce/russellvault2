@@ -40,7 +40,7 @@ export type IntakeNextAction =
   | 'NO_IMMEDIATE_ACTION';
 
 /** The distinct outcomes a commit call can report. */
-export type CommitOutcome = 'committed' | 'conflict' | 'blocked';
+export type CommitOutcome = 'committed' | 'conflict' | 'blocked' | 'failed';
 
 /** A single structured commit blocker from the authoritative rule engine. */
 export interface IntakeBlocker {
@@ -86,6 +86,11 @@ export interface IntakeCommitReceipt {
   readonly tracking_mode: TrackingMode;
   readonly quantity: number;
   readonly items: readonly IntakeReceiptItem[];
+  /** The explicit source posture and its governed evidence at commit time. */
+  readonly source_state: IntakeSourceState;
+  readonly source_evidence: Record<string, unknown>;
+  /** Deterministically ordered candidate acquisition evidence (financially inert). */
+  readonly candidates: readonly Record<string, unknown>[];
   readonly applied_rule_version: string;
   readonly next_action: IntakeNextAction;
   readonly actor: string;
@@ -114,10 +119,29 @@ export interface IntakeCommitBlocked {
   readonly group_id: string;
 }
 
+/**
+ * A structured "failed" response: a genuine mid-write failure was fully rolled
+ * back (no partial Product/SKU/Lot/Item persists, the draft is recoverable) and
+ * a durable commit_failed audit event was written. The reason is sanitized — no
+ * secrets or raw internal error dumps.
+ */
+export interface IntakeCommitFailed {
+  readonly outcome: 'failed';
+  readonly failure_class:
+    | 'duplicate_identity'
+    | 'check_violation'
+    | 'foreign_key_violation'
+    | 'internal_error';
+  readonly sqlstate: string;
+  readonly message: string;
+  readonly group_id: string;
+}
+
 export type IntakeCommitResult =
   | IntakeCommitReceipt
   | IntakeCommitConflict
-  | IntakeCommitBlocked;
+  | IntakeCommitBlocked
+  | IntakeCommitFailed;
 
 /** Request body to commit a draft group. */
 export interface IntakeCommitRequest {
@@ -140,4 +164,7 @@ export function isCommitConflict(r: IntakeCommitResult): r is IntakeCommitConfli
 }
 export function isCommitBlocked(r: IntakeCommitResult): r is IntakeCommitBlocked {
   return r.outcome === 'blocked';
+}
+export function isCommitFailed(r: IntakeCommitResult): r is IntakeCommitFailed {
+  return r.outcome === 'failed';
 }

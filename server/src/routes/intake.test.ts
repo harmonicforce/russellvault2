@@ -170,18 +170,20 @@ const MEMBER_ROUTES: ReadonlyArray<[string, string, unknown]> = [
 
 const GROUP_BODY = {
   workspaceId: WS_A, sessionId: SID, category: 'raw_tcg', displayName: 'X', quantity: 1,
-  trackingMode: 'lot_managed', serializedChildCount: 0, sourceState: 'stated',
+  trackingMode: 'lot_managed', serializedChildCount: 0,
+  sourceEvidence: { source_kind: 'personal_collection' },
 };
+const GROUP_PATCH_BODY = { ...GROUP_BODY, expectedVersion: 1 };
 const OPERATOR_ROUTES: ReadonlyArray<[string, string, unknown]> = [
   ['POST', '/api/intake/sessions', { workspaceId: WS_A, label: 's' }],
   ['POST', `/api/intake/sessions/${SID}/abandon`, { workspaceId: WS_A, reason: 'x' }],
   ['POST', '/api/intake/groups', GROUP_BODY],
-  ['PATCH', `/api/intake/groups/${GID}`, GROUP_BODY],
-  ['POST', `/api/intake/groups/${GID}/entries`, { workspaceId: WS_A, entryIndex: 1 }],
+  ['PATCH', `/api/intake/groups/${GID}`, GROUP_PATCH_BODY],
+  ['POST', `/api/intake/groups/${GID}/entries`, { workspaceId: WS_A, expectedVersion: 1, entryIndex: 1 }],
   ['POST', `/api/intake/groups/${GID}/readiness`, { workspaceId: WS_A }],
   ['POST', `/api/intake/groups/${GID}/transition`, { workspaceId: WS_A, targetState: 'abandoned' }],
-  ['POST', `/api/intake/groups/${GID}/candidates`, { workspaceId: WS_A, acquisitionLineItemId: LINE }],
-  ['DELETE', `/api/intake/candidates/${CAND}`, { workspaceId: WS_A }],
+  ['POST', `/api/intake/groups/${GID}/candidates`, { workspaceId: WS_A, expectedVersion: 1, acquisitionLineItemId: LINE }],
+  ['DELETE', `/api/intake/candidates/${CAND}`, { workspaceId: WS_A, expectedVersion: 1 }],
   ['POST', `/api/intake/groups/${GID}/commit`, commitBody],
 ];
 
@@ -265,7 +267,7 @@ describe('success for the appropriate member', () => {
 
   it('attaching candidate evidence reports zero financial effect', async () => {
     const res = await call('POST', `/api/intake/groups/${GID}/candidates`, {
-      token: 'operator-token', body: { workspaceId: WS_A, acquisitionLineItemId: LINE },
+      token: 'operator-token', body: { workspaceId: WS_A, expectedVersion: 1, acquisitionLineItemId: LINE },
     });
     expect(res.status).toBe(200);
     expect((await res.json()).candidate.financial_effect).toBe(false);

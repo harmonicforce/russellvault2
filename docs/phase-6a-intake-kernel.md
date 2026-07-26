@@ -4,6 +4,14 @@
 Add UI NOT implemented — the design (wireflow) gate is unresolved. Phase 6A is
 NOT fully accepted. UB-01 owner timing gate is pending.**
 
+## Authority (read this first)
+
+- **Legacy SQLite remains the authoritative deployed inventory system.**
+- **The new Supabase intake kernel and every Product / SKU / Lot / Item write it
+  performs are shadow-only and NON-authoritative.**
+- **No deployment, dual-write, cutover, or authority transfer is authorized** by
+  this work. Nothing here writes, enables, or weakens any legacy SQLite path.
+
 This document records the dependency manifest, the schema and state-machine
 decisions, the idempotency/concurrency contract, the commit transaction
 boundaries, the hybrid serialization behavior, the candidate-evidence behavior,
@@ -228,13 +236,63 @@ plus one `app` sequence; rollback is dropping the five `20260722*` migrations
 migration-manifest and always-true-policy assertions). No deploy, no Railway, no
 remote Supabase, no legacy SQLite write.
 
+## Acceptance patch (backend hardening)
+
+A bounded backend acceptance patch hardened the kernel without changing its
+authority posture or the Phase 5 identity core:
+
+1. **Persisted state machine.** Commit persists `draft → ready_to_commit` (stored
+   state, not just an audit note) and then `ready_to_commit → committed` in one
+   transaction; editing a group or entry actually reopens `ready → draft`. Tests
+   assert stored state and audit state always agree.
+2. **Session terminality.** An abandoned session refuses group/entry creation and
+   editing, candidate attach/remove, readiness, preview, and commit; abandoning a
+   session **auto-abandons its uncommitted groups** (truthful stored state) while
+   committed groups stay readable and unchanged.
+3. **Optimistic concurrency.** Every draft-content mutation (group update, entry
+   create/update, candidate attach/remove, source-state change) requires
+   `expected_version`, locks the group, and returns a structured `stale_version`
+   conflict on a stale edit; each success bumps the version exactly once. A
+   genuine concurrent-edit dblink proof shows one winner and one conflict.
+4. **Candidate-evidence exactness.** The deterministically ordered candidate
+   snapshot (acquisition line, entry, evidence, confidence, source_state,
+   review_state) is in the content hash, the receipt, and the replay comparison.
+   A composite FK proves a candidate's entry belongs to the same group.
+   `source_state` is derived (candidate requires a link; removing the last link
+   returns to unknown unless a governed stated source exists); a caller cannot
+   claim candidate without evidence, and a bare "stated" is refused — a governed
+   `source_kind` is required, so "stated" never bypasses `SOURCE_REVIEW_NEEDED`.
+5. **Graded identity coherence.** The serialized entry may not disagree with the
+   SKU identity (grading company / numeric grade / grade designation); the item's
+   grading company is derived from the canonical SKU, so a CGC SKU can never mint
+   a PSA item. Mismatches block before any canonical write.
+6. **Complete serialization policy.** Graded ⇒ qty 1 + one child; footwear ⇒
+   `serialized_child_count = quantity`; any serial-numbered or certified entry
+   forces serialized tracking; owner-tagged / unique-condition / item-media /
+   security-sensitive units serialize; sealed keeps the eligible lot-vs-expansion
+   choice.
+7. **Governed entry attributes + truthful rule contract.** Unregistered
+   `entry_attrs` keys are rejected at write; the evaluator honors conditional
+   applicability (cross-field), data types (text/integer/boolean/reference), and
+   reference values — no stored rule property is silently ignored.
+8. **Location resolution.** Intake resolves an existing active location by code,
+   rejects retired/unknown codes (block / `LOCATION_ASSIGNMENT_NEEDED`), and never
+   mints a location master during a commit.
+9. **Durable failure audit.** A genuine mid-write failure rolls back all
+   Product/SKU/Lot/Item writes in a controlled subtransaction while a durable
+   `commit_failed` event (workspace, session, group, actor, idempotency key,
+   sanitized failure class + sqlstate, timestamp) persists in the outer
+   transaction. A duplicate-certificate test proves no partial rows persist, the
+   draft is recoverable, and exactly one durable failure event is written.
+
 ## Verification
 
 Ordinary PostgreSQL / shim tier: `npm run db:reset` + `npm run db:test` →
-**870 pgTAP assertions pass** (up from 739; +131 across
-`21_…`–`27_intake_*`). `npm run lint`, `npm run typecheck`, `npm run build`,
-and `npm test` (server 342 + client 92 + db guard 9) all pass; `npm audit
---omit=dev --audit-level=high` finds 0 vulnerabilities. The Docker-local
-Supabase stack tier (`SHADOW_DB_RUNNER=supabase-cli`) could not be run in this
-environment because no Docker daemon is available; the concurrency proof's
-dblink harness is written to run in both tiers.
+**908 pgTAP assertions pass** (`21_…`–`28_intake_*`). `npm run lint`,
+`npm run typecheck`, `npm run build`, and `npm test` (server 342 + client 92 +
+db guard 9) all pass; `npm audit --omit=dev --audit-level=high` finds 0
+vulnerabilities for root, client, and server. The Docker-local Supabase stack
+tier (`SHADOW_DB_RUNNER=supabase-cli`) could not be run in this environment
+because no Docker daemon is available; the PR's CI runs it as the
+`shadow-db-supabase-stack` job, and the concurrency proofs' dblink harness is
+written to run in both tiers.

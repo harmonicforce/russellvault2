@@ -30,6 +30,7 @@ select pg_temp.login('a2222222-2222-2222-2222-222222222222');
 create temp table t (k text primary key, v text);
 insert into t values ('ws', 'aaaa0000-0000-4000-8000-000000000001');
 insert into t values ('sess', (public.create_intake_session((select v from t where k='ws')::uuid, 's')->>'id'));
+select public.register_storage_location((select v from t where k='ws')::uuid, 'BIN-1', null, 'Bin 1');
 
 create function pg_temp.evt(g uuid, etype text) returns int language sql as $$
   select count(*)::int from public.intake_transition_events where group_id = g and event_type = etype; $$;
@@ -41,16 +42,18 @@ select is((select count(*)::int from public.intake_transition_events
 
 -- group_created + entry_updated + candidate_attached
 insert into t values ('g', (public.upsert_intake_group((select v from t where k='ws')::uuid,
-  (select v from t where k='sess')::uuid, null, 'graded_tcg', 'Charizard Base #4', 1, 'serialized', 1,
+  (select v from t where k='sess')::uuid, null, null, 'graded_tcg', 'Charizard Base #4', 1, 'serialized', 1,
   '{"set_name":"Base Set","card_number":"4"}'::jsonb,
   '{"grading_company":"PSA","numeric_grade":"10","product_format":"Graded slab"}'::jsonb,
-  'stated', null, 'BIN-1', false, false, false)->>'id'));
+  '{"source_kind":"personal_collection"}'::jsonb, null, 'BIN-1', false, false, false, false)->>'id'));
 select is(pg_temp.evt((select v from t where k='g')::uuid, 'group_created'), 1, 'group creation is audited');
 select public.upsert_intake_entry((select v from t where k='ws')::uuid,
-  (select v from t where k='g')::uuid, 1, 'PSA', '10', null, 'PSA-90001', null, '{}');
+  (select v from t where k='g')::uuid, (select version from public.intake_draft_groups where id=(select v from t where k='g')::uuid),
+  1, 'PSA', '10', null, 'PSA-90001', null, '{}');
 select is(pg_temp.evt((select v from t where k='g')::uuid, 'entry_updated'), 1, 'entry edits are audited');
 select public.attach_intake_candidate((select v from t where k='ws')::uuid,
-  (select v from t where k='g')::uuid, 'acacacac-0000-4000-8000-000000000001'::uuid, null, 'low', '{}');
+  (select v from t where k='g')::uuid, (select version from public.intake_draft_groups where id=(select v from t where k='g')::uuid),
+  'acacacac-0000-4000-8000-000000000001'::uuid, null, 'low', '{}');
 select is(pg_temp.evt((select v from t where k='g')::uuid, 'candidate_attached'), 1,
   'candidate attachment is audited');
 
@@ -76,8 +79,9 @@ select is(pg_temp.evt((select v from t where k='g')::uuid, 'commit_conflict'), 1
 
 -- abandon (a separate draft)
 insert into t values ('g2', (public.upsert_intake_group((select v from t where k='ws')::uuid,
-  (select v from t where k='sess')::uuid, null, 'raw_tcg', 'To Abandon', 1, 'lot_managed', 0,
-  '{}'::jsonb, '{}'::jsonb, 'stated', 'Near Mint', 'BIN-1', false, false, false)->>'id'));
+  (select v from t where k='sess')::uuid, null, null, 'raw_tcg', 'To Abandon', 1, 'lot_managed', 0,
+  '{}'::jsonb, '{}'::jsonb, '{"source_kind":"personal_collection"}'::jsonb, 'Near Mint', 'BIN-1',
+  false, false, false, false)->>'id'));
 select public.transition_intake_group((select v from t where k='ws')::uuid,
   (select v from t where k='g2')::uuid, 'abandoned', '{"reason":"duplicate scan"}'::jsonb);
 select is(pg_temp.evt((select v from t where k='g2')::uuid, 'abandon'), 1, 'abandonment is audited');

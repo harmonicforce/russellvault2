@@ -164,10 +164,13 @@ router.get(
 function groupArgs(workspaceId: string, groupId: string | null, b: Record<string, unknown>) {
   if (!isIntakeCategory(b.category)) throw new IntakeRequestError('a governed category is required');
   const trackingMode = b.trackingMode === 'serialized' ? 'serialized' : 'lot_managed';
+  // A create carries no version; every content update requires expectedVersion.
+  const expectedVersion = groupId === null ? null : requireVersion(b.expectedVersion);
   return {
     p_workspace_id: workspaceId,
     p_session_id: requireUuid(b.sessionId, 'sessionId'),
     p_group_id: groupId,
+    p_expected_version: expectedVersion,
     p_category: b.category,
     p_display_name: String(b.displayName ?? ''),
     p_quantity: requireQuantity(b.quantity),
@@ -177,12 +180,16 @@ function groupArgs(workspaceId: string, groupId: string | null, b: Record<string
       : 0,
     p_product_attrs: requireAttrs(b.productAttrs, 'productAttrs'),
     p_sku_attrs: requireAttrs(b.skuAttrs, 'skuAttrs'),
-    p_source_state: typeof b.sourceState === 'string' ? b.sourceState : 'unknown',
+    // Governed source evidence (a source_kind asserts a stated source); the
+    // server rejects an ungoverned source_kind and never lets a bare "stated"
+    // bypass source review. 'candidate' is derived from evidence links, never set here.
+    p_source_evidence: requireAttrs(b.sourceEvidence, 'sourceEvidence'),
     p_condition_state: typeof b.conditionState === 'string' ? b.conditionState : null,
     p_location_code: typeof b.locationCode === 'string' ? b.locationCode : null,
     p_owner_tagged: b.ownerTagged === true,
     p_unique_condition: b.uniqueCondition === true,
     p_requires_item_media: b.requiresItemMedia === true,
+    p_security_sensitive: b.securitySensitive === true,
   };
 }
 
@@ -221,6 +228,7 @@ router.post(
     const data = await rpc(req, 'upsert_intake_entry', {
       p_workspace_id: workspaceId,
       p_group_id: requireUuid(req.params.id, 'groupId'),
+      p_expected_version: requireVersion(b.expectedVersion),
       p_entry_index: idx,
       p_grading_company: typeof b.gradingCompany === 'string' ? b.gradingCompany : null,
       p_numeric_grade: typeof b.numericGrade === 'string' ? b.numericGrade : null,
@@ -286,6 +294,7 @@ router.post(
     const data = await rpc(req, 'attach_intake_candidate', {
       p_workspace_id: workspaceId,
       p_group_id: requireUuid(req.params.id, 'groupId'),
+      p_expected_version: requireVersion(b.expectedVersion),
       p_acquisition_line_item_id: requireUuid(b.acquisitionLineItemId, 'acquisitionLineItemId'),
       p_entry_id: optionalUuid(b.entryId, 'entryId'),
       p_confidence: typeof b.confidence === 'string' ? b.confidence : 'low',
@@ -303,6 +312,7 @@ router.delete(
     const data = await rpc(req, 'remove_intake_candidate', {
       p_workspace_id: workspaceId,
       p_candidate_link_id: requireUuid(req.params.id, 'candidateLinkId'),
+      p_expected_version: requireVersion(body(req).expectedVersion),
     });
     res.json({ staging: true, authoritative: false, removed: data });
   })

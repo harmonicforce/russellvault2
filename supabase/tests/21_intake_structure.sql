@@ -104,5 +104,19 @@ select is((select count(*) from public.intake_field_registry
            where is_identity_driving and maps_to is null), 0::bigint,
   'every identity-driving field maps into a typed Phase 5 column');
 
+-- Acceptance-patch structure: governed attr_key, source evidence, security flag,
+-- and governed non-text data types all exist.
+select has_column('public'::name, 'intake_field_registry'::name, 'attr_key'::name,
+  'the registry carries a governed attr_key');
+select has_column('public'::name, 'intake_draft_groups'::name, 'source_evidence'::name,
+  'a draft group carries governed source_evidence');
+select has_column('public'::name, 'intake_draft_groups'::name, 'security_sensitive'::name,
+  'a draft group carries a security_sensitive policy flag');
+select ok((select count(*) from public.intake_field_registry
+           where data_type in ('integer', 'boolean')) >= 2,
+  'governed integer/boolean fields exist so the rule contract is truthful');
+select ok((select count(*) from public.intake_reference_options where list_key = 'source_kind') >= 4,
+  'governed stated-source kinds are seeded');
+
 select * from finish();
 rollback;
