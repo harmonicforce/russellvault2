@@ -1,7 +1,7 @@
 import { NavLink, Route, Routes } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingBag, Link2, Tag, DollarSign, ShieldCheck, Vault,
-  FileSearch, Layers, Boxes,
+  FileSearch, Layers, Boxes, PackagePlus,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
@@ -15,6 +15,7 @@ import AuthShell from './components/AuthShell';
 import ImportReview from './pages/ImportReview';
 import AcquisitionReview from './pages/AcquisitionReview';
 import InventoryIdentity from './pages/InventoryIdentity';
+import QuickAdd from './pages/QuickAdd';
 import { isProvenanceUiEnabled } from './lib/provenanceConfig';
 
 const NAV = [
@@ -36,6 +37,12 @@ const PROVENANCE_ENABLED = isProvenanceUiEnabled(
 );
 
 const PROVENANCE_NAV = [
+  {
+    to: '/quick-add',
+    label: 'Quick Add',
+    icon: PackagePlus,
+    end: false,
+  },
   {
     to: '/import-review',
     label: 'Import Review',
@@ -103,6 +110,9 @@ export default function App() {
             <Route path="/listings" element={<Listings />} />
             <Route path="/sales" element={<Sales />} />
             <Route path="/checks" element={<Checks />} />
+            {PROVENANCE_ENABLED && (
+              <Route path="/quick-add" element={<QuickAdd />} />
+            )}
             {PROVENANCE_ENABLED && (
               <Route path="/import-review" element={<ImportReview />} />
             )}

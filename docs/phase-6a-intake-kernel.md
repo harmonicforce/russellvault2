@@ -1,8 +1,38 @@
-# Phase 6A — Intake Kernel and Quick Add (backend portion)
+# Phase 6A — Intake Kernel and Quick Add
 
 **Status: draft / unmerged. Backend intake kernel implemented. Operator Quick
-Add UI NOT implemented — the design (wireflow) gate is unresolved. Phase 6A is
-NOT fully accepted. UB-01 owner timing gate is pending.**
+Add UI implemented (graded-slab path) behind the shadow feature flag against the
+owner-approved wireflow. Phase 6A is NOT fully accepted: UB-01 owner timing gate
+is PENDING OWNER EXECUTION.**
+
+## Quick Add UI (graded-slab path)
+
+Implemented against the owner-approved design handoff:
+
+- **Figma:** https://www.figma.com/design/XAp7JmzNebQADoCxmPGiv2 · file key
+  `XAp7JmzNebQADoCxmPGiv2` · approved handoff frame `2:4` · implementation
+  contract `4:223`.
+- **Approved by Kyle Miller on 2026-07-26.**
+- **Desktop frames:** D1 New Quick Add `3:2`, D2 Ready to Commit `3:67`,
+  D3 Duplicate Blocker `3:135`, D4 Commit Receipt `3:203`,
+  D5 Minimal Item Detail `3:271`.
+- **iPad frames:** I1 `4:2`, I2 `4:55`, I3 `4:111`, I4 `4:167`.
+
+The UI adds one shadow-flag-gated route `/quick-add` (`client/src/pages/QuickAdd.tsx`)
+that starts/resumes an intake session, creates one graded-slab draft, collects
+factual slab data, evaluates **server-authoritative** readiness, commits
+atomically through the accepted kernel, recovers from blockers / stale versions /
+unknown network results / duplicate certificates, and renders the immutable
+receipt and the approved minimal Item Detail (marked **SHADOW /
+NON-AUTHORITATIVE**). All rule/blocker/transition/concurrency/identity/source/
+serialization/location/duplicate/idempotency/receipt/next-action authority stays
+on the server; the client holds **no** rule engine. Client logic lives in pure,
+unit-tested modules (`client/src/lib/quickAdd.ts`, `client/src/lib/intakeApi.ts`)
+so the 17 acceptance behaviors are proven without a DOM. Workflow-fixed values
+(category `graded_tcg`, quantity 1, serialized, one child) are configuration, not
+guessed facts; unknown factual values stay visibly blank. Quick Add never creates
+a storage location. UB-01 timing test: see
+`docs/runbooks/ub-01-quick-add-timing.md` — **PENDING OWNER EXECUTION**.
 
 ## Authority (read this first)
 
