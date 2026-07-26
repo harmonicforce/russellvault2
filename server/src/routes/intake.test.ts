@@ -39,6 +39,24 @@ function makeFakeClient(token: string) {
     if (table === 'intake_field_rules') {
       return [{ category: 'graded_tcg', field_key: 'tcg_grading_company', is_commit_blocker: true }];
     }
+    if (table === 'intake_draft_groups') {
+      // RLS-like scoping: the seeded group is visible only for its own id
+      // (snapshot route) or its session (list route). An unknown id resolves to
+      // no row, so the snapshot route fails closed with 404.
+      const visible = filters.id === undefined ? filters.session_id === SID : filters.id === GID;
+      if (!visible) return [];
+      return [{
+        id: GID, public_id: 'RV-IG-TEST01', session_id: SID, state: 'draft', version: 1,
+        category: 'graded_tcg', business_vertical: 'trading_cards', display_name: 'X',
+        product_attrs: {}, sku_attrs: {}, quantity: 1, tracking_mode: 'serialized',
+        serialized_child_count: 1, source_state: 'unknown', source_evidence: {},
+        location_code: null, next_action: null, applied_rule_version: null, committed_at: null,
+        created_at: '2026-07-26T00:00:00Z', updated_at: '2026-07-26T00:00:00Z',
+      }];
+    }
+    if (table === 'intake_entries' || table === 'intake_candidate_links') {
+      return [];
+    }
     return [];
   }
   return {
@@ -59,6 +77,7 @@ function makeFakeClient(token: string) {
         },
         order: async () => result(),
         limit: async () => result(),
+        maybeSingle: async () => ({ data: (rowsFor(table, filters)[0] ?? null), error: null }),
         then: (resolve: (v: unknown) => unknown) => Promise.resolve(resolve(result())),
       };
       return q;
@@ -166,6 +185,9 @@ const MEMBER_ROUTES: ReadonlyArray<[string, string, unknown]> = [
   ['GET', `/api/intake/groups/${GID}/preview?workspaceId=${WS_A}`, undefined],
   ['GET', `/api/intake/groups/${GID}/receipt?workspaceId=${WS_A}`, undefined],
   ['GET', `/api/intake/groups/${GID}/next-action?workspaceId=${WS_A}`, undefined],
+  // Read-only recovery contract (resume / stale reload).
+  ['GET', `/api/intake/sessions/${SID}/groups?workspaceId=${WS_A}`, undefined],
+  ['GET', `/api/intake/groups/${GID}/snapshot?workspaceId=${WS_A}`, undefined],
 ];
 
 const GROUP_BODY = {
@@ -263,6 +285,33 @@ describe('success for the appropriate member', () => {
     expect(json.result.outcome).toBe('committed');
     expect(json.result.lot_public_id).toMatch(/^RV-I-\d{10}$/);
     expect(json.result.next_action).toBe('SOURCE_REVIEW_NEEDED');
+  });
+
+  it('the read-only recovery routes return the workspace-scoped list and snapshot', async () => {
+    const list = await call('GET', `/api/intake/sessions/${SID}/groups?workspaceId=${WS_A}`, { token: 'viewer-token' });
+    expect(list.status).toBe(200);
+    const listJson = await list.json();
+    expect(listJson.authoritative).toBe(false);
+    expect(Array.isArray(listJson.groups)).toBe(true);
+    expect(listJson.groups[0].public_id).toBe('RV-IG-TEST01');
+
+    const snap = await call('GET', `/api/intake/groups/${GID}/snapshot?workspaceId=${WS_A}`, { token: 'viewer-token' });
+    expect(snap.status).toBe(200);
+    const snapJson = await snap.json();
+    expect(snapJson.authoritative).toBe(false);
+    expect(snapJson.snapshot.group.public_id).toBe('RV-IG-TEST01');
+    expect(snapJson.snapshot.editable).toBe(true); // draft is non-terminal
+    expect(Array.isArray(snapJson.snapshot.entries)).toBe(true);
+    expect(Array.isArray(snapJson.snapshot.candidates)).toBe(true);
+    // Live evaluation present while editable; receipt only once committed.
+    expect(snapJson.snapshot.evaluation).not.toBeNull();
+    expect(snapJson.snapshot.receipt).toBeNull();
+  });
+
+  it('a snapshot for an unknown/cross-workspace group fails closed with 404', async () => {
+    const missing = '99999999-9999-9999-9999-999999999999';
+    const res = await call('GET', `/api/intake/groups/${missing}/snapshot?workspaceId=${WS_A}`, { token: 'viewer-token' });
+    expect(res.status).toBe(404);
   });
 
   it('attaching candidate evidence reports zero financial effect', async () => {

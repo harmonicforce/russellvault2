@@ -34,8 +34,13 @@ records only; it deploys nothing and changes no production data.
 ## Local run steps
 
 1. `npm run db:reset` (Supabase-local tier), then start the app: `npm run dev`.
-2. Open **Quick Add** in the sidebar. Enter the workspace id and
-   **Start intake session** once. Keep the same session for all 10 slabs.
+2. Open **Quick Add** in the sidebar. Enter the workspace id and click
+   **Start new session** once. Keep the same session for all 10 slabs. (If the
+   app is reopened mid-run, enter the same workspace id plus the existing session
+   id and click **Resume existing session** — the latest editable draft is
+   rehydrated from the server with focus on its first incomplete field; committed
+   and abandoned slabs come back read-only, and you can **Add another slab** to
+   continue.)
 3. For each slab, do one practice run first, then time the 10 real slabs:
    - Note the **start timestamp** the instant you begin entering the slab.
    - Scan or type the **certificate number** (it has initial focus).

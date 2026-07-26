@@ -98,6 +98,16 @@ export interface IntakeCommitBlocked {
   readonly rule_version: string;
   readonly group_id: string;
 }
+/**
+ * A sanitized reference to the ONE pre-existing item a duplicate-identity commit
+ * collided with. Present only when the server actually resolved the prior item;
+ * the client never fabricates a link when this is absent.
+ */
+export interface IntakeExistingItemRef {
+  readonly item_public_id: string;
+  readonly lot_public_id?: string;
+  readonly scan_sku?: string;
+}
 export interface IntakeCommitFailed {
   readonly outcome: 'failed';
   readonly failure_class:
@@ -108,6 +118,8 @@ export interface IntakeCommitFailed {
   readonly sqlstate: string;
   readonly message: string;
   readonly group_id: string;
+  // Only on a duplicate-identity failure, and only when the server found it.
+  readonly existing_item?: IntakeExistingItemRef;
 }
 export type IntakeCommitResult =
   | IntakeCommitReceipt
@@ -131,6 +143,86 @@ export interface IntakePreview {
   readonly ready: boolean;
   readonly blockers: readonly IntakeBlocker[];
   readonly rule_version: string;
+}
+
+// ---- Read-only recovery snapshot (resume / stale reload) -------------------
+export type IntakeGroupState = 'draft' | 'ready_to_commit' | 'committed' | 'abandoned';
+
+/** A group-list row: enough to pick a resume target and show its posture. */
+export interface IntakeGroupSummary {
+  readonly id: string;
+  readonly public_id: string;
+  readonly session_id: string;
+  readonly state: IntakeGroupState;
+  readonly version: number;
+  readonly category: string;
+  readonly business_vertical: string;
+  readonly display_name: string;
+  readonly quantity: number;
+  readonly tracking_mode: TrackingMode;
+  readonly serialized_child_count: number;
+  readonly source_state: IntakeSourceState;
+  readonly location_code: string | null;
+  readonly next_action: IntakeNextAction | null;
+  readonly applied_rule_version: string | null;
+  readonly committed_at: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+/** The complete stored group as returned by the read-only snapshot. */
+export interface IntakeGroupFull {
+  readonly id: string;
+  readonly public_id: string;
+  readonly session_id: string;
+  readonly state: IntakeGroupState;
+  readonly version: number;
+  readonly category: string;
+  readonly business_vertical: string;
+  readonly display_name: string;
+  readonly product_attrs: Record<string, unknown>;
+  readonly sku_attrs: Record<string, unknown>;
+  readonly quantity: number;
+  readonly tracking_mode: TrackingMode;
+  readonly serialized_child_count: number;
+  readonly source_state: IntakeSourceState;
+  readonly source_evidence: Record<string, unknown>;
+  readonly condition_state: string | null;
+  readonly location_code: string | null;
+  readonly owner_tagged: boolean;
+  readonly unique_condition: boolean;
+  readonly requires_item_media: boolean;
+  readonly security_sensitive: boolean;
+  readonly applied_rule_version: string | null;
+  readonly next_action: IntakeNextAction | null;
+  readonly committed_product_id: string | null;
+  readonly committed_sku_id: string | null;
+  readonly committed_lot_id: string | null;
+  readonly committed_at: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+export interface IntakeEntrySnapshot {
+  readonly id: string;
+  readonly public_id: string;
+  readonly entry_index: number;
+  readonly grading_company: string | null;
+  readonly numeric_grade: string | null;
+  readonly grade_designation: string | null;
+  readonly certificate_number: string | null;
+  readonly serial_number: string | null;
+  readonly entry_attrs: Record<string, unknown>;
+  readonly committed_item_id: string | null;
+}
+export interface IntakeGroupSnapshot {
+  readonly group: IntakeGroupFull;
+  readonly entries: readonly IntakeEntrySnapshot[];
+  readonly candidates: readonly Record<string, unknown>[];
+  // Live blockers + rule version while editable; null once terminal.
+  readonly evaluation: IntakeRuleEvaluation | null;
+  // Immutable receipt once committed; null otherwise.
+  readonly receipt: IntakeCommitReceipt | null;
+  readonly editable: boolean;
 }
 
 /** The governed graded-slab draft payload the server maps into typed columns. */
@@ -162,6 +254,8 @@ export type EntryMutationResult = EntryRef | IntakeCommitConflict;
 export interface IntakeTransport {
   createSession(workspaceId: string, label?: string | null): Promise<IntakeSession>;
   resumeSession(workspaceId: string, sessionId: string): Promise<IntakeSession>;
+  listGroups(workspaceId: string, sessionId: string): Promise<readonly IntakeGroupSummary[]>;
+  getGroupSnapshot(workspaceId: string, groupId: string): Promise<IntakeGroupSnapshot>;
   createGradedGroup(workspaceId: string, sessionId: string, payload: GradedGroupPayload): Promise<IntakeGroupRef>;
   updateGroup(
     workspaceId: string, groupId: string, expectedVersion: number, sessionId: string,
@@ -245,6 +339,18 @@ export function createIntakeTransport(
         'GET', `/sessions/${encodeURIComponent(sessionId)}?${ws(workspaceId)}`,
       );
       return body.session;
+    },
+    async listGroups(workspaceId, sessionId) {
+      const body = await request<{ groups: readonly IntakeGroupSummary[] }>(
+        'GET', `/sessions/${encodeURIComponent(sessionId)}/groups?${ws(workspaceId)}`,
+      );
+      return body.groups;
+    },
+    async getGroupSnapshot(workspaceId, groupId) {
+      const body = await request<{ snapshot: IntakeGroupSnapshot }>(
+        'GET', `/groups/${encodeURIComponent(groupId)}/snapshot?${ws(workspaceId)}`,
+      );
+      return body.snapshot;
     },
     async createGradedGroup(workspaceId, sessionId, payload) {
       const body = await request<{ group: IntakeGroupRef }>(

@@ -6,9 +6,12 @@ import type {
   IntakeCommitConflict,
   IntakeCommitFailed,
   IntakeCommitReceipt,
+  IntakeGroupSnapshot,
+  IntakeGroupSummary,
 } from './intakeApi';
 import {
   CONTAINER_CLASS,
+  EXISTING_ITEM_SEARCH_HINT,
   FORBIDDEN_DETAIL_FIELDS,
   GRADED_FIELDS,
   INITIAL_FOCUS_FIELD,
@@ -18,16 +21,21 @@ import {
   commitEnabled,
   commitRequest,
   emptyGradedValues,
+  existingItemRoute,
   firstBlockerField,
+  firstIncompleteRequiredField,
   hasInventedFactualDefault,
   initialQuickAddState,
   isReadOnly,
   itemDetailView,
   layoutForWidth,
   liveRegionMessage,
+  nextField,
   quickAddReducer,
   receiptView,
   resolveKeyboardIntent,
+  selectResumeGroup,
+  snapshotToValues,
   visibleActions,
   type GradedValues,
   type QuickAddState,
@@ -154,16 +162,27 @@ it('9. an idempotent replay renders the committed receipt', () => {
   expect(receiptView(s.receipt!).idempotencyStatus).toBe('Idempotent replay');
 });
 
-// 10. Abandoned sessions/groups are read-only.
-it('10. an abandoned draft is read-only with no edit/commit actions', () => {
+// 10. Abandoned sessions/groups are read-only with only a Return to sessions exit.
+it('10. an abandoned draft is read-only with only a Return to sessions exit', () => {
   let s = quickAddReducer(initialQuickAddState('sess-1'), { type: 'ABANDONED' });
   expect(s.phase).toBe('abandoned');
   expect(isReadOnly(s)).toBe(true);
-  expect(visibleActions(s)).toHaveLength(0);
+  // Exactly one primary, read-only exit action; NO edit/commit/readiness controls.
+  const actions = visibleActions(s);
+  expect(actions).toHaveLength(1);
+  expect(actions[0]).toMatchObject({ id: 'return-sessions', primary: true });
+  for (const forbidden of ['check', 'commit', 'edit-cert', 'reload', 'retry', 'abandon']) {
+    expect(actions.some((a) => a.id === forbidden)).toBe(false);
+  }
   // a field change is ignored (no mutation).
   const before = s.values;
   s = quickAddReducer(s, { type: 'FIELD_CHANGED', field: 'numeric_grade', value: '10' });
   expect(s.values).toBe(before);
+  // Return to sessions drops back to the picker (no session, no group).
+  s = quickAddReducer(s, { type: 'RETURN_TO_SESSIONS' });
+  expect(s.sessionId).toBeNull();
+  expect(s.groupId).toBeNull();
+  expect(s.phase).toBe('new');
 });
 
 // 11. Add another slab preserves the session and creates a new draft.
@@ -234,4 +253,137 @@ it('16b. blank factual fields are omitted from the payload (unknown stays blank)
   expect(payload.sourceEvidence).toEqual({});
   const entry = buildEntryPayload(emptyGradedValues());
   expect(entry).toEqual({ gradingCompany: null, numericGrade: null, gradeDesignation: null, certificateNumber: null });
+});
+
+// ---- Read-only recovery contract (resume / stale reload / duplicate ref) -----
+
+function summary(over: Partial<IntakeGroupSummary> = {}): IntakeGroupSummary {
+  return {
+    id: 'g', public_id: 'RV-IG-1', session_id: 'sess-1', state: 'draft', version: 1,
+    category: 'graded_tcg', business_vertical: 'trading_cards', display_name: 'Charizard',
+    quantity: 1, tracking_mode: 'serialized', serialized_child_count: 1, source_state: 'unknown',
+    location_code: null, next_action: null, applied_rule_version: null, committed_at: null,
+    created_at: '2026-07-26T00:00:00Z', updated_at: '2026-07-26T00:00:00Z', ...over,
+  };
+}
+
+function snapshot(over: Partial<IntakeGroupSnapshot['group']> = {}, extra: Partial<IntakeGroupSnapshot> = {}): IntakeGroupSnapshot {
+  return {
+    group: {
+      id: 'g-9', public_id: 'RV-IG-9', session_id: 'sess-9', state: 'draft', version: 7,
+      category: 'graded_tcg', business_vertical: 'trading_cards', display_name: 'Blastoise',
+      product_attrs: { featured_subject: 'Blastoise', set_name: 'Base Set', card_number: '2' },
+      sku_attrs: { grading_company: 'PSA', numeric_grade: '10', grade_designation: 'GEM MINT', product_format: 'Graded slab' },
+      quantity: 1, tracking_mode: 'serialized', serialized_child_count: 1, source_state: 'stated',
+      source_evidence: { source_kind: 'retail_purchase' }, condition_state: null, location_code: 'BIN-2',
+      owner_tagged: false, unique_condition: false, requires_item_media: false, security_sensitive: false,
+      applied_rule_version: null, next_action: null, committed_product_id: null, committed_sku_id: null,
+      committed_lot_id: null, committed_at: null, created_at: '2026-07-26T00:00:00Z', updated_at: '2026-07-26T00:00:00Z',
+      ...over,
+    },
+    entries: [{
+      id: 'e-9', public_id: 'RV-IE-9', entry_index: 1, grading_company: 'PSA', numeric_grade: '10',
+      grade_designation: 'GEM MINT', certificate_number: 'PSA-88002', serial_number: null, entry_attrs: {}, committed_item_id: null,
+    }],
+    candidates: [], evaluation: { ready: true, blockers: [], rule_version: 'INTAKE_RULES_1' }, receipt: null, editable: true,
+    ...extra,
+  };
+}
+
+// snapshotToValues projects EXACT server values, never inferring from display strings.
+it('17. snapshotToValues hydrates exact server values (entry + governed attrs)', () => {
+  const v = snapshotToValues(snapshot());
+  expect(v).toEqual({
+    certificate_number: 'PSA-88002', grading_company: 'PSA', numeric_grade: '10',
+    grade_designation: 'GEM MINT', card_name: 'Blastoise', set_name: 'Base Set',
+    card_number: '2', source_kind: 'retail_purchase', location_code: 'BIN-2',
+  });
+});
+
+// Resume selection order: ready_to_commit > draft > committed > abandoned > none.
+it('18. selectResumeGroup follows the deterministic priority order', () => {
+  const draftOld = summary({ id: 'd1', state: 'draft', updated_at: '2026-07-01T00:00:00Z' });
+  const draftNew = summary({ id: 'd2', state: 'draft', updated_at: '2026-07-20T00:00:00Z' });
+  const ready = summary({ id: 'r1', state: 'ready_to_commit', updated_at: '2026-07-10T00:00:00Z' });
+  const committed = summary({ id: 'c1', state: 'committed', updated_at: '2026-07-25T00:00:00Z' });
+  const abandoned = summary({ id: 'a1', state: 'abandoned', updated_at: '2026-07-26T00:00:00Z' });
+  // ready_to_commit wins even when a draft/committed/abandoned is newer.
+  expect(selectResumeGroup([draftNew, ready, committed, abandoned])?.id).toBe('r1');
+  // most-recent draft when no ready group.
+  expect(selectResumeGroup([draftOld, draftNew, committed])?.id).toBe('d2');
+  // committed (read-only) when only terminal groups, preferring committed.
+  expect(selectResumeGroup([committed, abandoned])?.id).toBe('c1');
+  // abandoned only when nothing else.
+  expect(selectResumeGroup([abandoned])?.id).toBe('a1');
+  // nothing → null (caller starts a fresh draft in the resumed session).
+  expect(selectResumeGroup([])).toBeNull();
+});
+
+// HYDRATE adopts server truth; committed/abandoned resume read-only.
+it('19. HYDRATE adopts the snapshot; terminal groups resume read-only', () => {
+  let s = quickAddReducer(initialQuickAddState(null), { type: 'HYDRATE', snapshot: snapshot() });
+  expect(s.phase).toBe('editing');
+  expect(s.sessionId).toBe('sess-9');
+  expect(s.groupId).toBe('g-9');
+  expect(s.version).toBe(7);
+  expect(s.values.certificate_number).toBe('PSA-88002');
+  // committed hydrates read-only with the receipt.
+  const committed = quickAddReducer(initialQuickAddState(null), {
+    type: 'HYDRATE', snapshot: snapshot({ state: 'committed' }, { editable: false, evaluation: null, receipt: RECEIPT }),
+  });
+  expect(committed.phase).toBe('committed');
+  expect(isReadOnly(committed)).toBe(true);
+  // abandoned hydrates read-only.
+  s = quickAddReducer(initialQuickAddState(null), {
+    type: 'HYDRATE', snapshot: snapshot({ state: 'abandoned' }, { editable: false, evaluation: null }),
+  });
+  expect(s.phase).toBe('abandoned');
+  expect(isReadOnly(s)).toBe(true);
+});
+
+// Stale reload replaces ALL local values + version wholesale, with a discard warning.
+it('20. REPLACED_FROM_SERVER replaces local values + version and warns of discard', () => {
+  let s: QuickAddState = {
+    ...initialQuickAddState('sess-9'), phase: 'stale', values: filled({ numeric_grade: '1' }),
+    version: 2, conflict: { expected: 2, actual: 7 }, groupId: 'g-9',
+  };
+  s = quickAddReducer(s, { type: 'REPLACED_FROM_SERVER', snapshot: snapshot(), hadLocalEdits: true });
+  expect(s.values.numeric_grade).toBe('10'); // server value, not the stale local '1'
+  expect(s.version).toBe(7); // server version replaces stale 2
+  expect(s.conflict).toBeNull(); // stale conflict cleared
+  expect(s.sessionId).toBe('sess-9'); // session identity preserved
+  expect(s.warning).toMatch(/discarded|replaced/i);
+});
+
+// Duplicate reference surfaces ONLY when the server resolved a real item.
+it('21. duplicate exposes Review existing item only with a real server reference', () => {
+  const base: QuickAddState = { ...initialQuickAddState('sess-1'), phase: 'ready', values: filled(), groupId: 'g-1', version: 3, contentHash: 'h' };
+  // Without a reference: only Edit certificate (primary).
+  const noRef: IntakeCommitFailed = { outcome: 'failed', failure_class: 'duplicate_identity', sqlstate: '23505', message: 'dup', group_id: 'g-1' };
+  const sNo = quickAddReducer(base, { type: 'COMMIT_RESULT', result: noRef });
+  expect(sNo.existingItem).toBeNull();
+  expect(visibleActions(sNo).map((a) => a.id)).toEqual(['edit-cert']);
+  // With a reference: Review existing item (primary) + Edit certificate.
+  const withRef: IntakeCommitFailed = { ...noRef, existing_item: { item_public_id: 'RV-ITEM-5', lot_public_id: 'RV-I-0000000005', scan_sku: 'RV-ABC1234' } };
+  const sYes = quickAddReducer(base, { type: 'COMMIT_RESULT', result: withRef });
+  expect(sYes.existingItem?.item_public_id).toBe('RV-ITEM-5');
+  const ids = visibleActions(sYes).map((a) => a.id);
+  expect(ids).toEqual(['review-item', 'edit-cert']);
+  expect(visibleActions(sYes)[0].primary).toBe(true);
+  // Phase 6A has no item-detail route: never fabricate a link.
+  expect(existingItemRoute(withRef.existing_item!)).toBeNull();
+  expect(EXISTING_ITEM_SEARCH_HINT).toMatch(/Inventory search/i);
+});
+
+// firstIncompleteRequiredField + nextField drive resume focus and scanner advance.
+it('22. focus helpers: first incomplete required field and next-in-order advance', () => {
+  // all required present → null (optional grade_designation/location ignored).
+  expect(firstIncompleteRequiredField(filled())).toBeNull();
+  // a missing required field is returned in visible order.
+  expect(firstIncompleteRequiredField(filled({ numeric_grade: '' }))).toBe('numeric_grade');
+  // scanner Enter advances certificate → grading company → numeric grade, in order.
+  expect(nextField('certificate_number')).toBe('grading_company');
+  expect(nextField('grading_company')).toBe('numeric_grade');
+  // last field has no next.
+  expect(nextField('location_code')).toBeNull();
 });

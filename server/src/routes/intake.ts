@@ -130,6 +130,127 @@ router.post(
   })
 );
 
+// ---- Read-only recovery contract -----------------------------------------
+// These GET routes let a resumed session recover exactly what the server holds:
+// list a session's groups, and fetch one complete group snapshot. They are
+// authenticated, workspace-scoped, RLS-governed (member read), caller-token
+// based, and strictly read-only — no mutation, no query platform, no Phase 6B.
+// Terminal committed/abandoned groups are returned as-is (read-only truth).
+
+// Summary columns for the group list (enough to pick a resume target and show
+// each group's terminal/editable posture without a full snapshot per row).
+const GROUP_SUMMARY_COLUMNS =
+  'id, public_id, session_id, state, version, category, business_vertical, ' +
+  'display_name, quantity, tracking_mode, serialized_child_count, source_state, ' +
+  'location_code, next_action, applied_rule_version, committed_at, created_at, updated_at';
+
+router.get(
+  '/sessions/:id/groups',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const sessionId = requireUuid(req.params.id, 'sessionId');
+    const { data, error } = await client
+      .from('intake_draft_groups')
+      .select(GROUP_SUMMARY_COLUMNS)
+      .eq('workspace_id', workspaceId)
+      .eq('session_id', sessionId)
+      .order('updated_at', { ascending: false });
+    if (error) throw new SourceReadError(error.message, 400);
+    res.json({ staging: true, authoritative: false, groups: data ?? [] });
+  })
+);
+
+// A complete, read-only snapshot of one group: the exact stored draft values and
+// current version, its entries and candidate evidence, the live blocker/rule
+// evaluation while it is still editable (draft/ready_to_commit), and the
+// immutable commit receipt once it is committed. A resumed client hydrates from
+// this and never invents a value the server did not return.
+router.get(
+  '/groups/:id/snapshot',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const groupId = requireUuid(req.params.id, 'groupId');
+
+    const { data: group, error: gErr } = await client
+      .from('intake_draft_groups')
+      .select(
+        'id, public_id, session_id, state, version, category, business_vertical, ' +
+          'display_name, product_attrs, sku_attrs, quantity, tracking_mode, ' +
+          'serialized_child_count, source_state, source_evidence, condition_state, ' +
+          'location_code, owner_tagged, unique_condition, requires_item_media, ' +
+          'security_sensitive, applied_rule_version, next_action, committed_product_id, ' +
+          'committed_sku_id, committed_lot_id, committed_at, created_at, updated_at'
+      )
+      .eq('workspace_id', workspaceId)
+      .eq('id', groupId)
+      .maybeSingle();
+    if (gErr) throw new SourceReadError(gErr.message, 400);
+    if (!group) {
+      res.status(404).json({ error: 'intake group not found' });
+      return;
+    }
+
+    const { data: entries, error: eErr } = await client
+      .from('intake_entries')
+      .select(
+        'id, public_id, entry_index, grading_company, numeric_grade, grade_designation, ' +
+          'certificate_number, serial_number, entry_attrs, committed_item_id'
+      )
+      .eq('workspace_id', workspaceId)
+      .eq('group_id', groupId)
+      .order('entry_index', { ascending: true });
+    if (eErr) throw new SourceReadError(eErr.message, 400);
+
+    const { data: candidates, error: cErr } = await client
+      .from('intake_candidate_links')
+      .select(
+        'id, entry_id, acquisition_line_item_id, evidence, confidence, source_state, ' +
+          'review_state, created_at'
+      )
+      .eq('workspace_id', workspaceId)
+      .eq('group_id', groupId)
+      .order('created_at', { ascending: true });
+    if (cErr) throw new SourceReadError(cErr.message, 400);
+
+    const state = (group as { state?: string }).state;
+    const terminal = state === 'committed' || state === 'abandoned';
+
+    // Live blockers + rule version only while the group is still editable; a
+    // terminal group is read-only and carries no fresh evaluation.
+    let evaluation: unknown = null;
+    if (!terminal) {
+      evaluation = await rpc(req, 'evaluate_intake_field_rules', {
+        p_workspace_id: workspaceId,
+        p_group_id: groupId,
+      });
+    }
+
+    // The immutable receipt is the committed truth; only present once committed.
+    let receipt: unknown = null;
+    if (state === 'committed') {
+      receipt = await rpc(req, 'get_intake_commit_receipt', {
+        p_workspace_id: workspaceId,
+        p_group_id: groupId,
+      });
+    }
+
+    res.json({
+      staging: true,
+      authoritative: false,
+      snapshot: {
+        group,
+        entries: entries ?? [],
+        candidates: candidates ?? [],
+        evaluation,
+        receipt,
+        editable: !terminal,
+      },
+    });
+  })
+);
+
 // ---- Governed config (read) ----------------------------------------------
 router.get(
   '/field-registry',

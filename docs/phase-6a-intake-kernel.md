@@ -256,6 +256,79 @@ attach/remove candidate evidence; preview outcomes; commit with an idempotency
 key; retrieve receipt; retrieve next action. Reads allow any member; every
 mutation requires owner/operator; every query and mutation fails closed.
 
+## Read-only recovery contract (resume / stale reload / duplicate)
+
+A narrow, additive, **read-only** contract lets a resumed session recover exactly
+what the server holds — no query platform, no Phase 6B. It is authenticated,
+workspace-scoped, RLS-governed (member read), caller-token based, non-authoritative,
+and dark by default like the rest of the surface.
+
+- `GET /api/intake/sessions/:id/groups` — the session's groups (draft, ready,
+  committed, abandoned) as summary rows only: `id, public_id, session_id, state,
+  version, category, business_vertical, display_name, quantity, tracking_mode,
+  serialized_child_count, source_state, location_code, next_action,
+  applied_rule_version, committed_at, created_at, updated_at`. Enough to pick a
+  resume target and show each group's posture; nothing more.
+- `GET /api/intake/groups/:id/snapshot` — one complete group snapshot for
+  hydration: `{ group, entries, candidates, evaluation, receipt, editable }`. The
+  `group` carries the exact stored draft (id/public id, session id, state, current
+  `version`, category, display name, product/SKU attrs, source state + evidence,
+  location code, condition, workflow flags, applied rule version, next action,
+  committed identity refs). `entries` carry per-unit entry data (grading company,
+  numeric grade, grade designation, certificate, serial, entry attrs, committed
+  item id). `evaluation` holds live blockers + rule version **only while editable**
+  (draft / ready_to_commit); `receipt` holds the immutable commit receipt **only
+  once committed**; `editable` is false for terminal groups.
+
+Both routes require authenticated membership, take the workspace only from the
+verified caller context (never from an untrusted URL/body value), fail closed
+(404) on missing/unknown/cross-workspace ids, never mutate, never touch legacy
+SQLite, and use no service-role key. Only governed draft fields are exposed — no
+raw exception dumps, secrets, SQL, or internal blobs.
+
+**Snapshot → field mapping (exact server values; no inference from display
+strings):** `certificate_number` from the entry; `grading_company` /
+`numeric_grade` / `grade_designation` from the canonical governed SKU value,
+falling back to the entry; `card_name` from the display name / featured subject;
+`set_name` / `card_number` from governed product attrs; `source_kind` from
+governed source evidence; `location_code` from the group. When entry and SKU
+identity disagree, the server blocker (surfaced from `evaluation`) is rendered —
+the client never silently reconciles.
+
+**Resume selection order** (deterministic, server truth only): (1) most recently
+updated `ready_to_commit`, (2) most recently updated `draft`, (3) most recently
+`committed` (read-only), (4) most recently `abandoned` (read-only), (5) nothing →
+begin a fresh draft in the resumed **open** session. Resuming never creates a
+group by itself. A resumed session that is itself abandoned is shown terminal and
+read-only with a single **Return to sessions** exit; no groups are created and no
+mutation controls appear.
+
+**Stale reload (`Reload latest`).** A deliberate, confirmed action: it announces
+that unsaved local edits will be discarded, then fetches the complete latest
+snapshot and replaces **all** factual field values, the `version`, blockers,
+state, and receipt in one transition (never a field-by-field merge), clears the
+stale conflict, preserves workspace/session identity, and moves focus to the first
+incomplete or blocked field. A clear warning states that local edits were
+replaced.
+
+**Scanner / keyboard behavior.** Certificate number holds initial focus. Scanner
+`Enter` validates the current field's shape locally and advances to the next
+visible field in logical order (certificate → grading company → numeric grade →
+…) — `Enter` never calls server readiness per field. `Ctrl`/`Cmd`+`Enter` is the
+only keyboard commit shortcut and still cannot bypass server readiness (it moves
+focus to the blocker summary when the server has not reported ready). `Escape`
+never abandons.
+
+**Duplicate recovery.** On a duplicate-identity commit the kernel resolves the one
+pre-existing item the draft collided with (certificate uniqueness is scoped per
+grading company) and returns a sanitized `existing_item` reference — public item
+id, lot public id, and scan SKU only, never an internal UUID — and only when a
+real match is found (never fabricated). The UI shows those identifiers plus a
+primary **Review existing item** action (and always **Edit certificate**). Because
+Phase 6A has no item-detail route, Review existing item does not fabricate a link;
+it surfaces the guidance *“Existing item found. Use Inventory search with the
+displayed public identifier.”*
+
 ## Feature-flag and rollback plan
 
 The whole surface is dark by default: with `SHADOW_IMPORT` /
@@ -318,11 +391,21 @@ authority posture or the Phase 5 identity core:
 ## Verification
 
 Ordinary PostgreSQL / shim tier: `npm run db:reset` + `npm run db:test` →
-**908 pgTAP assertions pass** (`21_…`–`28_intake_*`). `npm run lint`,
-`npm run typecheck`, `npm run build`, and `npm test` (server 342 + client 92 +
-db guard 9) all pass; `npm audit --omit=dev --audit-level=high` finds 0
-vulnerabilities for root, client, and server. The Docker-local Supabase stack
-tier (`SHADOW_DB_RUNNER=supabase-cli`) could not be run in this environment
-because no Docker daemon is available; the PR's CI runs it as the
-`shadow-db-supabase-stack` job, and the concurrency proofs' dblink harness is
-written to run in both tiers.
+**913 pgTAP assertions pass** (`21_…`–`28_intake_*`; the read-only recovery patch
+adds 5 assertions to `24_intake_commit_kernel` proving the sanitized
+`existing_item` duplicate reference). `npm run lint`, `npm run typecheck`,
+`npm run build`, and `npm test` all pass: **server 348**, **client 143** (10 files,
+including **15 rendered Quick Add component tests** — `QuickAdd.render.test.tsx` —
+that drive the real React component through an injected fake transport under
+`jsdom`), and **db guard + audit-gate 23** node tests. The client audit gate
+(`scripts/ci/client-audit-gate.mjs`) passes, conditionally waiving only the
+RSC-only `GHSA-qwww-vcr4-c8h2` (declarative BrowserRouter, no RSC surface);
+`npm audit --omit=dev` finds 0 production vulnerabilities for root and server.
+
+Rendered-test tooling was added dev-only with owner authorization: `jsdom`,
+`@testing-library/react` (+ its `@testing-library/dom` peer), and
+`@testing-library/user-event`. These are `devDependencies` and add no production
+advisory. The Docker-local Supabase stack tier
+(`SHADOW_DB_RUNNER=supabase-cli`) could not be run in this environment because no
+Docker daemon is available; the PR's CI runs it as the `shadow-db-supabase-stack`
+job, and the concurrency proofs' dblink harness is written to run in both tiers.

@@ -1217,6 +1217,7 @@ declare
   v_gc text;
   v_sqlstate text;
   v_class text;
+  v_existing_ref jsonb;
 begin
   v_uid := app.require_inventory_writer(p_workspace_id);
 
@@ -1381,9 +1382,40 @@ begin
       'commit_failed', v_g.state::text, v_g.state::text, v_uid,
       jsonb_build_object('idempotency_key', p_idempotency_key, 'failure_class', v_class,
         'sqlstate', v_sqlstate, 'reason', 'canonical write failed and was rolled back'));
+    -- On a duplicate-identity failure, resolve the ONE pre-existing item this draft
+    -- collided with (the certificate scope is unique per grading company) so the UI
+    -- can offer "Review existing item" instead of fabricating a link. The prior item
+    -- was committed by an earlier attempt and is visible in the outer transaction;
+    -- the rolled-back writes are gone. Only a sanitized reference is exposed, and
+    -- only when a real match is found — never invented.
+    if v_class = 'duplicate_identity' then
+      -- Only sanitized public identifiers the operator needs for recovery — the
+      -- item's public id, its scan SKU, and its lot's public id. No internal
+      -- UUIDs, no SQL, no exception dump: the UI has no item-detail route in
+      -- Phase 6A and routes nothing by raw id.
+      select jsonb_build_object(
+          'item_public_id', it.public_id, 'scan_sku', it.scan_sku, 'lot_public_id', l.public_id)
+        into v_existing_ref
+      from public.intake_entries e
+      join public.inventory_items it
+        on it.workspace_id = p_workspace_id
+       and it.certificate_number = e.certificate_number
+       and it.grading_company = case when v_g.category = 'graded_tcg'
+             then nullif(btrim(coalesce(v_g.sku_attrs->>'grading_company', '')), '')
+             else e.grading_company end
+      join public.inventory_lots l
+        on l.id = it.lot_id and l.workspace_id = it.workspace_id
+      where e.group_id = p_group_id and e.workspace_id = p_workspace_id
+        and e.certificate_number is not null
+      order by e.entry_index
+      limit 1;
+    end if;
     return jsonb_build_object('outcome', 'failed', 'failure_class', v_class, 'sqlstate', v_sqlstate,
       'message', 'the commit failed and was fully rolled back; the draft is recoverable',
-      'group_id', p_group_id);
+      'group_id', p_group_id)
+      || case when v_existing_ref is not null
+              then jsonb_build_object('existing_item', v_existing_ref)
+              else '{}'::jsonb end;
   end;
 
   return v_receipt || jsonb_build_object('outcome', 'committed', 'idempotent_replay', false);

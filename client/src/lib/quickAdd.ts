@@ -16,6 +16,10 @@ import type {
   IntakeBlocker,
   IntakeCommitReceipt,
   IntakeCommitResult,
+  IntakeExistingItemRef,
+  IntakeGroupSnapshot,
+  IntakeGroupState,
+  IntakeGroupSummary,
 } from './intakeApi';
 
 export const SHADOW_LABEL = 'SHADOW / NON-AUTHORITATIVE';
@@ -157,6 +161,93 @@ export function firstBlockerField(blockers: readonly IntakeBlocker[]): FieldKey 
   return blockers.length > 0 ? blockerFieldKey(blockers[0]) : null;
 }
 
+// ---- resume / stale-reload projections (read-only recovery) -----------------
+const asStr = (v: unknown): string => (typeof v === 'string' ? v : '');
+
+/**
+ * Reverse of buildGroupPayload/buildEntryPayload: project a server snapshot back
+ * to the exact editable field values, never inventing anything the server did
+ * not return. Graded identity (company/grade) is canonical on the SKU, so it is
+ * read from sku_attrs and only falls back to the entry when the SKU omits it.
+ */
+export function snapshotToValues(snapshot: IntakeGroupSnapshot): GradedValues {
+  const g = snapshot.group;
+  const entry = snapshot.entries[0];
+  return {
+    certificate_number: asStr(entry?.certificate_number),
+    grading_company: asStr(g.sku_attrs['grading_company']) || asStr(entry?.grading_company),
+    numeric_grade: asStr(g.sku_attrs['numeric_grade']) || asStr(entry?.numeric_grade),
+    grade_designation: asStr(g.sku_attrs['grade_designation']) || asStr(entry?.grade_designation),
+    card_name: g.display_name,
+    set_name: asStr(g.product_attrs['set_name']),
+    card_number: asStr(g.product_attrs['card_number']),
+    source_kind: asStr(g.source_evidence['source_kind']),
+    location_code: asStr(g.location_code),
+  };
+}
+
+const mostRecent = (
+  groups: readonly IntakeGroupSummary[],
+  state: IntakeGroupState,
+): IntakeGroupSummary | null => {
+  const matches = groups.filter((g) => g.state === state);
+  if (matches.length === 0) return null;
+  return matches.reduce((a, b) => (a.updated_at >= b.updated_at ? a : b));
+};
+
+/**
+ * Pick the resume target with a deterministic priority (server truth only, no
+ * invented state):
+ *   1. Most recently updated ready_to_commit group (resumes editable).
+ *   2. Most recently updated draft group (resumes editable).
+ *   3. Most recently committed group (read-only).
+ *   4. Most recently abandoned group (read-only).
+ *   5. Nothing → null, so the caller begins a fresh draft in the resumed OPEN
+ *      session (resuming never creates a group by itself).
+ */
+export function selectResumeGroup(
+  groups: readonly IntakeGroupSummary[],
+): IntakeGroupSummary | null {
+  return (
+    mostRecent(groups, 'ready_to_commit') ??
+    mostRecent(groups, 'draft') ??
+    mostRecent(groups, 'committed') ??
+    mostRecent(groups, 'abandoned') ??
+    null
+  );
+}
+
+/** The first required field still blank — where focus lands after a resume. */
+export function firstIncompleteRequiredField(values: GradedValues): FieldKey | null {
+  for (const f of GRADED_FIELDS) {
+    if (!f.optional && clean(values[f.key]) === '') return f.key;
+  }
+  return null;
+}
+
+/**
+ * The next visible field in logical order — the scanner/Enter advance target.
+ * This is a pure focus-order move (interaction convenience only); it makes NO
+ * readiness decision. Returns null at the end of the form.
+ */
+export function nextField(current: FieldKey): FieldKey | null {
+  const idx = GRADED_FIELDS.findIndex((f) => f.key === current);
+  if (idx < 0 || idx >= GRADED_FIELDS.length - 1) return null;
+  return GRADED_FIELDS[idx + 1].key;
+}
+
+/**
+ * The in-app route target for an existing item, or null when none exists. Phase
+ * 6A has no item-detail route, so this is always null: the UI must NOT fabricate
+ * a link and instead directs the operator to Inventory search by public id.
+ */
+export function existingItemRoute(_ref: IntakeExistingItemRef): string | null {
+  return null;
+}
+
+export const EXISTING_ITEM_SEARCH_HINT =
+  'Existing item found. Use Inventory search with the displayed public identifier.';
+
 // ---- UI state machine (over SERVER responses) ------------------------------
 export type QuickAddPhase =
   | 'new'
@@ -181,6 +272,12 @@ export interface QuickAddState {
   readonly receipt: IntakeCommitReceipt | null;
   readonly conflict: { expected: number | null; actual: number | null } | null;
   readonly failure: { failureClass: string; message: string } | null;
+  // A sanitized reference to the pre-existing item a duplicate collided with;
+  // present only when the SERVER resolved it (never fabricated).
+  readonly existingItem: IntakeExistingItemRef | null;
+  // A non-error advisory the operator must see — e.g. a stale reload replaced
+  // unsaved local values with the newer server version.
+  readonly warning: string | null;
   readonly error: string | null;
 }
 
@@ -188,7 +285,7 @@ export function initialQuickAddState(sessionId: string | null = null): QuickAddS
   return {
     phase: 'new', sessionId, groupId: null, version: null, values: emptyGradedValues(),
     blockers: [], ruleVersion: null, idempotencyKey: null, contentHash: null, receipt: null,
-    conflict: null, failure: null, error: null,
+    conflict: null, failure: null, existingItem: null, warning: null, error: null,
   };
 }
 
@@ -200,9 +297,23 @@ export type QuickAddAction =
   | { type: 'COMMIT_STARTED'; idempotencyKey: string; contentHash: string; version: number }
   | { type: 'COMMIT_RESULT'; result: IntakeCommitResult }
   | { type: 'COMMIT_NETWORK_UNKNOWN' }
+  // Read-only recovery: adopt a complete server snapshot on resume.
+  | { type: 'HYDRATE'; snapshot: IntakeGroupSnapshot }
+  // Stale reload: replace local values wholesale with the latest server snapshot.
+  | { type: 'REPLACED_FROM_SERVER'; snapshot: IntakeGroupSnapshot; hadLocalEdits: boolean }
   | { type: 'ABANDONED' }
   | { type: 'RESET_FOR_ANOTHER' }
+  | { type: 'RETURN_TO_SESSIONS' }
   | { type: 'ERROR'; message: string };
+
+// Non-terminal groups resume into 'editing' so the operator re-checks readiness
+// (minting a fresh content hash) before any commit; terminal groups stay
+// read-only in their own phase.
+function phaseForGroupState(groupState: IntakeGroupSnapshot['group']['state']): QuickAddPhase {
+  if (groupState === 'committed') return 'committed';
+  if (groupState === 'abandoned') return 'abandoned';
+  return 'editing';
+}
 
 const TERMINAL: readonly QuickAddPhase[] = ['committed', 'abandoned'];
 
@@ -223,6 +334,8 @@ export function quickAddReducer(state: QuickAddState, action: QuickAddAction): Q
         values: { ...state.values, [action.field]: action.value },
         conflict: null,
         failure: null,
+        existingItem: null,
+        warning: null,
         error: null,
         contentHash: null,
         idempotencyKey: null,
@@ -260,7 +373,13 @@ export function quickAddReducer(state: QuickAddState, action: QuickAddAction): Q
       }
       if (r.outcome === 'failed') {
         if (r.failure_class === 'duplicate_identity') {
-          return { ...state, phase: 'duplicate', failure: { failureClass: r.failure_class, message: r.message }, receipt: null };
+          return {
+            ...state,
+            phase: 'duplicate',
+            failure: { failureClass: r.failure_class, message: r.message },
+            existingItem: r.existing_item ?? null,
+            receipt: null,
+          };
         }
         // Any other genuine failure rolled back; the draft is recoverable.
         return { ...state, phase: 'editing', failure: { failureClass: r.failure_class, message: r.message }, error: r.message, idempotencyKey: null, contentHash: null };
@@ -282,12 +401,57 @@ export function quickAddReducer(state: QuickAddState, action: QuickAddAction): Q
       // Keep the key + hash so the retry is idempotent.
       return { ...state, phase: 'network_unknown' };
 
+    case 'HYDRATE': {
+      // Adopt a complete server snapshot on resume. Every value is the exact
+      // stored server value (snapshotToValues); nothing is invented. A committed
+      // or abandoned group hydrates read-only; an editable group hydrates into
+      // 'editing' so readiness is re-checked (minting a fresh hash) before commit.
+      const g = action.snapshot.group;
+      const evaluation = action.snapshot.evaluation;
+      return {
+        ...state,
+        phase: phaseForGroupState(g.state),
+        sessionId: g.session_id,
+        groupId: g.id,
+        version: g.version,
+        values: snapshotToValues(action.snapshot),
+        blockers: evaluation?.blockers ?? [],
+        ruleVersion: evaluation?.rule_version ?? g.applied_rule_version ?? null,
+        idempotencyKey: null,
+        contentHash: null,
+        receipt: action.snapshot.receipt,
+        conflict: null,
+        failure: null,
+        existingItem: null,
+        warning: null,
+        error: null,
+      };
+    }
+
+    case 'REPLACED_FROM_SERVER': {
+      // Stale reload: replace ALL local values + version + blockers + state +
+      // receipt with the server snapshot in ONE transition (never a field merge),
+      // clearing the stale conflict while preserving workspace/session identity.
+      const hydrated = quickAddReducer(state, { type: 'HYDRATE', snapshot: action.snapshot });
+      return {
+        ...hydrated,
+        warning: action.hadLocalEdits
+          ? 'Unsaved local edits were discarded and replaced with the latest saved version from the server.'
+          : null,
+      };
+    }
+
     case 'ABANDONED':
       return { ...state, phase: 'abandoned', blockers: [] };
 
     case 'RESET_FOR_ANOTHER':
       // Fresh draft in the SAME session; focus returns to certificate number.
       return initialQuickAddState(state.sessionId);
+
+    case 'RETURN_TO_SESSIONS':
+      // Read-only exit from a terminal group: drop back to the session picker.
+      // No group is created; no mutation controls are exposed.
+      return initialQuickAddState(null);
 
     case 'ERROR':
       return { ...state, error: action.message };
@@ -323,7 +487,14 @@ export function visibleActions(state: QuickAddState): readonly QuickAddActionBut
     case 'ready':
       return [{ id: 'commit', label: 'Commit slab', primary: true, enabled: true }];
     case 'duplicate':
-      return [{ id: 'edit-cert', label: 'Edit certificate', primary: true, enabled: true }];
+      // "Review existing item" appears ONLY when the server actually resolved a
+      // reference; "Edit certificate" is always available.
+      return state.existingItem
+        ? [
+            { id: 'review-item', label: 'Review existing item', primary: true, enabled: true },
+            { id: 'edit-cert', label: 'Edit certificate', primary: false, enabled: true },
+          ]
+        : [{ id: 'edit-cert', label: 'Edit certificate', primary: true, enabled: true }];
     case 'stale':
       return [{ id: 'reload', label: 'Reload latest', primary: true, enabled: true }];
     case 'network_unknown':
@@ -334,7 +505,8 @@ export function visibleActions(state: QuickAddState): readonly QuickAddActionBut
         { id: 'view', label: 'View item', primary: false, enabled: true },
       ];
     case 'abandoned':
-      return [];
+      // A terminal, read-only group: the single primary exit is back to sessions.
+      return [{ id: 'return-sessions', label: 'Return to sessions', primary: true, enabled: true }];
     default:
       return [];
   }
@@ -482,6 +654,7 @@ export function itemDetailView(receipt: IntakeCommitReceipt, values: GradedValue
 
 // ---- accessibility + responsive layout -------------------------------------
 export function liveRegionMessage(state: QuickAddState): string {
+  if (state.warning) return state.warning;
   switch (state.phase) {
     case 'new':
       return 'New graded slab draft. Scan or type the certificate number to begin.';

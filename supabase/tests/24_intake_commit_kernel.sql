@@ -120,6 +120,23 @@ select ok((select reason ? 'sqlstate' and reason ? 'failure_class'
            from public.intake_transition_events
            where group_id=(select v from t where k='dup')::uuid and event_type='commit_failed'),
   'the durable failure event carries a sanitized class + sqlstate');
+-- Fix D: the duplicate response carries a sanitized reference to the ONE
+-- pre-existing item it collided with (the first CGC-77001 slab), so the UI can
+-- offer "Review existing item" without fabricating a link.
+select ok((select v from t where k='rdup')::jsonb ? 'existing_item',
+  'the duplicate response exposes an existing_item reference');
+select is((select v from t where k='rdup')::jsonb->'existing_item'->>'item_public_id',
+          (select v from t where k='r1')::jsonb->'items'->0->>'item_public_id',
+  'existing_item.item_public_id points at the first committed slab item');
+select is((select v from t where k='rdup')::jsonb->'existing_item'->>'scan_sku',
+          (select v from t where k='r1')::jsonb->'items'->0->>'scan_sku',
+  'existing_item.scan_sku matches the pre-existing item scan SKU');
+select is((select v from t where k='rdup')::jsonb->'existing_item'->>'lot_public_id',
+          (select v from t where k='r1')::jsonb->>'lot_public_id',
+  'existing_item.lot_public_id matches the pre-existing item lot');
+-- Sanitized: only public identifiers, never an internal item UUID.
+select ok(not ((select v from t where k='rdup')::jsonb->'existing_item' ? 'item_id'),
+  'the existing_item reference exposes no internal item UUID');
 
 -- =========================== 3. FOOTWEAR + CANDIDATE EVIDENCE ================
 insert into t values ('shoe', pg_temp.g('footwear', 'Air Jordan 1 Chicago', 1, 'serialized', 1,

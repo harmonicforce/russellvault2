@@ -121,6 +121,48 @@ it('getReceipt GETs /groups/:id/receipt; abandonGroup POSTs a governed transitio
   }
 });
 
+it('listGroups GETs /sessions/:id/groups with the workspace in the query', async () => {
+  const { fetchImpl, calls } = recordingFetch({ groups: [{ id: 'g-1', state: 'draft', version: 2 }] });
+  const t = createIntakeTransport(token, fetchImpl);
+  const groups = await t.listGroups(WS, 'sess-1');
+  expect(groups).toHaveLength(1);
+  expect(calls[0].method).toBe('GET');
+  expect(calls[0].url).toBe(`/api/intake/sessions/sess-1/groups?workspaceId=${WS}`);
+});
+
+it('getGroupSnapshot GETs /groups/:id/snapshot and returns the full snapshot', async () => {
+  const snap = {
+    group: { id: 'g-1', state: 'draft', version: 2, sku_attrs: {}, product_attrs: {}, source_evidence: {} },
+    entries: [], candidates: [], evaluation: { ready: false, blockers: [], rule_version: 'INTAKE_RULES_1' },
+    receipt: null, editable: true,
+  };
+  const { fetchImpl, calls } = recordingFetch({ snapshot: snap });
+  const t = createIntakeTransport(token, fetchImpl);
+  const out = await t.getGroupSnapshot(WS, 'g-1');
+  expect(out.editable).toBe(true);
+  expect(calls[0].method).toBe('GET');
+  expect(calls[0].url).toBe(`/api/intake/groups/g-1/snapshot?workspaceId=${WS}`);
+});
+
+it('a duplicate-identity commit surfaces the sanitized existing_item reference', async () => {
+  const { fetchImpl } = recordingFetch({
+    result: {
+      outcome: 'failed', failure_class: 'duplicate_identity', sqlstate: '23505',
+      message: 'duplicate certificate', group_id: 'g-1',
+      existing_item: { item_public_id: 'RV-ITEM-5', lot_public_id: 'RV-I-0000000005', scan_sku: 'RV-ABC1234' },
+    },
+  });
+  const t = createIntakeTransport(token, fetchImpl);
+  const result = await t.commit(WS, 'g-1', 'idem-1', 4, 'a'.repeat(64));
+  expect(result.outcome).toBe('failed');
+  if (result.outcome === 'failed') {
+    // sanitized public identifiers only — no internal UUID.
+    expect(result.existing_item?.item_public_id).toBe('RV-ITEM-5');
+    expect(result.existing_item?.scan_sku).toBe('RV-ABC1234');
+    expect(JSON.stringify(result.existing_item)).not.toMatch(/item_id/);
+  }
+});
+
 it('the transport exposes NO location-creation endpoint (client never mints a location)', () => {
   const t = createIntakeTransport(token, (async () => ({ ok: true, status: 200, json: async () => ({}) }) as Response) as unknown as typeof fetch);
   expect(Object.keys(t)).not.toContain('createLocation');
