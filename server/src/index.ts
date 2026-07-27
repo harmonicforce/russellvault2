@@ -18,6 +18,7 @@ import lookupsRouter from './routes/lookups.js';
 import provenanceRouter from './routes/provenance.js';
 import acquisitionRouter from './routes/acquisition.js';
 import inventoryIdentityRouter from './routes/inventoryIdentity.js';
+import intakeRouter from './routes/intake.js';
 
 seedIfEmpty();
 migrateProductType();
@@ -53,6 +54,13 @@ app.use('/api/acquisition', acquisitionRouter);
 // identity hierarchy under the caller's own JWT. The legacy /api/inventory
 // router below remains the authoritative inventory system of record, unchanged.
 app.use('/api/inventory-identity', inventoryIdentityRouter);
+// Phase 6A intake kernel: the reusable, server-authoritative intake state
+// machine and transactional commit kernel. Mounted before the legacy write
+// guard with the same gates as provenance / acquisition / inventory-identity. It
+// never touches SQLite — every mutation calls a governed SECURITY DEFINER
+// Postgres function under the caller's own JWT. The operator Quick Add UI is a
+// separate, still-gated deliverable pending the owner-approved wireflow.
+app.use('/api/intake', intakeRouter);
 
 app.use('/api', legacyWriteGuard);
 

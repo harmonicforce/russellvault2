@@ -397,11 +397,11 @@ select is(
   'no COGS, cost-basis, listing, sale, marketplace, or purchase table exists yet (Phase 6+)'
 );
 
--- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) + Phase 5 (4) migrations recorded ----------------------
+-- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) + Phase 5 (4) + Phase 6A (5) recorded ------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  19,
-  'nineteen migrations are recorded: five each from Phases 2/3/4 and four from Phase 5'
+  24,
+  'twenty-four migrations are recorded: Phases 2/3/4 (5 each), Phase 5 (4), Phase 6A (5)'
 );
 
 select results_eq(
@@ -425,8 +425,13 @@ select results_eq(
     ('20260721000100_inventory_identity_schema'),
     ('20260721000200_inventory_identity_append_only'),
     ('20260721000300_inventory_identity_rls'),
-    ('20260721000400_inventory_identity_functions')$$,
-  'the fifteen Phase 2/3/4 migrations are unmodified and the four Phase 5 migrations follow them'
+    ('20260721000400_inventory_identity_functions'),
+    ('20260722000100_intake_kernel_schema'),
+    ('20260722000200_intake_kernel_append_only'),
+    ('20260722000300_intake_kernel_rls'),
+    ('20260722000400_intake_kernel_seed'),
+    ('20260722000500_intake_kernel_functions')$$,
+  'the earlier-phase migrations are unmodified and the five Phase 6A migrations follow them'
 );
 
 select * from finish();

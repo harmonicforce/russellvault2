@@ -58,14 +58,22 @@ jobs:
         run: npm run test --prefix client
       - name: Test (shadow-db connection guard)
         run: node --test scripts/db/guard.test.mjs
+      - name: Test (client audit-gate policy)
+        run: node --test scripts/ci/client-audit-gate.test.mjs
 
       # --- Production dependency audits (BLOCKING on high/critical) ---
       # A high or critical PRODUCTION advisory fails the job. Dev-only advisories
       # do not fail these steps because --omit=dev excludes them.
       - name: Audit production deps (root)
         run: npm audit --omit=dev --audit-level=high
-      - name: Audit production deps (client)
-        run: npm audit --prefix client --omit=dev --audit-level=high
+      # The client audit runs through a NARROW conditional gate that parses the
+      # audit JSON and allows EXACTLY GHSA-qwww-vcr4-c8h2 (React Router RSC-mode
+      # CSRF) and only while the client stays a declarative BrowserRouter SPA with
+      # no RSC surface. Any other high/critical advisory, a changed advisory
+      # identity, RSC usage, a removed BrowserRouter guard, or an unparseable
+      # audit fails the job. See scripts/ci/client-audit-gate.mjs.
+      - name: Audit production deps (client — conditional gate)
+        run: node scripts/ci/client-audit-gate.mjs
       - name: Audit production deps (server)
         run: npm audit --prefix server --omit=dev --audit-level=high
 
