@@ -23,8 +23,9 @@ import { tokenProviderFromClient } from '../lib/tokenProvider';
 import { useWorkspace } from '../lib/workspaceContext';
 import { LocationCreateForm } from '../components/LocationCreateForm';
 import {
-  CATEGORIES, buildEntryPayload, buildGroupPayload, categoryByKey, emptyValues,
-  localBlockers, parseQuantity, resolveTracking,
+  CATEGORIES, MAX_SINGLE_ITEM_UNITS, buildEntryPayload, buildGroupPayload, categoryByKey,
+  emptyValues, localBlockers, parseQuantity, resolveTracking, unitNoteKey, unitSerialKey,
+  usesPerUnitIdentifiers,
   type CategoryDef, type CategoryValues, type IntakeCategoryKey,
 } from '../lib/intakeCategories';
 
@@ -201,11 +202,12 @@ export default function IntakeHub({
       group = { id: updated.id, version: updated.version };
     }
 
-    const entryPayload = buildEntryPayload(def, values);
     const entryCount = payload.trackingMode === 'serialized' ? payload.quantity : 1;
     for (let index = 1; index <= entryCount; index += 1) {
+      // Per-unit payload: a serialized group gives each unit its OWN
+      // identifier rather than replicating one across all of them.
       const result = await transport.upsertCategoryEntry(
-        workspaceId, group.id, group.version, index, entryPayload
+        workspaceId, group.id, group.version, index, buildEntryPayload(def, values, index)
       );
       if (isConflict(result)) {
         setError('This draft changed elsewhere. Start it again to pick up the latest version.');
@@ -407,6 +409,50 @@ export default function IntakeHub({
                           : 'One record carries the quantity. Choose individual tracking for unique or high-value pieces.'}
                       </span>
                     </label>
+                  )}
+
+                  {usesPerUnitIdentifiers(def, values) && (
+                    <div className="sm:col-span-2 rounded border border-hairline bg-surface-0 p-3">
+                      <h3 className="text-sm font-semibold">Each unit's identifier</h3>
+                      <p className="mt-0.5 text-xs text-ink-muted">
+                        You're adding {parseQuantity(values.quantity) ?? 0} individually tracked units.
+                        One serial number cannot describe several objects, so each unit gets its own
+                        (or leave them blank). Every unit still receives its own scan SKU.
+                      </p>
+                      {(parseQuantity(values.quantity) ?? 0) > MAX_SINGLE_ITEM_UNITS ? (
+                        <p className="mt-2 text-xs text-danger">
+                          That's more units than this form handles. Use Batch Intake for {' '}
+                          {parseQuantity(values.quantity)} units.
+                        </p>
+                      ) : (
+                        <div className="mt-2 space-y-2">
+                          {Array.from(
+                            { length: Math.min(parseQuantity(values.quantity) ?? 1, MAX_SINGLE_ITEM_UNITS) },
+                            (_, i) => i + 1
+                          ).map((unit) => (
+                            <div key={unit} className="grid gap-2 sm:grid-cols-[3rem_1fr_1fr] sm:items-center">
+                              <span className="text-xs font-medium text-ink-muted">Unit {unit}</span>
+                              <input
+                                className="w-full rounded border border-hairline bg-surface-1 px-2 py-1.5 text-sm"
+                                value={values[unitSerialKey(unit)] ?? ''}
+                                onChange={(e) => setValue(unitSerialKey(unit), e.target.value)}
+                                placeholder="Serial or identifier (optional)"
+                                aria-label={`Unit ${unit} serial or identifier`}
+                                autoComplete="off"
+                              />
+                              <input
+                                className="w-full rounded border border-hairline bg-surface-1 px-2 py-1.5 text-sm"
+                                value={values[unitNoteKey(unit)] ?? ''}
+                                onChange={(e) => setValue(unitNoteKey(unit), e.target.value)}
+                                placeholder="Note (optional)"
+                                aria-label={`Unit ${unit} note`}
+                                autoComplete="off"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
 
                   <label className="block text-sm sm:col-span-2">

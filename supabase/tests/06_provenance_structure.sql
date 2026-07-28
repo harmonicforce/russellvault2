@@ -397,11 +397,12 @@ select is(
   'no COGS, cost-basis, listing, sale, marketplace, or purchase table exists yet (Phase 6+)'
 );
 
--- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) + Phase 5 (4) + Phase 6A (5) recorded ------------------
+-- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) + Phase 5 (4) + Phase 6A (5)
+-- + the multi-category / media / movement / read-model additions (5) ---------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  24,
-  'twenty-four migrations are recorded: Phases 2/3/4 (5 each), Phase 5 (4), Phase 6A (5)'
+  30,
+  'thirty migrations are recorded, including the six additive 20260728 migrations'
 );
 
 select results_eq(
@@ -430,8 +431,14 @@ select results_eq(
     ('20260722000200_intake_kernel_append_only'),
     ('20260722000300_intake_kernel_rls'),
     ('20260722000400_intake_kernel_seed'),
-    ('20260722000500_intake_kernel_functions')$$,
-  'the earlier-phase migrations are unmodified and the five Phase 6A migrations follow them'
+    ('20260722000500_intake_kernel_functions'),
+    ('20260728000100_workspace_setup_and_inventory_overview'),
+    ('20260728000200_multi_category_identity'),
+    ('20260728000300_item_location_and_movement'),
+    ('20260728000400_inventory_media'),
+    ('20260728000500_inventory_read_models'),
+    ('20260728000600_unique_unit_identifiers')$$,
+  'the earlier-phase migrations are unmodified and the additive 20260728 migrations follow them'
 );
 
 select * from finish();

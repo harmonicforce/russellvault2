@@ -2,8 +2,9 @@
 // barcode encoding. Pure logic — no DOM, no network, no Supabase.
 import { describe, expect, it } from 'vitest';
 import {
-  CATEGORIES, buildEntryPayload, buildGroupPayload, categoryByKey, displayNameFor,
-  emptyValues, localBlockers, parseQuantity, resolveTracking,
+  CATEGORIES, MAX_SINGLE_ITEM_UNITS, buildEntryPayload, buildGroupPayload, categoryByKey,
+  displayNameFor, emptyValues, identifierBlockers, localBlockers, parseQuantity,
+  resolveTracking, unitSerialKey, usesPerUnitIdentifiers,
   type CategoryValues,
 } from './intakeCategories';
 import { code128BBars, code128BWidths, isEncodableCode128B, labelForItem, labelForLot } from './labels';
@@ -269,5 +270,73 @@ describe('scan resolution', () => {
   it('falls back to a result list when nothing matches exactly', () => {
     expect(resolveExactTarget('blast', [item], [lot])).toEqual({ kind: 'none' });
     expect(resolveExactTarget('   ', [item], [lot])).toEqual({ kind: 'none' });
+  });
+});
+
+describe('per-unit identifiers', () => {
+  const electronics = categoryByKey('electronics');
+
+  it('a single unit still uses the shared serial field', () => {
+    const v = values('electronics', {
+      brand: 'Apple', item_name: 'iPhone', serial_number: 'SN-1', quantity: '1',
+    });
+    expect(usesPerUnitIdentifiers(electronics, v)).toBe(false);
+    expect(buildEntryPayload(electronics, v, 1).serialNumber).toBe('SN-1');
+  });
+
+  it('never copies one serial onto every unit of a multi-unit group', () => {
+    const v = values('electronics', {
+      brand: 'Apple', item_name: 'iPhone', serial_number: 'SN-1',
+      quantity: '3', tracking_choice: 'individual',
+    });
+    expect(usesPerUnitIdentifiers(electronics, v)).toBe(true);
+    // The shared field is deliberately ignored for a multi-unit group...
+    expect(buildEntryPayload(electronics, v, 1).serialNumber).toBeNull();
+    expect(buildEntryPayload(electronics, v, 2).serialNumber).toBeNull();
+    // ...and the operator is told why rather than having it silently dropped.
+    expect(identifierBlockers(electronics, v).join(' ')).toMatch(/cannot describe several units/i);
+  });
+
+  it('gives each unit its own identifier', () => {
+    const v = values('electronics', {
+      brand: 'Apple', item_name: 'iPhone', quantity: '3', tracking_choice: 'individual',
+      [unitSerialKey(1)]: 'SN-A', [unitSerialKey(2)]: 'SN-B', [unitSerialKey(3)]: 'SN-C',
+    });
+    expect(buildEntryPayload(electronics, v, 1).serialNumber).toBe('SN-A');
+    expect(buildEntryPayload(electronics, v, 2).serialNumber).toBe('SN-B');
+    expect(buildEntryPayload(electronics, v, 3).serialNumber).toBe('SN-C');
+    expect(identifierBlockers(electronics, v)).toEqual([]);
+  });
+
+  it('rejects the same serial entered twice across units', () => {
+    const v = values('electronics', {
+      brand: 'Apple', item_name: 'iPhone', quantity: '2', tracking_choice: 'individual',
+      [unitSerialKey(1)]: 'SN-A', [unitSerialKey(2)]: 'sn-a',
+    });
+    expect(identifierBlockers(electronics, v).join(' ')).toMatch(/repeats the serial/i);
+  });
+
+  it('allows blank per-unit serials, which mean "not recorded"', () => {
+    const v = values('electronics', {
+      brand: 'Apple', item_name: 'iPhone', quantity: '2', tracking_choice: 'individual',
+    });
+    expect(identifierBlockers(electronics, v)).toEqual([]);
+    expect(buildEntryPayload(electronics, v, 1).serialNumber).toBeNull();
+  });
+
+  it('sends operators to Batch Intake beyond the single-form limit', () => {
+    const v = values('electronics', {
+      brand: 'Apple', item_name: 'iPhone',
+      quantity: String(MAX_SINGLE_ITEM_UNITS + 1), tracking_choice: 'individual',
+    });
+    expect(identifierBlockers(electronics, v).join(' ')).toMatch(/Batch Intake/i);
+  });
+
+  it('a graded card has no quantity field at all — one slab, one certificate', () => {
+    const graded = categoryByKey('graded_card');
+    expect(graded.allowsQuantity).toBe(false);
+    expect(graded.fields.some((f) => f.key === 'quantity')).toBe(false);
+    expect(usesPerUnitIdentifiers(graded, values('graded_card', { quantity: '5' }))).toBe(false);
+    expect(buildGroupPayload(graded, values('graded_card', { card_name: 'X' })).quantity).toBe(1);
   });
 });

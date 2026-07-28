@@ -68,12 +68,24 @@ grant execute on function auth.role() to anon, authenticated, service_role;
 -- storage schema (minimal shim of Supabase Storage tables) -------------------
 create schema if not exists storage;
 
+-- Mirrors the columns of Supabase's storage.buckets that our migrations
+-- actually write. file_size_limit and allowed_mime_types are how a bucket
+-- declares its upload constraints; without them the shim silently diverges
+-- from the real platform and a migration that configures a bucket correctly
+-- fails here for a reason that has nothing to do with the migration.
 create table if not exists storage.buckets (
   id text primary key,
   name text not null,
   public boolean not null default false,
+  file_size_limit bigint,
+  allowed_mime_types text[],
   created_at timestamptz not null default now()
 );
+
+-- Existing shim databases predate the two columns above; add them so a shim
+-- that was created earlier still matches the current storage surface.
+alter table storage.buckets add column if not exists file_size_limit bigint;
+alter table storage.buckets add column if not exists allowed_mime_types text[];
 
 create table if not exists storage.objects (
   id uuid primary key default gen_random_uuid(),

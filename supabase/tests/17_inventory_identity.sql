@@ -161,9 +161,14 @@ select pg_temp.put('scanval', (select null::uuid));
 select is((select count(*)::int from public.inventory_items
   where scan_sku = (select scan_sku from public.inventory_items where id = pg_temp.get('item1'))), 1,
   'the opaque scan SKU is exact-searchable to one item');
+-- Still immutable, but now refused by the column-freeze trigger rather than
+-- the blanket append-only one: inventory_items gained a governed mutation
+-- surface for location_id (see 20260728000300), and every identity column —
+-- including scan_sku — is frozen by app.forbid_column_change, which raises
+-- check_violation. The guarantee is unchanged; only the error code is.
 select throws_ok(
   format($$update public.inventory_items set scan_sku = 'RV-ZZZZZZZ' where id = %L$$, pg_temp.get('item1')),
-  '42501', null, 'the opaque scan SKU is immutable (append-only)');
+  '23514', null, 'the opaque scan SKU is immutable');
 -- a direct duplicate scan code is rejected (concurrency fail-closed)
 select throws_ok($$
   insert into public.inventory_items (workspace_id, public_id, lot_id, sku_id, scan_sku, created_by_process)

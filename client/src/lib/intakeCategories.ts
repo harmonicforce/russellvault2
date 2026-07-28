@@ -140,6 +140,8 @@ const QUANTITY_FIELD: CategoryFieldDef = { key: 'quantity', label: 'Quantity', k
 
 export const CATEGORIES: readonly CategoryDef[] = [
   {
+    // Exactly one physical slab per certificate, so there is deliberately no
+    // quantity field: two slabs are two records with two certificates.
     key: 'graded_card',
     label: 'Graded Card',
     blurb: 'A slab with a grading company and certificate number.',
@@ -464,12 +466,56 @@ export function buildGroupPayload(
   };
 }
 
+/**
+ * A single-item intake collects per-unit identifiers only up to this many
+ * units. Beyond it the grid in Batch Intake is the right tool, and a wall of
+ * identical sub-forms is not.
+ */
+export const MAX_SINGLE_ITEM_UNITS = 12;
+
+/** Field key holding unit N's own serial. Units are 1-indexed, like entries. */
+export function unitSerialKey(unitIndex: number): string {
+  return `unit_${unitIndex}_serial`;
+}
+export function unitNoteKey(unitIndex: number): string {
+  return `unit_${unitIndex}_note`;
+}
+
+/**
+ * True when the operator must supply identifiers per unit rather than once:
+ * a serialized group of more than one unit. A single shared serial cannot
+ * describe several distinct objects, so it is never replicated.
+ */
+export function usesPerUnitIdentifiers(def: CategoryDef, values: CategoryValues): boolean {
+  if (def.key === 'graded_card') return false; // always exactly one unit
+  if (resolveTracking(def, values) !== 'serialized') return false;
+  return (parseQuantity(values.quantity) ?? 1) > 1;
+}
+
+/**
+ * Build the entry for ONE unit. `unitIndex` is 1-based and matches the entry
+ * index sent to the kernel.
+ *
+ * The shared serial field applies only when the group is a single unit. For a
+ * multi-unit serialized group each unit supplies its own identifier — copying
+ * one serial onto every unit would claim several distinct objects share one
+ * identity, which the database refuses outright.
+ */
 export function buildEntryPayload(
   def: CategoryDef,
-  values: CategoryValues
+  values: CategoryValues,
+  unitIndex = 1
 ): CategoryEntryPayload {
+  const perUnit = usesPerUnitIdentifiers(def, values);
+  const serial = perUnit
+    ? clean(values[unitSerialKey(unitIndex)])
+    : clean(values.serial_number);
+  const note = perUnit
+    ? (clean(values[unitNoteKey(unitIndex)]) || clean(values.operator_note))
+    : clean(values.operator_note);
+
   const entryAttrs = prune({
-    operator_note: values.operator_note,
+    operator_note: note,
     included_accessories: def.key === 'electronics' ? values.included_accessories : undefined,
   });
   return {
@@ -477,9 +523,53 @@ export function buildEntryPayload(
     numericGrade: def.key === 'graded_card' ? clean(values.numeric_grade) || null : null,
     gradeDesignation: def.key === 'graded_card' ? clean(values.grade_designation) || null : null,
     certificateNumber: def.key === 'graded_card' ? clean(values.certificate_number) || null : null,
-    serialNumber: clean(values.serial_number) || null,
+    serialNumber: serial || null,
     entryAttrs,
   };
+}
+
+/**
+ * Identifier problems the operator can see before anything is sent: a serial
+ * repeated across units of the same group, or a shared serial left in the
+ * single field while the group covers several units.
+ */
+export function identifierBlockers(def: CategoryDef, values: CategoryValues): string[] {
+  const problems: string[] = [];
+  const quantity = parseQuantity(values.quantity) ?? 1;
+
+  if (!usesPerUnitIdentifiers(def, values)) {
+    return problems;
+  }
+
+  if (quantity > MAX_SINGLE_ITEM_UNITS) {
+    problems.push(
+      `Adding ${quantity} individually tracked units at once is easier in Batch Intake. ` +
+      `This form handles up to ${MAX_SINGLE_ITEM_UNITS}.`
+    );
+    return problems;
+  }
+
+  // A leftover shared serial would otherwise be silently ignored, which is
+  // worse than saying plainly that it cannot apply to every unit.
+  if (clean(values.serial_number) !== '') {
+    problems.push(
+      'One serial number cannot describe several units. Enter each unit\'s identifier below, ' +
+      'or clear the shared serial field.'
+    );
+  }
+
+  const seen = new Map<string, number>();
+  for (let unit = 1; unit <= quantity; unit += 1) {
+    const serial = clean(values[unitSerialKey(unit)]);
+    if (serial === '') continue;
+    const previous = seen.get(serial.toLowerCase());
+    if (previous !== undefined) {
+      problems.push(`Unit ${unit} repeats the serial number already used for unit ${previous}.`);
+    } else {
+      seen.set(serial.toLowerCase(), unit);
+    }
+  }
+  return problems;
 }
 
 /** Fields the operator must fill before the draft can even be sent. The server
@@ -492,5 +582,6 @@ export function localBlockers(def: CategoryDef, values: CategoryValues): string[
   if (def.allowsQuantity && parseQuantity(values.quantity) === null) {
     problems.push('Quantity must be a whole number of at least 1.');
   }
+  problems.push(...identifierBlockers(def, values));
   return problems;
 }
