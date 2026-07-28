@@ -1,22 +1,13 @@
-// Item Detail — one serialized inventory unit: its facts, photos, current
-// location, movement history and label.
-//
-// Identity-defining facts (public ids, scan SKU, certificate, serial) are
-// immutable after commit and are shown read-only. Location is the one governed
-// thing that can change, and it changes through the movement function so the
-// history can never be rewritten.
+// Lot Detail — quantity-tracked inventory: what it is, how many, where it is,
+// its photos, movement history and label.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Copy, MapPin, PackagePlus, Printer, ScanLine } from 'lucide-react';
-import { getProvenanceUiConfig } from '../lib/provenanceConfig';
-import { createShadowClient } from '../lib/supabaseShadow';
-import { createInventoryIdentityTransport, type ItemDetail as ItemChain } from '../lib/inventoryIdentityApi';
-import { tokenProviderFromClient } from '../lib/tokenProvider';
+import { ArrowLeft, Boxes, MapPin, PackagePlus, Printer } from 'lucide-react';
 import { createLocationsTransport, type StorageLocation } from '../lib/locationsApi';
 import { useWorkspace } from '../lib/workspaceContext';
-import { createInventoryData, type ItemOverviewRow, type MovementRow } from '../lib/inventoryData';
-import { labelForItem } from '../lib/labels';
+import { createInventoryData, type LotOverviewRow, type MovementRow } from '../lib/inventoryData';
+import { labelForLot } from '../lib/labels';
 import { LabelPreview, MediaPanel, MoveDialog, MovementHistory } from '../components/InventoryPanels';
 import { CATEGORIES } from '../lib/intakeCategories';
 
@@ -38,86 +29,69 @@ function Row({ label, value }: { label: string; value: string | null }) {
   );
 }
 
-/** Photo slots follow the item's vertical; a graded slab and a sneaker do not
- * want the same prompts. Guidance only — never fabricated evidence. */
-function slotsForVertical(vertical: string, gradingCompany: string | null): readonly string[] {
-  if (vertical === 'footwear') return CATEGORIES.find((c) => c.key === 'footwear')!.photoSlots;
+function slotsFor(vertical: string, format: string | null): readonly string[] {
   if (vertical === 'tcg') {
-    return gradingCompany
-      ? CATEGORIES.find((c) => c.key === 'graded_card')!.photoSlots
+    return format
+      ? CATEGORIES.find((c) => c.key === 'sealed_tcg')!.photoSlots
       : CATEGORIES.find((c) => c.key === 'raw_card')!.photoSlots;
   }
+  if (vertical === 'footwear') return CATEGORIES.find((c) => c.key === 'footwear')!.photoSlots;
   return CATEGORIES.find((c) => c.key === 'other_collectible')!.photoSlots;
 }
 
-export default function ItemDetail() {
-  const config = useMemo(
-    () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
-    []
-  );
+export default function LotDetail() {
   const { workspace, client, userId, getAccessToken } = useWorkspace();
-  const { itemId } = useParams<{ itemId: string }>();
+  const { lotId } = useParams<{ lotId: string }>();
   const navigate = useNavigate();
 
   const data = useMemo(
     () => (workspace ? createInventoryData(client as never, workspace.id) : null),
     [client, workspace]
   );
-  const chainTransport = useMemo(() => {
-    if (!config) return null;
-    const shadow = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
-    return createInventoryIdentityTransport(tokenProviderFromClient(shadow));
-  }, [config]);
   const locationsTransport = useMemo(
     () => createLocationsTransport(getAccessToken, () => workspace?.id ?? null),
     [getAccessToken, workspace?.id]
   );
 
-  const [row, setRow] = useState<ItemOverviewRow | null>(null);
-  const [chain, setChain] = useState<ItemChain | null>(null);
+  const [row, setRow] = useState<LotOverviewRow | null>(null);
   const [movements, setMovements] = useState<MovementRow[]>([]);
   const [locations, setLocations] = useState<readonly StorageLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [moving, setMoving] = useState(false);
   const [printing, setPrinting] = useState(false);
 
   const load = useCallback(async () => {
-    if (!data || !itemId) return;
+    if (!data || !lotId) return;
     setLoading(true);
     setError(null);
     try {
       const [overview, history, locs] = await Promise.all([
-        data.getItem(itemId),
-        data.movementHistory('item', itemId),
+        data.getLot(lotId),
+        data.movementHistory('lot', lotId),
         locationsTransport.list(true).catch(() => [] as StorageLocation[]),
       ]);
       setRow(overview);
       setMovements(history);
       setLocations(locs);
-      if (workspace && chainTransport) {
-        // The intake-session link comes from the identity chain endpoint.
-        chainTransport.itemDetail(workspace.id, itemId).then(setChain).catch(() => setChain(null));
-      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [data, itemId, locationsTransport, workspace, chainTransport]);
+  }, [data, lotId, locationsTransport]);
 
   useEffect(() => { load(); }, [load]);
 
   if (!workspace || !data) {
-    return <div className="p-6 text-sm text-ink-muted">Select a workspace to view this item.</div>;
+    return <div className="p-6 text-sm text-ink-muted">Select a workspace to view this lot.</div>;
   }
   if (loading) return <div className="p-6 text-sm text-ink-muted">Loading…</div>;
   if (error || !row) {
     return (
       <div className="space-y-3 p-6">
         <div className="rounded border border-danger/40 bg-danger/8 px-3 py-2 text-sm text-danger">
-          {error ?? 'Item not found.'}
+          {error ?? 'Lot not found.'}
         </div>
         <button onClick={() => navigate('/inventory/current')} className="text-sm text-accent underline">
           Back to Inventory
@@ -132,14 +106,7 @@ export default function ItemDetail() {
     return found ? (found.display_name || found.location_code) : 'Unknown location';
   };
   const currentLocation = row.location_display_name || row.location_code;
-  const grade = [row.numeric_grade, row.grade_designation].filter(Boolean).join(' ');
-
-  const copyScan = () => {
-    navigator.clipboard?.writeText(row.scan_sku).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
+  const serialized = row.tracking_mode === 'serialized';
 
   return (
     <div className="max-w-4xl space-y-5 p-6">
@@ -152,77 +119,66 @@ export default function ItemDetail() {
 
       <header>
         <h1 className="flex items-center gap-2 text-xl font-semibold">
-          <ScanLine className="h-5 w-5 text-accent" /> {row.product_display_name}
+          <Boxes className="h-5 w-5 text-accent" /> {row.product_display_name}
         </h1>
-        <p className="mt-1 text-sm text-ink-muted">Item {row.item_public_id}</p>
+        <p className="mt-1 text-sm text-ink-muted">Lot {row.lot_public_id} · {row.quantity} on hand</p>
       </header>
 
       <div className="flex flex-wrap gap-2">
-        <button
-          onClick={() => setMoving(true)}
-          className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white"
-        >
-          <MapPin className="h-4 w-4" /> Move item
-        </button>
+        {!serialized && (
+          <button
+            onClick={() => setMoving(true)}
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white"
+          >
+            <MapPin className="h-4 w-4" /> Move entire lot
+          </button>
+        )}
         <button
           onClick={() => setPrinting(true)}
           className="flex items-center gap-1.5 rounded-lg border border-hairline px-3 py-2 text-sm font-medium hover:bg-surface-2"
         >
-          <Printer className="h-4 w-4" /> Print label
-        </button>
-        <button
-          onClick={copyScan}
-          className="flex items-center gap-1.5 rounded-lg border border-hairline px-3 py-2 text-sm font-medium hover:bg-surface-2"
-        >
-          <Copy className="h-4 w-4" /> {copied ? 'Copied!' : 'Copy scan SKU'}
+          <Printer className="h-4 w-4" /> Print lot label
         </button>
         <button
           onClick={() => navigate('/quick-add')}
           className="flex items-center gap-1.5 rounded-lg border border-hairline px-3 py-2 text-sm font-medium hover:bg-surface-2"
         >
-          <PackagePlus className="h-4 w-4" /> Add another item
+          <PackagePlus className="h-4 w-4" /> Add more of this
         </button>
-        {chain?.session && (
-          <button
-            onClick={() => navigate('/quick-add', { state: { resumeSessionId: chain.session!.sessionId } })}
-            className="rounded-lg border border-hairline px-3 py-2 text-sm font-medium hover:bg-surface-2"
-          >
-            Open intake session
-          </button>
-        )}
       </div>
+
+      {serialized && (
+        <p className="rounded border border-hairline bg-surface-0 px-3 py-2 text-xs text-ink-muted">
+          This lot holds individually tracked units. Move them one at a time from each item's page, so
+          unrelated units are never relocated by accident.
+        </p>
+      )}
 
       <section className="rounded-lg border border-hairline bg-surface-1 p-4">
         <h2 className="mb-3 text-sm font-semibold">Details</h2>
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
           <Row label="Category" value={row.business_vertical === 'tcg' ? 'Trading cards' : row.business_vertical === 'footwear' ? 'Footwear' : 'Other'} />
-          <Row label="Grading company" value={row.grading_company} />
-          <Row label="Grade" value={grade || null} />
-          <Row label="Certificate number" value={row.certificate_number} />
-          <Row label="Serial number" value={row.serial_number} />
+          <Row label="Quantity" value={String(row.quantity)} />
+          <Row label="Tracking" value={serialized ? 'Individually tracked units' : 'Tracked by quantity'} />
           <Row label="Condition" value={row.condition_or_quality} />
-          <Row label="Size" value={row.shoe_size ? `${row.shoe_size}${row.size_system ? ` ${row.size_system}` : ''}` : row.size_label} />
-          <Row label="Scan SKU" value={row.scan_sku} />
-          <Row label="Item ID" value={row.item_public_id} />
+          <Row label="Product format" value={row.product_format} />
+          <Row label="Packaging condition" value={row.seal_or_packaging_condition} />
+          <Row label="Size" value={row.shoe_size ?? row.size_label} />
           <Row label="Lot ID" value={row.lot_public_id} />
           <Row
             label="Storage location"
             value={currentLocation ? (row.location_retired_at ? `${currentLocation} (retired)` : currentLocation) : null}
           />
-          <Row label="Date added" value={formatWhen(row.item_created_at)} />
-          <Row
-            label="Intake session"
-            value={chain?.session ? (chain.session.sessionLabel || 'Untitled session') : 'Not tracked by an intake session'}
-          />
+          <Row label="Date added" value={formatWhen(row.lot_created_at)} />
         </dl>
       </section>
 
       <MediaPanel
         data={data}
-        subjectKind="item"
-        subjectId={row.item_id}
+        subjectKind="lot"
+        subjectId={row.lot_id}
         userId={userId}
-        slots={slotsForVertical(row.business_vertical, row.grading_company)}
+        slots={slotsFor(row.business_vertical, row.product_format)}
         onChanged={load}
       />
 
@@ -234,8 +190,8 @@ export default function ItemDetail() {
       {moving && (
         <MoveDialog
           data={data}
-          subjectKind="item"
-          subjectId={row.item_id}
+          subjectKind="lot"
+          subjectId={row.lot_id}
           currentLocationCode={row.location_code}
           currentLocationName={currentLocation}
           locations={locations}
@@ -244,9 +200,7 @@ export default function ItemDetail() {
         />
       )}
 
-      {printing && (
-        <LabelPreview labels={[labelForItem(row)]} onClose={() => setPrinting(false)} />
-      )}
+      {printing && <LabelPreview labels={[labelForLot(row)]} onClose={() => setPrinting(false)} />}
     </div>
   );
 }

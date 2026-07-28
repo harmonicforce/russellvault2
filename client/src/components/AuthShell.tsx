@@ -47,6 +47,7 @@ export default function AuthShell({ children }: { children: ReactNode }) {
       <WorkspaceProvider
         client={wideClient}
         email={state.email}
+        userId={state.userId}
         memberships={state.memberships}
         onSignOut={() => controller.signOut()}
       >

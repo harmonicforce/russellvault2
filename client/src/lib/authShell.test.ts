@@ -173,6 +173,7 @@ describe('auth shell states', () => {
     expect(state).toEqual({
       kind: 'member',
       email: 'op@vault.test',
+      userId: 'u1',
       memberships: [{ workspace_id: 'ws-1', role: 'operator' }],
     });
   });
@@ -275,6 +276,7 @@ describe('auth shell states', () => {
     expect(state).toEqual({
       kind: 'member',
       email: 'owner@vault.test',
+      userId: 'u1',
       memberships: [{ workspace_id: 'ws-new', role: 'owner' }],
     });
   });

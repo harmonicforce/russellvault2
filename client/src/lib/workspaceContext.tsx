@@ -32,6 +32,8 @@ export interface WorkspaceContextValue {
   readonly workspaces: readonly WorkspaceSummary[];
   readonly workspace: WorkspaceSummary | null;
   readonly client: SupabaseClient<Database>;
+  /** The signed-in user's id — needed when a row records who uploaded it. */
+  readonly userId: string | null;
   getAccessToken(): Promise<string | null>;
   selectWorkspace(id: string): void;
   refresh(): Promise<void>;
@@ -59,12 +61,14 @@ function writeStoredId(id: string | null): void {
 export function WorkspaceProvider({
   client,
   email,
+  userId = null,
   memberships,
   onSignOut,
   children,
 }: {
   client: SupabaseClient<Database>;
   email: string | null;
+  userId?: string | null;
   memberships: readonly Membership[];
   onSignOut: () => void;
   children: ReactNode;
@@ -160,6 +164,7 @@ export function WorkspaceProvider({
     workspaces,
     workspace,
     client,
+    userId,
     getAccessToken,
     selectWorkspace,
     refresh: load,

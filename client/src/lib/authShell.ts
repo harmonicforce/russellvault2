@@ -23,7 +23,7 @@ export type AuthShellState =
   // address is registered, so this shows regardless — never a fabricated
   // "email not found" that would leak account existence.
   | { kind: 'password-reset-sent'; email: string }
-  | { kind: 'member'; email: string | null; memberships: Membership[] }
+  | { kind: 'member'; email: string | null; userId: string; memberships: Membership[] }
   // Signed in, but a member of no workspace yet. Carries an optional error
   // from a failed create-workspace attempt (never a fabricated membership).
   | { kind: 'no-membership'; email: string | null; error?: string };
@@ -127,7 +127,7 @@ export function createAuthShellController(
     if (!memberships || memberships.length === 0) {
       return emit({ kind: 'no-membership', email });
     }
-    return emit({ kind: 'member', email, memberships });
+    return emit({ kind: 'member', email, userId: data.session.user.id, memberships });
   }
 
   return {

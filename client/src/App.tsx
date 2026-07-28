@@ -3,6 +3,7 @@ import { NavLink, Route, Routes } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingBag, Link2, Tag, DollarSign, ShieldCheck, Vault,
   FileSearch, Layers, Boxes, PackagePlus, MapPin, ClipboardList, ChevronDown, LogOut,
+  ListChecks, ScanLine,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
@@ -16,7 +17,10 @@ import AuthShell from './components/AuthShell';
 import ImportReview from './pages/ImportReview';
 import AcquisitionReview from './pages/AcquisitionReview';
 import InventoryIdentity from './pages/InventoryIdentity';
-import QuickAdd from './pages/QuickAdd';
+import IntakeHub from './pages/IntakeHub';
+import LotDetail from './pages/LotDetail';
+import ScanFind from './pages/ScanFind';
+import Workbench from './pages/Workbench';
 import CurrentInventory from './pages/CurrentInventory';
 import ItemDetail from './pages/ItemDetail';
 import IntakeSessions from './pages/IntakeSessions';
@@ -36,7 +40,9 @@ const PROVENANCE_ENABLED = isProvenanceUiEnabled(
 
 const PRIMARY_NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/quick-add', label: 'Quick Add', icon: PackagePlus, end: false },
+  { to: '/workbench', label: 'Daily Workbench', icon: ListChecks, end: false },
+  { to: '/quick-add', label: 'Add Inventory', icon: PackagePlus, end: false },
+  { to: '/scan', label: 'Scan or Find', icon: ScanLine, end: false },
   { to: '/inventory/current', label: 'Current Inventory', icon: Boxes, end: false },
   { to: '/inventory', label: 'Legacy Inventory', icon: Package, end: true },
   { to: '/intake-sessions', label: 'Intake Sessions', icon: ClipboardList, end: false },
@@ -210,7 +216,10 @@ function RoutedContent() {
       <Route path="/listings" element={<Listings />} />
       <Route path="/sales" element={<Sales />} />
       <Route path="/checks" element={<Checks />} />
-      {PROVENANCE_ENABLED && <Route path="/quick-add" element={<QuickAdd />} />}
+      {PROVENANCE_ENABLED && <Route path="/quick-add" element={<IntakeHub />} />}
+      {PROVENANCE_ENABLED && <Route path="/workbench" element={<Workbench />} />}
+      {PROVENANCE_ENABLED && <Route path="/scan" element={<ScanFind />} />}
+      {PROVENANCE_ENABLED && <Route path="/inventory/lots/:lotId" element={<LotDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory/current" element={<CurrentInventory />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory/current/:itemId" element={<ItemDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/intake-sessions" element={<IntakeSessions />} />}

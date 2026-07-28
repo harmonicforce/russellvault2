@@ -285,6 +285,20 @@ export interface IntakeTransport {
   upsertEntry(
     workspaceId: string, groupId: string, expectedVersion: number, payload: GradedEntryPayload,
   ): Promise<EntryMutationResult>;
+  // Multi-category equivalents. Same endpoints and same server authority; the
+  // body simply carries the category's own shape instead of a graded slab's.
+  createCategoryGroup(
+    workspaceId: string, sessionId: string,
+    payload: import('./intakeCategories').CategoryGroupPayload,
+  ): Promise<IntakeGroupRef>;
+  updateCategoryGroup(
+    workspaceId: string, groupId: string, expectedVersion: number, sessionId: string,
+    payload: import('./intakeCategories').CategoryGroupPayload,
+  ): Promise<GroupMutationResult>;
+  upsertCategoryEntry(
+    workspaceId: string, groupId: string, expectedVersion: number, entryIndex: number,
+    payload: import('./intakeCategories').CategoryEntryPayload,
+  ): Promise<EntryMutationResult>;
   evaluateRules(workspaceId: string, groupId: string): Promise<IntakeRuleEvaluation>;
   preview(workspaceId: string, groupId: string): Promise<IntakePreview>;
   commit(
@@ -319,6 +333,37 @@ export function gradedGroupBody(
     skuAttrs: payload.skuAttrs,
     sourceEvidence: payload.sourceEvidence,
     locationCode: payload.locationCode,
+  };
+  if (expectedVersion !== undefined) body.expectedVersion = expectedVersion;
+  return body;
+}
+
+/**
+ * The generic multi-category group body. Category, quantity, tracking mode and
+ * serialized child count now come from the CATEGORY DEFINITION rather than
+ * being hard-coded to a graded slab — every value still originates from the
+ * operator's answers or the category's own workflow shape, never a guess.
+ */
+export function categoryGroupBody(
+  workspaceId: string,
+  sessionId: string,
+  payload: import('./intakeCategories').CategoryGroupPayload,
+  expectedVersion?: number,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    workspaceId,
+    sessionId,
+    category: payload.category,
+    displayName: payload.displayName,
+    quantity: payload.quantity,
+    trackingMode: payload.trackingMode,
+    serializedChildCount: payload.serializedChildCount,
+    productAttrs: payload.productAttrs,
+    skuAttrs: payload.skuAttrs,
+    sourceEvidence: payload.sourceEvidence,
+    locationCode: payload.locationCode,
+    conditionState: payload.conditionState,
+    uniqueCondition: payload.uniqueCondition,
   };
   if (expectedVersion !== undefined) body.expectedVersion = expectedVersion;
   return body;
@@ -405,6 +450,31 @@ export function createIntakeTransport(
           workspaceId, expectedVersion, entryIndex: 1,
           gradingCompany: payload.gradingCompany, numericGrade: payload.numericGrade,
           gradeDesignation: payload.gradeDesignation, certificateNumber: payload.certificateNumber,
+        },
+      );
+      return body.entry;
+    },
+    async createCategoryGroup(workspaceId, sessionId, payload) {
+      const body = await request<{ group: IntakeGroupRef }>(
+        'POST', '/groups', categoryGroupBody(workspaceId, sessionId, payload),
+      );
+      return body.group;
+    },
+    async updateCategoryGroup(workspaceId, groupId, expectedVersion, sessionId, payload) {
+      const body = await request<{ group: GroupMutationResult }>(
+        'PATCH', `/groups/${encodeURIComponent(groupId)}`,
+        categoryGroupBody(workspaceId, sessionId, payload, expectedVersion),
+      );
+      return body.group;
+    },
+    async upsertCategoryEntry(workspaceId, groupId, expectedVersion, entryIndex, payload) {
+      const body = await request<{ entry: EntryMutationResult }>(
+        'POST', `/groups/${encodeURIComponent(groupId)}/entries`,
+        {
+          workspaceId, expectedVersion, entryIndex,
+          gradingCompany: payload.gradingCompany, numericGrade: payload.numericGrade,
+          gradeDesignation: payload.gradeDesignation, certificateNumber: payload.certificateNumber,
+          serialNumber: payload.serialNumber, entryAttrs: payload.entryAttrs,
         },
       );
       return body.entry;
