@@ -287,13 +287,14 @@ select isnt(
   'two brands of the same-named item are different products');
 
 -- A stored `other` SKU must recompute to the fingerprint it was created with,
--- or the identity registrar would reject its own row on a retry.
-select pg_temp.login('aa111111-1111-4111-8111-111111111111');
+-- or register_sellable_sku would reject its own row on a concurrent retry.
+-- Checked as the owner: compute_sku_fingerprint is an internal helper that is
+-- deliberately NOT granted to `authenticated`, and this is an invariant of the
+-- stored data rather than something an end user can call.
 select is(
   app.compute_sku_fingerprint(pg_temp.get('sku')),
   (select fingerprint from public.sellable_skus where id = pg_temp.get('sku')),
   'a stored `other` SKU recomputes to its own fingerprint');
-select pg_temp.logout();
 
 select * from finish();
 rollback;
