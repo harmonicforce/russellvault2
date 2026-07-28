@@ -28,6 +28,7 @@ export interface ItemOverviewRow {
   location_code: string | null;
   location_display_name: string | null;
   location_retired_at: string | null;
+  needs_location: boolean;
   sku_public_id: string;
   business_vertical: string;
   product_public_id: string;
@@ -53,6 +54,7 @@ export interface LotOverviewRow {
   location_code: string | null;
   location_display_name: string | null;
   location_retired_at: string | null;
+  needs_location: boolean;
   sku_public_id: string;
   business_vertical: string;
   product_public_id: string;
@@ -99,6 +101,8 @@ export interface InventoryFilters {
   gradingCompany?: string;
   businessVertical?: string;
   needsPhotos?: boolean;
+  /** Records with no active storage location — the workbench's queue. */
+  needsLocation?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -144,6 +148,9 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
       if (filters.gradingCompany) q = q.eq('grading_company', filters.gradingCompany);
       if (filters.businessVertical) q = q.eq('business_vertical', filters.businessVertical);
       if (filters.needsPhotos) q = q.eq('media_count', 0);
+      // Evaluated in the view, over the whole workspace — not in the browser
+      // over one page — so this agrees with the workbench's count.
+      if (filters.needsLocation) q = q.eq('needs_location', true);
       const limit = filters.limit ?? 50;
       const offset = filters.offset ?? 0;
       const { data, error, count } = await q
@@ -169,6 +176,7 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
       if (filters.locationId) q = q.eq('location_id', filters.locationId);
       if (filters.businessVertical) q = q.eq('business_vertical', filters.businessVertical);
       if (filters.needsPhotos) q = q.eq('media_count', 0);
+      if (filters.needsLocation) q = q.eq('needs_location', true);
       const limit = filters.limit ?? 50;
       const offset = filters.offset ?? 0;
       const { data, error, count } = await q

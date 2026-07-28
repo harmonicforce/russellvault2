@@ -167,6 +167,7 @@ export default function CurrentInventory() {
       locationId: locationId || undefined,
       businessVertical: vertical || undefined,
       needsPhotos: needsPhotos || undefined,
+      needsLocation: needsLocation || undefined,
       limit: 100,
     };
     Promise.all([
@@ -196,14 +197,15 @@ export default function CurrentInventory() {
       .catch((e: unknown) => !cancelled && setError((e as Error).message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [data, tab, debouncedQuery, locationId, vertical, gradingCompany, needsPhotos]);
+  }, [data, tab, debouncedQuery, locationId, vertical, gradingCompany, needsPhotos, needsLocation]);
 
   if (!workspace || !data) {
     return <div className="p-6 text-sm text-ink-muted">Select a workspace to view inventory.</div>;
   }
 
-  let rows: UnifiedRow[] = [...items.map(itemToRow), ...lots.map(lotToRow)];
-  if (needsLocation) rows = rows.filter((r) => !r.location || r.locationRetired);
+  // needsLocation is applied by the query above, over the whole workspace, so
+  // this list is not silently narrowed to whatever fell inside one page.
+  const rows: UnifiedRow[] = [...items.map(itemToRow), ...lots.map(lotToRow)];
   rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   const toggle = (key: string) => {

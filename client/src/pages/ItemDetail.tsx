@@ -16,6 +16,7 @@ import { tokenProviderFromClient } from '../lib/tokenProvider';
 import { createLocationsTransport, type StorageLocation } from '../lib/locationsApi';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData, type ItemOverviewRow, type MovementRow } from '../lib/inventoryData';
+import { prefillFromItem } from '../lib/intakePrefill';
 import { labelForItem } from '../lib/labels';
 import { LabelPreview, MediaPanel, MoveDialog, MovementHistory } from '../components/InventoryPanels';
 import { CATEGORIES } from '../lib/intakeCategories';
@@ -177,10 +178,12 @@ export default function ItemDetail() {
           <Copy className="h-4 w-4" /> {copied ? 'Copied!' : 'Copy scan SKU'}
         </button>
         <button
-          onClick={() => navigate('/quick-add')}
+          // Carries what two copies genuinely share and nothing that names
+          // THIS object — no certificate number, no serial, no scan SKU.
+          onClick={() => navigate('/quick-add', { state: { prefill: prefillFromItem(row) } })}
           className="flex items-center gap-1.5 rounded-lg border border-hairline px-3 py-2 text-sm font-medium hover:bg-surface-2"
         >
-          <PackagePlus className="h-4 w-4" /> Add another item
+          <PackagePlus className="h-4 w-4" /> Add another like this
         </button>
         {chain?.session && (
           <button

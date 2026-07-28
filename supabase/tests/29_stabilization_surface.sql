@@ -288,6 +288,51 @@ select is(
      where lot_id = pg_temp.get('slot')),
   2,
   'a serialized lot is still resolvable by id, reporting its unit count');
+
+-- Workbench <-> Current Inventory agreement.
+--
+-- The Daily Workbench counts "needs location" from inventory_work_queue, and
+-- its "view all" opens Current Inventory filtered on the overview views. If the
+-- two predicates ever drifted apart, the workbench would count records the
+-- inventory list refuses to show. Assert they select the SAME set, rather than
+-- trusting two copies of the same expression to stay in step.
+select has_column('public', 'inventory_item_overview', 'needs_location',
+  'the item read model carries the needs-location predicate');
+select has_column('public', 'inventory_lot_overview', 'needs_location',
+  'the lot read model carries the needs-location predicate');
+
+select set_eq(
+  $$select subject_id from public.inventory_work_queue
+      where subject_kind = 'item' and needs_location$$,
+  $$select item_id from public.inventory_item_overview where needs_location$$,
+  'the item read model flags exactly the items the workbench counts'
+);
+select set_eq(
+  $$select subject_id from public.inventory_work_queue
+      where subject_kind = 'lot' and needs_location$$,
+  $$select lot_id from public.inventory_lot_overview
+      where tracking_mode = 'lot_managed' and needs_location$$,
+  'the lot read model flags exactly the lots the workbench counts'
+);
+
+-- With a real record in the queue, not just two empty sets: retiring a
+-- location must put everything stored there back on the workbench.
+-- SHELF-2 is where the whole-lot move above left the quantity-tracked lot.
+select lives_ok(
+  $$select public.retire_storage_location(
+      'a1111111-1111-4111-8111-111111111111', 'SHELF-2')$$,
+  'an owner can retire a storage location');
+select ok(
+  (select count(*)::int from public.inventory_lot_overview
+     where tracking_mode = 'lot_managed' and needs_location) > 0,
+  'retiring a location puts the inventory stored there back in the needs-location queue');
+select set_eq(
+  $$select subject_id from public.inventory_work_queue
+      where subject_kind = 'lot' and needs_location$$,
+  $$select lot_id from public.inventory_lot_overview
+      where tracking_mode = 'lot_managed' and needs_location$$,
+  'the two predicates still agree once records actually need a location'
+);
 select pg_temp.logout();
 
 -- Multi-category identity ------------------------------------------------------

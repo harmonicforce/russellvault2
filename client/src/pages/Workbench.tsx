@@ -59,9 +59,9 @@ function QueueCard({
           ))}
         </ul>
       )}
-      {onViewAll && count > rows.length && (
+      {onViewAll && count > 0 && (
         <button type="button" onClick={onViewAll} className="mt-2 text-xs text-accent-strong underline">
-          View all {count}
+          {count > rows.length ? `View all ${count} in inventory` : 'View in inventory'}
         </button>
       )}
     </section>
@@ -148,6 +148,9 @@ export default function Workbench() {
           rows={needsLocation}
           actionLabel="Choose location"
           onOpen={open}
+          // The same predicate the count came from, applied in the database:
+          // this opens exactly the records counted above, not a page of them.
+          onViewAll={() => navigate('/inventory/current?needsLocation=1')}
         />
         <QueueCard
           icon={<Camera className="h-4 w-4 text-accent" />}
@@ -157,6 +160,7 @@ export default function Workbench() {
           rows={needsPhotos}
           actionLabel="Add photos"
           onOpen={open}
+          onViewAll={() => navigate('/inventory/current?needsPhotos=1')}
         />
 
         <section className="rounded-lg border border-hairline bg-surface-1 p-4">

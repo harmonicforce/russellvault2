@@ -28,6 +28,11 @@ import {
   usesPerUnitIdentifiers,
   type CategoryDef, type CategoryValues, type IntakeCategoryKey,
 } from '../lib/intakeCategories';
+import {
+  deserializeSingleDraft, draftAfterRestore, isBlankDraft, reconcileRestoredDraft,
+  serializeSingleDraft, singleDraftStorageKey, type SingleDraft,
+} from '../lib/singleIntakeDraft';
+import type { IntakePrefill } from '../lib/intakePrefill';
 
 type Phase = 'choose' | 'form' | 'committed';
 
@@ -73,6 +78,10 @@ export default function IntakeHub({
   const routerLocation = useLocation();
   const resumeSessionIdFromNav =
     (routerLocation.state as { resumeSessionId?: string } | null)?.resumeSessionId ?? null;
+  // "Add another like this" arrives with a prefill built by intakePrefill,
+  // which is where the never-copy-an-identifier rule is enforced and tested.
+  const prefillFromNav =
+    (routerLocation.state as { prefill?: IntakePrefill } | null)?.prefill ?? null;
 
   const transport = useMemo(() => {
     if (injectedTransport) return injectedTransport;
@@ -103,11 +112,14 @@ export default function IntakeHub({
   const [duplicate, setDuplicate] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<IntakeCommitReceipt | null>(null);
   const [committedCategory, setCommittedCategory] = useState<CategoryDef | null>(null);
+  const [savedAt, setSavedAt] = useState<string>('');
+  const [restoreNotice, setRestoreNotice] = useState<string | null>(null);
 
   // Group identity for the draft currently being edited.
   const groupRef = useRef<{ id: string; version: number } | null>(null);
   const idempotencyRef = useRef<string | null>(null);
   const firstFieldRef = useRef<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null>(null);
+  const restoredRef = useRef(false);
 
   const def = categoryKey ? categoryByKey(categoryKey) : null;
 
@@ -132,6 +144,135 @@ export default function IntakeHub({
   useEffect(() => {
     if (resumeSessionIdFromNav && !sessionId) setSessionId(resumeSessionIdFromNav);
   }, [resumeSessionIdFromNav, sessionId]);
+
+  // Restore an unfinished single-item draft and reconcile it with the server,
+  // so a refresh mid-entry loses no typing and can never produce a second copy.
+  useEffect(() => {
+    if (!transport || !workspaceId || restoredRef.current) return;
+    // Arriving with explicit instructions from another page — continue this
+    // session, or start from this record — wins over whatever was saved here.
+    if (resumeSessionIdFromNav || prefillFromNav) { restoredRef.current = true; return; }
+    restoredRef.current = true;
+
+    let saved: SingleDraft | null = null;
+    try {
+      saved = deserializeSingleDraft(
+        window.localStorage.getItem(singleDraftStorageKey(workspaceId)), workspaceId
+      );
+    } catch {
+      return; // a corrupt draft simply does not restore
+    }
+    if (!saved || isBlankDraft(saved.values)) return;
+
+    void (async () => {
+      let sessionState: 'open' | 'closed' | 'missing' | null = null;
+      if (saved.sessionId) {
+        try {
+          const session = await transport.resumeSession(workspaceId, saved.sessionId);
+          sessionState = session.state === 'open' ? 'open' : 'closed';
+        } catch {
+          sessionState = 'missing';
+        }
+      }
+
+      let groupState: 'draft' | 'committed' | 'abandoned' | 'unreachable' | null = null;
+      let committedSnapshot: IntakeCommitReceipt | null = null;
+      if (saved.groupId) {
+        try {
+          const snapshot = await transport.getGroupSnapshot(workspaceId, saved.groupId);
+          groupState = snapshot.group.state === 'committed'
+            ? 'committed'
+            : snapshot.group.state === 'abandoned' ? 'abandoned' : 'draft';
+          committedSnapshot = snapshot.receipt;
+          if (groupState === 'draft') {
+            // Trust the server's version over the saved one.
+            saved = { ...saved, groupVersion: snapshot.group.version };
+          }
+        } catch {
+          groupState = 'unreachable';
+        }
+      }
+
+      const state = reconcileRestoredDraft({ draft: saved, sessionState, groupState });
+      const next = draftAfterRestore(saved, state);
+
+      setCategoryKey(saved.categoryKey as IntakeCategoryKey);
+      setValues(next.values);
+      setSessionId(next.sessionId);
+      setSessionLabel(saved.sessionLabel);
+      groupRef.current = next.group;
+      idempotencyRef.current = next.idempotencyKey;
+      setSavedAt(saved.savedAt);
+
+      if (state.kind === 'already_committed') {
+        // The commit had landed. Show the receipt rather than inviting a retry
+        // that would create a second record of the same thing.
+        setReceipt(committedSnapshot);
+        setCommittedCategory(categoryByKey(saved.categoryKey as IntakeCategoryKey));
+        setPhase('committed');
+        setRestoreNotice('This had already been added before the interruption. Here is its receipt.');
+        return;
+      }
+      setPhase('form');
+      setRestoreNotice(
+        state.kind === 'stale'
+          ? state.reason
+          : 'Restored what you had entered. Nothing has been added yet.'
+      );
+    })();
+  }, [transport, workspaceId, resumeSessionIdFromNav, prefillFromNav]);
+
+  // Open the form on the record the operator asked to copy. The values come
+  // from intakePrefill and are already stripped of everything that names one
+  // specific object; the form starts with no server draft of its own.
+  const prefillAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!prefillFromNav || prefillAppliedRef.current) return;
+    prefillAppliedRef.current = true;
+    const nextDef = categoryByKey(prefillFromNav.categoryKey);
+    setCategoryKey(prefillFromNav.categoryKey);
+    setValues({ ...emptyValues(nextDef), ...prefillFromNav.values });
+    groupRef.current = null;
+    idempotencyRef.current = null;
+    setPhase('form');
+    setRestoreNotice(
+      'Started from an existing record. Its certificate, serial and scan SKU are deliberately blank — ' +
+      'enter the ones on the item in front of you.'
+    );
+  }, [prefillFromNav]);
+
+  // Persist after every change, while the form is the thing on screen.
+  useEffect(() => {
+    if (!workspaceId || !categoryKey || phase !== 'form') return;
+    if (isBlankDraft(values)) return;
+    const stamp = new Date().toISOString();
+    try {
+      window.localStorage.setItem(
+        singleDraftStorageKey(workspaceId),
+        serializeSingleDraft({
+          workspaceId,
+          categoryKey,
+          values,
+          sessionId,
+          sessionLabel,
+          groupId: groupRef.current?.id ?? null,
+          groupVersion: groupRef.current?.version ?? null,
+          idempotencyKey: idempotencyRef.current,
+          savedAt: stamp,
+        })
+      );
+      setSavedAt(stamp);
+    } catch {
+      /* storage unavailable — entry still works, it just will not survive a refresh */
+    }
+  }, [workspaceId, categoryKey, values, sessionId, sessionLabel, phase]);
+
+  /** A finished or abandoned draft must not be restored on the next visit. */
+  const clearSavedDraft = useCallback(() => {
+    if (!workspaceId) return;
+    try { window.localStorage.removeItem(singleDraftStorageKey(workspaceId)); } catch { /* ignore */ }
+    setSavedAt('');
+  }, [workspaceId]);
 
   const run = useCallback(async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -161,6 +302,8 @@ export default function IntakeHub({
     setValues(emptyValues(nextDef));
     groupRef.current = null;
     idempotencyRef.current = null;
+    clearSavedDraft();
+    setRestoreNotice(null);
     setBlockers([]);
     setDuplicate(null);
     setError(null);
@@ -248,6 +391,9 @@ export default function IntakeHub({
         setDuplicate(null);
         groupRef.current = null;
         idempotencyRef.current = null;
+        // It is inventory now, not a draft. Nothing left to restore.
+        clearSavedDraft();
+        setRestoreNotice(null);
         setPhase('committed');
         return;
       }
@@ -271,6 +417,8 @@ export default function IntakeHub({
     setReceipt(null);
     groupRef.current = null;
     idempotencyRef.current = null;
+    clearSavedDraft();
+    setRestoreNotice(null);
     setPhase('form');
     setTimeout(() => firstFieldRef.current?.focus(), 0);
   };
@@ -302,6 +450,26 @@ export default function IntakeHub({
 
         {error && (
           <div className="mb-3 rounded border border-danger/40 bg-danger/8 px-3 py-2 text-sm text-danger">{error}</div>
+        )}
+
+        {restoreNotice && (
+          <div className="mb-3 flex items-start justify-between gap-3 rounded border border-hairline bg-surface-1 px-3 py-2 text-sm text-ink-secondary">
+            <span>
+              {restoreNotice}
+              {savedAt && phase === 'form' && (
+                <span className="ml-1 text-ink-muted">
+                  Saved {new Date(savedAt).toLocaleTimeString()}.
+                </span>
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={() => setRestoreNotice(null)}
+              className="shrink-0 text-xs text-ink-muted underline hover:text-ink"
+            >
+              Dismiss
+            </button>
+          </div>
         )}
 
         {phase === 'choose' && (

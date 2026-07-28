@@ -10,6 +10,7 @@ import { createInventoryData, type LotOverviewRow, type MovementRow } from '../l
 import { labelForLot } from '../lib/labels';
 import { LabelPreview, MediaPanel, MoveDialog, MovementHistory } from '../components/InventoryPanels';
 import { CATEGORIES } from '../lib/intakeCategories';
+import { prefillFromLot } from '../lib/intakePrefill';
 
 function formatWhen(iso: string | null): string {
   if (!iso) return '—';
@@ -140,10 +141,12 @@ export default function LotDetail() {
           <Printer className="h-4 w-4" /> Print lot label
         </button>
         <button
-          onClick={() => navigate('/quick-add')}
+          // Carries what the next copy genuinely shares and nothing that
+          // names THIS lot — no lot id, no SKU id, and never its quantity.
+          onClick={() => navigate('/quick-add', { state: { prefill: prefillFromLot(row) } })}
           className="flex items-center gap-1.5 rounded-lg border border-hairline px-3 py-2 text-sm font-medium hover:bg-surface-2"
         >
-          <PackagePlus className="h-4 w-4" /> Add more of this
+          <PackagePlus className="h-4 w-4" /> Add another like this
         </button>
       </div>
 
