@@ -1,8 +1,13 @@
-// First-run setup: shown once, right after a workspace is created, before the
-// rest of the app is available. Collects the (already-known) workspace name
-// for confirmation, an optional SKU prefix, and at least one storage
-// location. Completion is saved on the workspace itself (setup_completed_at)
-// so a returning user never sees this again.
+// First-run setup: shown once, right after a workspace is created. Collects
+// an optional SKU prefix and a first storage location, then records
+// completion on the workspace (setup_completed_at) so a returning user never
+// sees it again.
+//
+// It is ALWAYS skippable. An earlier version required a location before it
+// would let anyone through, which meant that if location creation failed for
+// any reason the owner was locked out of their own application with no way
+// forward. A setup step is a convenience, never a cage: the place that
+// genuinely needs a location is Add Inventory, and that check lives there.
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { CheckCircle2, Vault } from 'lucide-react';
@@ -11,7 +16,7 @@ import { createLocationsTransport, type StorageLocation } from '../lib/locations
 import { LocationCreateForm } from './LocationCreateForm';
 
 export default function FirstRunSetup() {
-  const { workspace, client, getAccessToken, refresh, signOut } = useWorkspace();
+  const { workspace, client, refresh, signOut } = useWorkspace();
   const [skuPrefix, setSkuPrefix] = useState(workspace?.skuPrefix ?? 'RV-N-');
   const [locations, setLocations] = useState<readonly StorageLocation[]>([]);
   const [loadingLocations, setLoadingLocations] = useState(true);
@@ -19,8 +24,8 @@ export default function FirstRunSetup() {
   const [error, setError] = useState<string | null>(null);
 
   const transport = useMemo(
-    () => createLocationsTransport(getAccessToken, () => workspace?.id ?? null),
-    [getAccessToken, workspace?.id]
+    () => createLocationsTransport(client as never, () => workspace?.id ?? null),
+    [client, workspace?.id]
   );
 
   useEffect(() => {
@@ -49,7 +54,6 @@ export default function FirstRunSetup() {
 
   const finishSetup = (e: FormEvent) => {
     e.preventDefault();
-    if (!canFinish) return;
     setFinishing(true);
     setError(null);
     const trimmedPrefix = skuPrefix.trim() || 'RV-N-';
@@ -132,20 +136,42 @@ export default function FirstRunSetup() {
               />
             </div>
 
-            {error && <p className="text-sm text-danger">{error}</p>}
+            {error && (
+              <div className="rounded border border-danger/40 bg-danger/8 px-3 py-2 text-sm text-danger">
+                <p>{error}</p>
+                <p className="mt-1 text-xs">
+                  If this keeps happening, sign out and back in, or ask for help — you are not stuck
+                  here permanently.
+                </p>
+              </div>
+            )}
 
-            <div className="flex items-center justify-between gap-2">
+            {!canFinish && (
+              <p className="text-xs text-ink-muted">
+                You can skip this and add locations later from the Locations page.
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <button type="button" onClick={signOut} className="text-xs text-ink-muted underline">
                 Sign out
               </button>
-              <button
-                type="submit"
-                disabled={!canFinish || finishing}
-                title={canFinish ? undefined : 'Add at least one storage location to continue'}
-                className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-              >
-                {finishing ? 'Finishing…' : 'Finish setup'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={finishing}
+                  className="rounded-lg border border-hairline px-3 py-2 text-sm font-medium disabled:opacity-50"
+                >
+                  Skip for now
+                </button>
+                <button
+                  type="submit"
+                  disabled={finishing}
+                  className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {finishing ? 'Finishing…' : canFinish ? 'Finish setup' : 'Continue'}
+                </button>
+              </div>
             </div>
           </form>
         )}

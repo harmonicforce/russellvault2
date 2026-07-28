@@ -14,10 +14,10 @@ function locationLabel(l: StorageLocation): string {
 }
 
 export default function Locations() {
-  const { workspace, getAccessToken } = useWorkspace();
+  const { workspace, client } = useWorkspace();
   const transport = useMemo(
-    () => createLocationsTransport(getAccessToken, () => workspace?.id ?? null),
-    [getAccessToken, workspace?.id]
+    () => createLocationsTransport(client as never, () => workspace?.id ?? null),
+    [client, workspace?.id]
   );
 
   const [active, setActive] = useState<readonly StorageLocation[]>([]);

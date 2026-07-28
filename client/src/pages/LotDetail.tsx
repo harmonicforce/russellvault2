@@ -40,7 +40,7 @@ function slotsFor(vertical: string, format: string | null): readonly string[] {
 }
 
 export default function LotDetail() {
-  const { workspace, client, userId, getAccessToken } = useWorkspace();
+  const { workspace, client, userId } = useWorkspace();
   const { lotId } = useParams<{ lotId: string }>();
   const navigate = useNavigate();
 
@@ -49,8 +49,8 @@ export default function LotDetail() {
     [client, workspace]
   );
   const locationsTransport = useMemo(
-    () => createLocationsTransport(getAccessToken, () => workspace?.id ?? null),
-    [getAccessToken, workspace?.id]
+    () => createLocationsTransport(client as never, () => workspace?.id ?? null),
+    [client, workspace?.id]
   );
 
   const [row, setRow] = useState<LotOverviewRow | null>(null);

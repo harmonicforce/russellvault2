@@ -54,7 +54,7 @@ export default function BatchIntake() {
     () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
     []
   );
-  const { workspace, getAccessToken } = useWorkspace();
+  const { workspace, client } = useWorkspace();
   const navigate = useNavigate();
 
   const transport: IntakeTransport | null = useMemo(() => {
@@ -63,8 +63,8 @@ export default function BatchIntake() {
     return createIntakeTransport(tokenProviderFromClient(client));
   }, [config]);
   const locationsTransport = useMemo(
-    () => createLocationsTransport(getAccessToken, () => workspace?.id ?? null),
-    [getAccessToken, workspace?.id]
+    () => createLocationsTransport(client as never, () => workspace?.id ?? null),
+    [client, workspace?.id]
   );
 
   const [categoryKey, setCategoryKey] = useState<IntakeCategoryKey | null>(null);

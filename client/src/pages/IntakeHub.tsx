@@ -13,7 +13,7 @@ import {
   PackagePlus, AlertTriangle, CheckCircle2, ShieldAlert, ArrowLeft, Plus, Camera, Printer,
 } from 'lucide-react';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
-import { createShadowClient } from '../lib/supabaseShadow';
+import { createShadowClient, createShadowSupabaseClient } from '../lib/supabaseShadow';
 import {
   createIntakeTransport, isConflict,
   type IntakeCommitReceipt, type IntakeSessionListItem, type IntakeTransport,
@@ -83,8 +83,9 @@ export default function IntakeHub({
   const locationsTransport = useMemo(() => {
     if (injectedLocationsTransport) return injectedLocationsTransport;
     if (!config) return null;
-    const client = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
-    return createLocationsTransport(tokenProviderFromClient(client), () => workspaceId);
+    const supabase = createShadowSupabaseClient(import.meta.env as unknown as Record<string, string | undefined>);
+    if (!supabase) return null;
+    return createLocationsTransport(supabase as never, () => workspaceId);
   }, [config, injectedLocationsTransport, workspaceId]);
 
   const [phase, setPhase] = useState<Phase>('choose');

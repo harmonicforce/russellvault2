@@ -55,7 +55,7 @@ export default function ItemDetail() {
     () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
     []
   );
-  const { workspace, client, userId, getAccessToken } = useWorkspace();
+  const { workspace, client, userId } = useWorkspace();
   const { itemId } = useParams<{ itemId: string }>();
   const navigate = useNavigate();
 
@@ -69,8 +69,8 @@ export default function ItemDetail() {
     return createInventoryIdentityTransport(tokenProviderFromClient(shadow));
   }, [config]);
   const locationsTransport = useMemo(
-    () => createLocationsTransport(getAccessToken, () => workspace?.id ?? null),
-    [getAccessToken, workspace?.id]
+    () => createLocationsTransport(client as never, () => workspace?.id ?? null),
+    [client, workspace?.id]
   );
 
   const [row, setRow] = useState<ItemOverviewRow | null>(null);
