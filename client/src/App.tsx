@@ -3,7 +3,7 @@ import { NavLink, Route, Routes } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingBag, Link2, Tag, DollarSign, ShieldCheck, Vault,
   FileSearch, Layers, Boxes, PackagePlus, MapPin, ClipboardList, ChevronDown, LogOut,
-  ListChecks, ScanLine,
+  ListChecks, ScanLine, FileWarning,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
@@ -24,6 +24,7 @@ import ScanFind from './pages/ScanFind';
 import Workbench from './pages/Workbench';
 import CurrentInventory from './pages/CurrentInventory';
 import BulkMove from './pages/BulkMove';
+import Corrections from './pages/Corrections';
 import ItemDetail from './pages/ItemDetail';
 import IntakeSessions from './pages/IntakeSessions';
 import Locations from './pages/Locations';
@@ -49,6 +50,7 @@ const PRIMARY_NAV = [
   { to: '/inventory', label: 'Legacy Inventory', icon: Package, end: true },
   { to: '/intake-sessions', label: 'Intake Sessions', icon: ClipboardList, end: false },
   { to: '/locations', label: 'Locations', icon: MapPin, end: false },
+  { to: '/corrections', label: 'Corrections', icon: FileWarning, end: false },
 ];
 
 const LEGACY_NAV = [
@@ -225,6 +227,7 @@ function RoutedContent() {
       {PROVENANCE_ENABLED && <Route path="/inventory/lots/:lotId" element={<LotDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory/current" element={<CurrentInventory />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory/move" element={<BulkMove />} />}
+      {PROVENANCE_ENABLED && <Route path="/corrections" element={<Corrections />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory/current/:itemId" element={<ItemDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/intake-sessions" element={<IntakeSessions />} />}
       {PROVENANCE_ENABLED && <Route path="/locations" element={<Locations />} />}

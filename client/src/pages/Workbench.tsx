@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Camera, ClipboardList, HelpCircle, ListChecks, MapPin, PackagePlus } from 'lucide-react';
+import { Camera, ClipboardList, FileWarning, HelpCircle, ListChecks, MapPin, PackagePlus } from 'lucide-react';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData } from '../lib/inventoryData';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
@@ -91,6 +91,7 @@ export default function Workbench() {
   });
   const [unclassified, setUnclassified] = useState<QueueRow[]>([]);
   const [needsCondition, setNeedsCondition] = useState<QueueRow[]>([]);
+  const [openCorrections, setOpenCorrections] = useState(0);
   const [needsLocation, setNeedsLocation] = useState<QueueRow[]>([]);
   const [needsPhotos, setNeedsPhotos] = useState<QueueRow[]>([]);
   const [openSessions, setOpenSessions] = useState<readonly IntakeSessionListItem[]>([]);
@@ -110,6 +111,7 @@ export default function Workbench() {
         data.operationsQueueRows('unclassified'),
         data.operationsQueueRows('needs_condition_details'),
       ]);
+      setOpenCorrections(await data.openCorrectionCount().catch(() => 0));
       setCounts(c);
       setNeedsLocation(loc);
       setNeedsPhotos(photos);
@@ -204,6 +206,16 @@ export default function Workbench() {
           actionLabel="Add details"
           onOpen={open}
           onViewAll={() => navigate('/inventory/current?needsConditionDetails=1')}
+        />
+        <QueueCard
+          icon={<FileWarning className="h-4 w-4 text-accent" />}
+          title="Open corrections"
+          count={openCorrections}
+          explanation="Problems reported against committed records, waiting on a decision or on a corrected record to replace them."
+          rows={[]}
+          actionLabel="Review"
+          onOpen={() => navigate('/corrections')}
+          onViewAll={() => navigate('/corrections')}
         />
 
         <section className="rounded-lg border border-hairline bg-surface-1 p-4">

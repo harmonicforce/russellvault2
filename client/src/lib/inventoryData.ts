@@ -178,6 +178,62 @@ export interface LotLineageRow {
   child_public_id: string;
 }
 
+/** Mirrors public.correction_issue_type. */
+export const CORRECTION_ISSUE_TYPES = [
+  'wrong_category', 'wrong_product_name', 'wrong_set', 'wrong_card_number',
+  'wrong_grade', 'wrong_grader', 'wrong_certificate', 'wrong_serial',
+  'wrong_size', 'wrong_style_code', 'wrong_model', 'wrong_condition',
+  'wrong_product_format', 'wrong_quantity', 'duplicate_record', 'other',
+] as const;
+
+export type CorrectionIssueType = (typeof CORRECTION_ISSUE_TYPES)[number];
+
+export const CORRECTION_ISSUE_LABELS: Record<CorrectionIssueType, string> = {
+  wrong_category: 'Wrong category',
+  wrong_product_name: 'Wrong product name',
+  wrong_set: 'Wrong set',
+  wrong_card_number: 'Wrong card number',
+  wrong_grade: 'Wrong grade',
+  wrong_grader: 'Wrong grading company',
+  wrong_certificate: 'Wrong certificate number',
+  wrong_serial: 'Wrong serial number',
+  wrong_size: 'Wrong size',
+  wrong_style_code: 'Wrong style code',
+  wrong_model: 'Wrong model',
+  wrong_condition: 'Wrong condition',
+  wrong_product_format: 'Wrong product format',
+  wrong_quantity: 'Wrong quantity',
+  duplicate_record: 'Duplicate record',
+  other: 'Other data problem',
+};
+
+export type CorrectionState = 'open' | 'approved' | 'rejected' | 'resolved';
+
+export const CORRECTION_STATE_LABELS: Record<CorrectionState, string> = {
+  open: 'Open',
+  approved: 'Approved — awaiting a corrected record',
+  rejected: 'Rejected',
+  resolved: 'Resolved',
+};
+
+export interface CorrectionRow {
+  id: string;
+  public_id: string;
+  subject_kind: 'item' | 'lot';
+  subject_id: string;
+  subject_public_id: string;
+  subject_display_name: string | null;
+  issue_type: CorrectionIssueType;
+  explanation: string;
+  proposed_values: Record<string, string>;
+  state: CorrectionState;
+  requested_at: string;
+  reviewed_at: string | null;
+  resolution_note: string | null;
+  replacement_id: string | null;
+  replacement_public_id: string | null;
+}
+
 export interface MediaRow {
   id: string;
   subject_kind: 'item' | 'lot';
@@ -546,6 +602,103 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
         .limit(100);
       fail(error);
       return (data ?? []) as LotLineageRow[];
+    },
+
+    /**
+     * Raise a correction against a committed record. This is a claim, not a
+     * change: nothing about the record moves until an owner or operator has
+     * decided and then explicitly superseded it.
+     */
+    async requestCorrection(input: {
+      subjectKind: 'item' | 'lot';
+      subjectId: string;
+      issueType: CorrectionIssueType;
+      explanation: string;
+      proposedValues?: Record<string, string>;
+      supportingMediaId?: string | null;
+    }): Promise<void> {
+      const { error } = await db.rpc('request_inventory_correction', {
+        p_workspace_id: workspaceId,
+        p_subject_kind: input.subjectKind,
+        p_subject_id: input.subjectId,
+        p_issue_type: input.issueType,
+        p_explanation: input.explanation,
+        p_proposed_values: input.proposedValues ?? {},
+        p_supporting_media_id: input.supportingMediaId ?? null,
+      });
+      fail(error);
+    },
+
+    /** Approve or reject. Approving records agreement; it does not fix. */
+    async reviewCorrection(input: {
+      correctionId: string; decision: 'approve' | 'reject'; note: string | null;
+    }): Promise<void> {
+      const { error } = await db.rpc('review_inventory_correction', {
+        p_workspace_id: workspaceId,
+        p_correction_id: input.correctionId,
+        p_decision: input.decision,
+        p_resolution_note: input.note,
+      });
+      fail(error);
+    },
+
+    /**
+     * Retire a wrong or duplicate record in favour of one that already exists.
+     * The replacement is never created here — identity is only ever minted
+     * through intake.
+     */
+    async supersedeRecord(input: {
+      subjectKind: 'item' | 'lot';
+      subjectId: string;
+      replacementId: string;
+      reason: string;
+      correctionId?: string | null;
+    }): Promise<void> {
+      const { error } = await db.rpc('supersede_inventory_record', {
+        p_workspace_id: workspaceId,
+        p_subject_kind: input.subjectKind,
+        p_subject_id: input.subjectId,
+        p_replacement_id: input.replacementId,
+        p_reason: input.reason,
+        p_correction_id: input.correctionId ?? null,
+      });
+      fail(error);
+    },
+
+    async listCorrections(states?: readonly CorrectionState[]): Promise<CorrectionRow[]> {
+      let q = db
+        .from('inventory_correction_overview')
+        .select('*')
+        .eq('workspace_id', workspaceId);
+      if (states && states.length > 0) q = q.in('state', states as string[]);
+      const { data, error } = await q.order('requested_at', { ascending: false }).limit(200);
+      fail(error);
+      return (data ?? []) as CorrectionRow[];
+    },
+
+    /** The correction history shown on a record's own page. */
+    async correctionsForRecord(
+      subjectKind: 'item' | 'lot', subjectId: string
+    ): Promise<CorrectionRow[]> {
+      const { data, error } = await db
+        .from('inventory_correction_overview')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .eq('subject_kind', subjectKind)
+        .eq('subject_id', subjectId)
+        .order('requested_at', { ascending: false });
+      fail(error);
+      return (data ?? []) as CorrectionRow[];
+    },
+
+    async openCorrectionCount(): Promise<number> {
+      const { count, error } = await db
+        .from('inventory_correction_overview')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId)
+        .in('state', ['open', 'approved']);
+      fail(error);
+      return count ?? 0;
     },
 
     /** Resolve a selection of records by id, for bulk actions. */

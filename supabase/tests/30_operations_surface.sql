@@ -182,9 +182,9 @@ select pg_temp.put('lot_graded', (public.stage_inventory_lot(
   'a1111111-1111-4111-8111-111111111111', 'RV-T-0000000102', pg_temp.get('s_graded'),
   'serialized', 2, 'SHELF-1', 'test', '1.0.0', null)->>'id')::uuid);
 select pg_temp.put('unit1', (public.mint_serialized_item(
-  'a1111111-1111-4111-8111-111111111111', pg_temp.get('lot_graded'), 'CERT-111', null, null)->>'id')::uuid);
+  'a1111111-1111-4111-8111-111111111111', pg_temp.get('lot_graded'), 'PSA', 'CERT-111', null)->>'id')::uuid);
 select pg_temp.put('unit2', (public.mint_serialized_item(
-  'a1111111-1111-4111-8111-111111111111', pg_temp.get('lot_graded'), 'CERT-222', null, null)->>'id')::uuid);
+  'a1111111-1111-4111-8111-111111111111', pg_temp.get('lot_graded'), 'PSA', 'CERT-222', null)->>'id')::uuid);
 
 select has_column('public', 'inventory_item_overview', 'inventory_subtype',
   'the item read model exposes the exact subtype');

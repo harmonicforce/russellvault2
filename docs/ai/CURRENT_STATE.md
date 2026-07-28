@@ -46,6 +46,9 @@ The context-document commits are not evidence that product behavior changed.
 - real bulk movement with per-record results and retry of failures alone
 - governed lot quantity adjustments, recount, split, and merge, with
   append-only quantity history and lot lineage
+- governed correction requests, review, and supersession: a committed record is
+  retired in favour of a re-entered one, never edited, and duplicates are voided
+  and linked to the survivor rather than deleted
 
 ## Recently corrected
 
@@ -70,10 +73,9 @@ These are not automatically in scope for every task.
 
 ### Corrections and quantity control
 
-- governed correction/supersession workflow is NOT implemented
-- duplicate voiding without hard deletion is NOT implemented (the `void` lot
-  state exists and is enforced, but nothing writes it yet)
 - cycle counts are NOT implemented
+- resolving an approved correction is a two-step operator flow (re-enter the
+  record, then retire the wrong one); there is no guided "correct this" wizard
 
 ### Media
 
@@ -108,6 +110,8 @@ Migrations added and applied to the live project:
 - `20260728000900_inventory_read_model_operations`
 - `20260728001000_lot_quantity_governance`
 - `20260728001100_read_model_lot_state`
+- `20260728001200_inventory_corrections`
+- `20260728001300_read_model_record_state`
 
 New governed functions: `adjust_lot_quantity`, `recount_lot_quantity`,
 `split_inventory_lot`, `merge_inventory_lots`, `lot_merge_compatibility`.

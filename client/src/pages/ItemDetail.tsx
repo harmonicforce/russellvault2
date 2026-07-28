@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Copy, MapPin, PackagePlus, Printer, ScanLine } from 'lucide-react';
+import { ArrowLeft, Copy, FileWarning, MapPin, PackagePlus, Printer, ScanLine } from 'lucide-react';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
 import { createInventoryIdentityTransport, type ItemDetail as ItemChain } from '../lib/inventoryIdentityApi';
@@ -18,6 +18,7 @@ import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData, type ItemOverviewRow, type MovementRow } from '../lib/inventoryData';
 import { prefillFromItem } from '../lib/intakePrefill';
 import { subtypeLabel } from '../lib/inventoryQuery';
+import { CorrectionHistory, RequestCorrectionDialog } from '../components/CorrectionPanels';
 import { labelForItem } from '../lib/labels';
 import { LabelPreview, MediaPanel, MoveDialog, MovementHistory } from '../components/InventoryPanels';
 import { CATEGORIES } from '../lib/intakeCategories';
@@ -84,6 +85,9 @@ export default function ItemDetail() {
   const [copied, setCopied] = useState(false);
   const [moving, setMoving] = useState(false);
   const [printing, setPrinting] = useState(false);
+  const [reportingProblem, setReportingProblem] = useState(false);
+  // Bumped after a report is filed so the history below reloads.
+  const [correctionKey, setCorrectionKey] = useState(0);
 
   const load = useCallback(async () => {
     if (!data || !itemId) return;
@@ -186,6 +190,12 @@ export default function ItemDetail() {
         >
           <PackagePlus className="h-4 w-4" /> Add another like this
         </button>
+        <button
+          onClick={() => setReportingProblem(true)}
+          className="flex items-center gap-1.5 rounded-lg border border-hairline px-3 py-2 text-sm font-medium hover:bg-surface-2"
+        >
+          <FileWarning className="h-4 w-4" /> Report a problem
+        </button>
         {chain?.session && (
           <button
             onClick={() => navigate('/quick-add', { state: { resumeSessionId: chain.session!.sessionId } })}
@@ -234,6 +244,27 @@ export default function ItemDetail() {
         <h2 className="mb-3 text-sm font-semibold">Movement history</h2>
         <MovementHistory movements={movements} locationName={locationName} />
       </section>
+
+      <section className="rounded-lg border border-hairline bg-surface-1 p-4">
+        <h2 className="mb-3 text-sm font-semibold">Reported problems</h2>
+        <CorrectionHistory
+          subjectKind="item"
+          subjectId={row.item_id}
+          data={data}
+          refreshKey={correctionKey}
+        />
+      </section>
+
+      {reportingProblem && (
+        <RequestCorrectionDialog
+          subjectKind="item"
+          subjectId={row.item_id}
+          subjectLabel={`${row.product_display_name} · ${row.item_public_id}`}
+          data={data}
+          onClose={() => setReportingProblem(false)}
+          onRaised={() => setCorrectionKey((k) => k + 1)}
+        />
+      )}
 
       {moving && (
         <MoveDialog
