@@ -5,8 +5,9 @@ import { categoryByKey } from './intakeCategories';
 import {
   MAX_BATCH_ROWS, appendRows, applyShared, batchSummary, deserializeDraft, duplicateRow,
   fillDown, gridColumns, isRowEmpty, newRow, parsePastedRows, pasteHeaderLine, pendingRows,
-  removeRow, rowBlockers, serializeDraft, totalUnitsPlanned, updateRowValue,
-  type BatchRow,
+  removeRow, rowBlockers, rowsCarriedForAudit, rowsForReplacementBatch, serializeDraft,
+  totalUnitsPlanned, updateRowValue,
+  type BatchDraft, type BatchRow,
 } from './batchIntake';
 
 const raw = categoryByKey('raw_card');
@@ -205,8 +206,10 @@ describe('draft persistence and retry safety', () => {
   it('round-trips a draft, preserving idempotency keys and draft ids', () => {
     const rows: BatchRow[] = [{ ...rowWith(raw, { card_name: 'Pikachu' }), groupId: 'g-7' }];
     const restored = deserializeDraft(serializeDraft({
-      categoryKey: 'raw_card', rows,
+      workspaceId: 'ws-1', categoryKey: 'raw_card', rows,
+      sessionId: 'sess-1', sessionLabel: 'Tuesday bulk',
       sharedLocationCode: 'BIN-2', sharedSourceKind: 'trade', sharedSourceReference: '',
+      savedAt: '2026-07-28T10:00:00.000Z',
     }));
     expect(restored).not.toBeNull();
     expect(restored!.rows[0].idempotencyKey).toBe(rows[0].idempotencyKey);
@@ -217,7 +220,10 @@ describe('draft persistence and retry safety', () => {
   it('restores an interrupted in-flight row as retryable, never as a success', () => {
     const rows: BatchRow[] = [{ ...rowWith(raw, { card_name: 'Pikachu' }), status: 'committing' }];
     const restored = deserializeDraft(serializeDraft({
-      categoryKey: 'raw_card', rows, sharedLocationCode: '', sharedSourceKind: '', sharedSourceReference: '',
+      workspaceId: 'ws-1', categoryKey: 'raw_card', rows,
+      sessionId: null, sessionLabel: null,
+      sharedLocationCode: '', sharedSourceKind: '', sharedSourceReference: '',
+      savedAt: '2026-07-28T10:00:00.000Z',
     }));
     expect(restored!.rows[0].status).toBe('failed');
     expect(restored!.rows[0].messages.join(' ')).toMatch(/will not create a duplicate/i);
@@ -229,5 +235,62 @@ describe('draft persistence and retry safety', () => {
     expect(deserializeDraft(null)).toBeNull();
     expect(deserializeDraft('not json')).toBeNull();
     expect(deserializeDraft('{"nope":true}')).toBeNull();
+  });
+
+  it('refuses a draft saved under a different workspace', () => {
+    const draft: BatchDraft = {
+      workspaceId: 'ws-1', categoryKey: 'raw_card',
+      sessionId: 'sess-1', sessionLabel: 'Tuesday bulk',
+      rows: [{ ...rowWith(raw, { card_name: 'Pikachu' }), groupId: 'g-7' }],
+      sharedLocationCode: '', sharedSourceKind: '', sharedSourceReference: '',
+      savedAt: '2026-07-28T10:00:00.000Z',
+    };
+    // Restoring into another workspace would attach ws-1's server draft ids to
+    // ws-2's inventory.
+    expect(deserializeDraft(serializeDraft(draft), 'ws-2')).toBeNull();
+    expect(deserializeDraft(serializeDraft(draft), 'ws-1')).not.toBeNull();
+  });
+
+  it('carries the session so a restored batch cannot be adopted by another session', () => {
+    const draft: BatchDraft = {
+      workspaceId: 'ws-1', categoryKey: 'raw_card',
+      sessionId: 'sess-1', sessionLabel: 'Tuesday bulk',
+      rows: [rowWith(raw, { card_name: 'Pikachu' })],
+      sharedLocationCode: '', sharedSourceKind: '', sharedSourceReference: '',
+      savedAt: '2026-07-28T10:00:00.000Z',
+    };
+    const restored = deserializeDraft(serializeDraft(draft), 'ws-1');
+    expect(restored!.sessionId).toBe('sess-1');
+    expect(restored!.sessionLabel).toBe('Tuesday bulk');
+    expect(restored!.savedAt).toBe('2026-07-28T10:00:00.000Z');
+  });
+});
+
+describe('replacement batch when the original session can no longer be used', () => {
+  const rows: BatchRow[] = [
+    rowWith(raw, { card_name: 'Never sent' }),
+    { ...rowWith(raw, { card_name: 'Has a server draft' }), groupId: 'g-1' },
+    { ...rowWith(raw, { card_name: 'Already committed' }), status: 'committed', result: { unitsCreated: 1, lotPublicId: 'RV-C-1' } },
+    { ...rowWith(raw, { card_name: 'Failed, no draft' }), status: 'failed' },
+    newRow(raw), // untouched
+  ];
+
+  it('copies only rows that never reached the server, with brand-new identities', () => {
+    const replacement = rowsForReplacementBatch(rows);
+    expect(replacement.map((r) => r.values.card_name)).toEqual(['Never sent', 'Failed, no draft']);
+    // A copy must never be able to replay the original's receipt.
+    for (const copy of replacement) {
+      expect(rows.some((r) => r.idempotencyKey === copy.idempotencyKey)).toBe(false);
+      expect(rows.some((r) => r.id === copy.id)).toBe(false);
+      expect(copy.groupId).toBeUndefined();
+      expect(copy.status).toBe('draft');
+      expect(copy.result).toBeNull();
+    }
+  });
+
+  it('keeps committed rows and unresolved server drafts for the record instead of recreating them', () => {
+    const carried = rowsCarriedForAudit(rows);
+    expect(carried.map((r) => r.values.card_name))
+      .toEqual(['Has a server draft', 'Already committed']);
   });
 });

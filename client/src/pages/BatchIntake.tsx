@@ -25,8 +25,9 @@ import {
 import {
   MAX_BATCH_ROWS, appendRows, applyShared, batchSummary, deserializeDraft, draftStorageKey,
   duplicateRow, fillDown, gridColumns, isRowEmpty, newRow, parsePastedRows, pasteHeaderLine,
-  pendingRows, removeRow, rowBlockers, serializeDraft, totalUnitsPlanned, updateRowValue,
-  type BatchRow,
+  pendingRows, removeRow, rowBlockers, rowsCarriedForAudit, rowsForReplacementBatch,
+  serializeDraft, totalUnitsPlanned, updateRowValue,
+  type BatchRow, type SessionRestoreState,
 } from '../lib/batchIntake';
 import { LabelPreview } from '../components/InventoryPanels';
 import { labelForItem, labelForLot, type LabelView } from '../lib/labels';
@@ -80,7 +81,11 @@ export default function BatchIntake() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [printing, setPrinting] = useState<LabelView[] | null>(null);
-  const sessionRef = useRef<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionLabel, setSessionLabel] = useState<string | null>(null);
+  const [sessionState, setSessionState] = useState<SessionRestoreState>({ kind: 'none' });
+  const [savedAt, setSavedAt] = useState<string>('');
+  const [reconciling, setReconciling] = useState(false);
   const restoredRef = useRef(false);
 
   const def: CategoryDef | null = categoryKey ? categoryByKey(categoryKey) : null;
@@ -90,24 +95,103 @@ export default function BatchIntake() {
     locationsTransport.list().then(setLocations).catch(() => setLocations([]));
   }, [locationsTransport, workspace]);
 
-  // Restore an unfinished batch, so a refresh mid-entry loses nothing.
+  // Restore an unfinished batch and RECONCILE it with the server, so a refresh
+  // mid-entry loses nothing and never re-attaches drafts to the wrong session.
   useEffect(() => {
-    if (!workspace || restoredRef.current) return;
+    if (!workspace || !transport || restoredRef.current) return;
     restoredRef.current = true;
+
+    let draft;
     try {
-      const draft = deserializeDraft(window.localStorage.getItem(draftStorageKey(workspace.id)));
-      if (draft && draft.rows.length > 0) {
-        setCategoryKey(draft.categoryKey as IntakeCategoryKey);
-        setRows([...draft.rows]);
-        setSharedLocation(draft.sharedLocationCode);
-        setSharedSource(draft.sharedSourceKind);
-        setSharedSourceRef(draft.sharedSourceReference);
-        setNotice('Restored your unfinished batch.');
-      }
+      // The workspace is revalidated inside deserializeDraft: a batch saved in
+      // another workspace does not restore at all.
+      draft = deserializeDraft(
+        window.localStorage.getItem(draftStorageKey(workspace.id)), workspace.id
+      );
     } catch {
-      /* a corrupt draft simply does not restore */
+      return; // a corrupt draft simply does not restore
     }
-  }, [workspace]);
+    if (!draft || draft.rows.length === 0) return;
+
+    setCategoryKey(draft.categoryKey as IntakeCategoryKey);
+    setRows([...draft.rows]);
+    setSharedLocation(draft.sharedLocationCode);
+    setSharedSource(draft.sharedSourceKind);
+    setSharedSourceRef(draft.sharedSourceReference);
+    setSessionLabel(draft.sessionLabel);
+    setSavedAt(draft.savedAt);
+
+    void (async () => {
+      setReconciling(true);
+      try {
+        // 1. Is the original session still usable?
+        let state: SessionRestoreState = { kind: 'none' };
+        if (draft.sessionId) {
+          try {
+            const session = await transport.resumeSession(workspace.id, draft.sessionId);
+            state = session.state === 'open'
+              ? { kind: 'open', sessionId: draft.sessionId }
+              : { kind: 'closed', sessionId: draft.sessionId };
+          } catch {
+            state = { kind: 'missing', sessionId: draft.sessionId };
+          }
+        }
+        setSessionState(state);
+        // Only adopt the session id when it is genuinely still open. A closed
+        // or missing session must never silently receive new groups.
+        setSessionId(state.kind === 'open' ? draft.sessionId : null);
+
+        // 2. Reconcile every row that already holds a server draft.
+        const reconciled = await Promise.all(draft.rows.map(async (row) => {
+          if (!row.groupId) return row;
+          try {
+            const snapshot = await transport.getGroupSnapshot(workspace.id, row.groupId);
+            const groupState = snapshot.group.state;
+            if (groupState === 'committed') {
+              const receipt = snapshot.receipt;
+              return {
+                ...row,
+                status: 'committed' as const,
+                messages: ['Already added.'],
+                result: receipt ? {
+                  itemPublicId: receipt.items[0]?.item_public_id,
+                  itemId: receipt.items[0]?.item_id,
+                  scanSku: receipt.items[0]?.scan_sku,
+                  lotPublicId: receipt.lot_public_id,
+                  lotId: receipt.lot_id,
+                  unitsCreated: receipt.quantity,
+                } : row.result,
+              };
+            }
+            if (groupState === 'abandoned') {
+              return { ...row, status: 'failed' as const,
+                messages: ['This row\'s draft was abandoned on the server.'] };
+            }
+            // Still a draft: keep it, under its ORIGINAL session.
+            return { ...row, status: row.status === 'committed' ? row.status : 'draft' as const };
+          } catch {
+            // The server no longer has this draft. Keep the operator's typed
+            // values and say so plainly rather than silently recreating it.
+            return {
+              ...row,
+              status: 'failed' as const,
+              messages: ['The saved draft for this row could not be found on the server. ' +
+                'Your values are kept — re-add it to create a new record.'],
+            };
+          }
+        }));
+        setRows(reconciled);
+
+        setNotice(
+          state.kind === 'open' || state.kind === 'none'
+            ? 'Restored your unfinished batch.'
+            : 'Restored your batch. Its original session is no longer open — see below.'
+        );
+      } finally {
+        setReconciling(false);
+      }
+    })();
+  }, [workspace, transport]);
 
   // Persist after every change.
   useEffect(() => {
@@ -116,17 +200,23 @@ export default function BatchIntake() {
       window.localStorage.setItem(
         draftStorageKey(workspace.id),
         serializeDraft({
+          workspaceId: workspace.id,
           categoryKey,
+          sessionId,
+          sessionLabel,
           rows,
           sharedLocationCode: sharedLocation,
           sharedSourceKind: sharedSource,
           sharedSourceReference: sharedSourceRef,
+          savedAt: new Date().toISOString(),
         })
       );
     } catch {
       /* storage unavailable — the batch still works, it just will not survive a refresh */
     }
-  }, [workspace, categoryKey, rows, sharedLocation, sharedSource, sharedSourceRef]);
+    setSavedAt(new Date().toISOString());
+  }, [workspace, categoryKey, rows, sharedLocation, sharedSource, sharedSourceRef,
+      sessionId, sessionLabel]);
 
   const startBatch = (key: IntakeCategoryKey) => {
     const nextDef = categoryByKey(key);
@@ -137,12 +227,37 @@ export default function BatchIntake() {
   };
 
   const clearBatch = () => {
-    if (!window.confirm('Clear this batch? Rows that were already added stay in inventory.')) return;
+    if (!window.confirm('Discard this unfinished batch? Rows that were already added stay in inventory.')) return;
     setRows([]);
     setCategoryKey(null);
+    setSessionId(null);
+    setSessionLabel(null);
+    setSessionState({ kind: 'none' });
     if (workspace) {
       try { window.localStorage.removeItem(draftStorageKey(workspace.id)); } catch { /* ignore */ }
     }
+  };
+
+  /**
+   * The original session can no longer take new groups. Carry only rows that
+   * definitely never committed and never created a server draft into a fresh
+   * batch, each with a NEW identity, and keep the rest visible for the record.
+   */
+  const startReplacementBatch = () => {
+    const carried = rowsForReplacementBatch(rows);
+    const audit = rowsCarriedForAudit(rows);
+    if (carried.length === 0) {
+      setNotice('Nothing in this batch is safe to re-add — every remaining row already reached the server.');
+      return;
+    }
+    setRows([...audit, ...carried]);
+    setSessionId(null);
+    setSessionLabel(null);
+    setSessionState({ kind: 'none' });
+    setNotice(
+      `Started a replacement batch with ${carried.length} row(s) that never reached the server. ` +
+      `${audit.length} earlier row(s) are kept above for the record and will not be re-sent.`
+    );
   };
 
   const doPaste = () => {
@@ -286,6 +401,16 @@ export default function BatchIntake() {
 
   const runBatch = async () => {
     if (!transport || !workspace || !def) return;
+    // A restored batch whose session is closed or gone must NOT be sent: its
+    // remaining rows still carry group ids belonging to that session, and
+    // committing them now would attach one session's drafts to a new session.
+    // The operator has to start a replacement batch instead.
+    if (sessionState.kind === 'closed' || sessionState.kind === 'missing') {
+      setError(
+        'This batch belongs to a session that is no longer open. Start a replacement batch to continue.'
+      );
+      return;
+    }
     const withShared = applyShared(rows, {
       locationCode: sharedLocation,
       sourceKind: sharedSource,
@@ -305,16 +430,22 @@ export default function BatchIntake() {
     setProgress({ done: 0, total: queue.length });
 
     try {
-      const label = `Batch ${def.label} ${new Date().toLocaleDateString()}`;
-      sessionRef.current ??= (await transport.createSession(workspace.id, label)).id;
-      const sessionId = sessionRef.current;
+      const label = sessionLabel ?? `Batch ${def.label} ${new Date().toLocaleDateString()}`;
+      let activeSession = sessionId;
+      if (!activeSession) {
+        const created = await transport.createSession(workspace.id, label);
+        activeSession = created.id;
+        setSessionId(created.id);
+        setSessionLabel(label);
+        setSessionState({ kind: 'open', sessionId: created.id });
+      }
 
       let done = 0;
       // Sequential on purpose: the kernel serializes identity anyway, and a
       // steady one-at-a-time pass gives honest per-row progress.
       for (const row of queue) {
         setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, status: 'committing' } : r)));
-        const finished = await commitRow(row, sessionId);
+        const finished = await commitRow(row, activeSession);
         setRows((prev) => prev.map((r) => (r.id === row.id ? finished : r)));
         done += 1;
         setProgress({ done, total: queue.length });
@@ -417,6 +548,12 @@ export default function BatchIntake() {
             {rows.length} row{rows.length === 1 ? '' : 's'} · {plannedUnits} unit
             {plannedUnits === 1 ? '' : 's'} still to add · at most {MAX_BATCH_ROWS} rows per batch
           </p>
+          <p className="mt-1 text-xs text-ink-muted">
+            {sessionLabel ? <>Session: {sessionLabel} · </> : null}
+            {savedAt
+              ? `Saved ${new Date(savedAt).toLocaleTimeString()} — this batch survives a refresh.`
+              : 'Not saved yet.'}
+          </p>
         </div>
         <button onClick={clearBatch} className="text-xs text-ink-muted underline hover:text-ink">
           Clear batch
@@ -425,6 +562,34 @@ export default function BatchIntake() {
 
       {error && <div className="rounded border border-danger/40 bg-danger/8 px-3 py-2 text-sm text-danger">{error}</div>}
       {notice && <div className="rounded border border-hairline bg-surface-1 px-3 py-2 text-sm text-ink-secondary">{notice}</div>}
+
+      {reconciling && (
+        <div className="rounded border border-hairline bg-surface-1 px-3 py-2 text-sm text-ink-secondary">
+          Checking this batch against the server before you continue…
+        </div>
+      )}
+
+      {(sessionState.kind === 'closed' || sessionState.kind === 'missing') && (
+        <div className="rounded border border-warning/40 bg-warning/8 px-3 py-3 text-sm">
+          <p className="font-medium">
+            {sessionState.kind === 'closed'
+              ? 'The session this batch belongs to is no longer open.'
+              : 'The session this batch belongs to is no longer on the server.'}
+          </p>
+          <p className="mt-1 text-ink-secondary">
+            Nothing has been lost. Rows that were already added stay in inventory, and rows that
+            never reached the server can be carried into a new batch. Rows already sent are kept
+            here for the record and will not be sent again.
+          </p>
+          <button
+            type="button"
+            onClick={startReplacementBatch}
+            className="mt-2 rounded border border-hairline px-3 py-1.5 text-sm font-medium hover:bg-surface-2"
+          >
+            Start a replacement batch
+          </button>
+        </div>
+      )}
 
       <section className="grid gap-3 rounded-lg border border-hairline bg-surface-1 p-4 sm:grid-cols-3">
         <label className="block text-sm">

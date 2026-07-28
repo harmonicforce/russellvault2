@@ -55,11 +55,63 @@ export interface BatchRow {
 }
 
 export interface BatchDraft {
+  /**
+   * The batch's FULL identity. A saved batch is meaningless without the
+   * workspace and session it belongs to: restoring rows that already hold
+   * server group ids under a different session would attach one batch's
+   * drafts to another session, so both are persisted and revalidated.
+   */
+  readonly workspaceId: string;
   readonly categoryKey: string;
+  readonly sessionId: string | null;
+  readonly sessionLabel: string | null;
   readonly rows: readonly BatchRow[];
   readonly sharedLocationCode: string;
   readonly sharedSourceKind: string;
   readonly sharedSourceReference: string;
+  /** ISO timestamp of the last save, shown to the operator. */
+  readonly savedAt: string;
+}
+
+/** What restoring a saved batch concluded about its session. */
+export type SessionRestoreState =
+  | { kind: 'none' }                         // no session was started yet
+  | { kind: 'open'; sessionId: string }      // resume into the original session
+  | { kind: 'closed'; sessionId: string }    // abandoned/finished server-side
+  | { kind: 'missing'; sessionId: string };  // the server no longer has it
+
+/** A row that has never been committed and holds no server draft. */
+export function isLocalOnly(row: BatchRow): boolean {
+  return row.status !== 'committed' && !row.groupId;
+}
+
+/**
+ * Rows safe to carry into a REPLACEMENT batch when the original session can no
+ * longer be used. Only rows confirmed never to have committed and never to
+ * have created a server draft are copied, and each gets a brand-new identity
+ * so a copy can never replay the original's receipt.
+ *
+ * Rows that already hold a group id are deliberately NOT copied: their outcome
+ * is unknown-or-real and belongs to the original session, and silently
+ * recreating them is exactly how duplicates appear.
+ */
+export function rowsForReplacementBatch(rows: readonly BatchRow[]): BatchRow[] {
+  return rows
+    .filter((r) => isLocalOnly(r) && !isRowEmpty(r))
+    .map((r) => ({
+      id: newId(),
+      values: { ...r.values },
+      status: 'draft' as const,
+      messages: [],
+      result: null,
+      idempotencyKey: newId(),
+    }));
+}
+
+/** Rows kept for the record when a batch is superseded: anything already
+ * committed, plus anything holding a server draft whose fate is unresolved. */
+export function rowsCarriedForAudit(rows: readonly BatchRow[]): BatchRow[] {
+  return rows.filter((r) => r.status === 'committed' || Boolean(r.groupId));
 }
 
 function newId(): string {
@@ -320,11 +372,17 @@ export function serializeDraft(draft: BatchDraft): string {
  * a refresh still cannot create a second copy. Returns null on anything
  * unrecognizable rather than throwing into the page.
  */
-export function deserializeDraft(raw: string | null): BatchDraft | null {
+export function deserializeDraft(raw: string | null, expectedWorkspaceId?: string): BatchDraft | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as BatchDraft;
     if (typeof parsed?.categoryKey !== 'string' || !Array.isArray(parsed.rows)) return null;
+    // A batch belongs to one workspace. Restoring it into another would show
+    // one workspace's drafts — and its server group ids — inside a different
+    // workspace's inventory.
+    if (expectedWorkspaceId && parsed.workspaceId && parsed.workspaceId !== expectedWorkspaceId) {
+      return null;
+    }
     const rows: BatchRow[] = parsed.rows
       .filter((r) => r && typeof r.id === 'string' && typeof r.values === 'object')
       .slice(0, MAX_BATCH_ROWS)
@@ -342,11 +400,15 @@ export function deserializeDraft(raw: string | null): BatchDraft | null {
         groupId: typeof r.groupId === 'string' ? r.groupId : undefined,
       }));
     return {
+      workspaceId: parsed.workspaceId ?? expectedWorkspaceId ?? '',
       categoryKey: parsed.categoryKey,
+      sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : null,
+      sessionLabel: typeof parsed.sessionLabel === 'string' ? parsed.sessionLabel : null,
       rows,
       sharedLocationCode: parsed.sharedLocationCode ?? '',
       sharedSourceKind: parsed.sharedSourceKind ?? '',
       sharedSourceReference: parsed.sharedSourceReference ?? '',
+      savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : '',
     };
   } catch {
     return null;
