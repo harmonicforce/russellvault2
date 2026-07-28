@@ -32,10 +32,21 @@ This is a **working prototype, not the authoritative system of record.**
   and money/quantities are stored as SQLite `REAL` rather than integer cents
   (though request-level validation now rejects non-integer quantities).
 - The GitHub **default branch (`Beginner`) is wrong** — it has no app. The
-  application lives on `claude/ui-better-spreadsheet-cjhwjb`. Correcting the
-  default/deployed branch is **deployment-affecting**; Gate G0A is **READY**
-  (owner-verified Railway evidence), but changing the default branch is a
-  separate owner-approved deployment action, not performed by any PR to date.
+  application lives on `claude/ui-better-spreadsheet-cjhwjb`, and `main` now
+  tracks that same commit as the intended stable branch.
+
+  **Two owner actions remain, and neither can be done from a build session:**
+
+  1. In Railway, change the deployed branch from
+     `claude/ui-better-spreadsheet-cjhwjb` to `main`
+     (Service → Settings → Source → Branch). Both branches point at the same
+     commit, so this is a no-op deploy rather than a change of what is served.
+  2. In GitHub, change the default branch to `main`
+     (Settings → General → Default branch).
+
+  Until step 1 is done, `claude/ui-better-spreadsheet-cjhwjb` remains the branch
+  Railway serves and is where work must land. `Beginner` is kept as an archive
+  and is not deleted.
 
 See [`docs/architecture.md`](docs/architecture.md) for repository/branch reality
 and data paths, and
