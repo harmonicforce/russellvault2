@@ -174,7 +174,7 @@ function ToolsNavGroup() {
 function AppShell() {
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-0 text-ink">
-      <ReadOnlyBanner />
+      <ReadOnlyBanner provenanceEnabled={PROVENANCE_ENABLED} />
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <aside className="w-60 shrink-0 border-r border-hairline bg-surface-1 flex flex-col overflow-y-auto">
           <div className="flex items-center gap-2 px-4 py-4 border-b border-hairline">
