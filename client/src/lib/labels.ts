@@ -48,6 +48,16 @@ function locationLine(code: string | null, display: string | null): string | nul
   return display && code ? `${display} (${code})` : (display ?? code);
 }
 
+export interface RecordLabelSource {
+  readonly record_kind: 'item' | 'lot';
+  readonly record_public_id: string;
+  readonly scan_identifier: string;
+  readonly product_display_name: string;
+  readonly quantity: number;
+  readonly location_code: string | null;
+  readonly location_display_name: string | null;
+}
+
 export interface ItemLabelSource {
   readonly product_display_name: string;
   readonly scan_sku: string;
@@ -87,6 +97,27 @@ export function labelForLot(row: LotLabelSource): LabelView {
     codeLabel: 'Lot ID',
     locationLine: locationLine(row.location_code, row.location_display_name),
     quantityLine: `Qty ${row.quantity}`,
+  };
+}
+
+/**
+ * A label for a row of Current Inventory, at either grain.
+ *
+ * The two grains are labelled with different identifiers on purpose: an
+ * individual unit carries its own opaque scan SKU, while a quantity lot
+ * carries its lot id and a count. Printing a lot id on a single unit would
+ * make two different physical things scan to the same record.
+ */
+export function labelForRecord(row: RecordLabelSource): LabelView {
+  const isItem = row.record_kind === 'item';
+  return {
+    brand: LABEL_BRAND,
+    title: shorten(row.product_display_name),
+    subtitle: isItem ? row.record_public_id : null,
+    code: row.scan_identifier,
+    codeLabel: isItem ? 'Scan SKU' : 'Lot ID',
+    locationLine: locationLine(row.location_code, row.location_display_name),
+    quantityLine: isItem ? null : `Qty ${row.quantity}`,
   };
 }
 

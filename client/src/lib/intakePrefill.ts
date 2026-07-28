@@ -58,7 +58,28 @@ function safeValues(candidate: Record<string, string | null | undefined>): Categ
  * size. Anything ambiguous falls back to the vertical's general category,
  * where every prefilled field still exists.
  */
+/**
+ * The stored subtype maps one-to-one onto the intake forms, because both come
+ * from the same list of things Russell Vault actually sells. Using it means
+ * "add another like this" from an Apparel record opens the Apparel form —
+ * before the subtype existed, the vertical was all that survived commit and
+ * both apparel and electronics reopened as Other Collectible.
+ */
+const SUBTYPE_TO_CATEGORY: Record<string, IntakeCategoryKey> = {
+  graded_card: 'graded_card',
+  raw_card: 'raw_card',
+  sealed_tcg: 'sealed_tcg',
+  footwear: 'footwear',
+  apparel: 'apparel',
+  electronics: 'electronics',
+  other_collectible: 'other_collectible',
+};
+
 export function categoryForItem(row: ItemOverviewRow): IntakeCategoryKey {
+  const mapped = SUBTYPE_TO_CATEGORY[row.inventory_subtype];
+  if (mapped) return mapped;
+  // `unclassified`, or a record committed before the subtype existed: fall
+  // back to what the stored facts still say, exactly as before.
   if (row.grading_company) return 'graded_card';
   if (row.business_vertical === 'footwear') return 'footwear';
   if (row.business_vertical === 'tcg') return 'raw_card';
@@ -66,6 +87,8 @@ export function categoryForItem(row: ItemOverviewRow): IntakeCategoryKey {
 }
 
 export function categoryForLot(row: LotOverviewRow): IntakeCategoryKey {
+  const mapped = SUBTYPE_TO_CATEGORY[row.inventory_subtype];
+  if (mapped) return mapped;
   if (row.business_vertical === 'tcg') return row.product_format ? 'sealed_tcg' : 'raw_card';
   if (row.business_vertical === 'footwear') return 'footwear';
   return 'other_collectible';

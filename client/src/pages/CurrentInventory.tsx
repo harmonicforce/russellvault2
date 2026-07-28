@@ -5,27 +5,45 @@
 // deliberately NOT listed alongside its own units: it is represented by them,
 // and showing both would count the same physical inventory twice.
 //
+// Every filter, the sort, and the page window are answered by the database
+// over the whole workspace. Nothing on this page narrows or re-sorts a list
+// that was already fetched — that is what made the old version disagree with
+// the Workbench counts that link into it, and what made "newest first" mean
+// "newest of the hundred rows that happened to load".
+//
+// The whole query lives in the URL, so a filtered view can be bookmarked or
+// sent to someone, and the browser Back button restores exactly what was on
+// screen — page number included.
+//
 // Distinct from Legacy Inventory, which reads the older SQLite system.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Boxes, Camera, MapPin, Package, Printer, Search, X } from 'lucide-react';
-import { useWorkspace } from '../lib/workspaceContext';
 import {
-  createInventoryData, type ItemOverviewRow, type LotOverviewRow,
-} from '../lib/inventoryData';
+  Boxes, Camera, ChevronLeft, ChevronRight, MapPin, Package, Printer, Search, Target, X,
+} from 'lucide-react';
+import { useWorkspace } from '../lib/workspaceContext';
+import { createInventoryData, type RecordOverviewRow } from '../lib/inventoryData';
 import { createLocationsTransport, type StorageLocation } from '../lib/locationsApi';
 import { useDebounce } from '../lib/useDebounce';
 import { LabelPreview } from '../components/InventoryPanels';
-import { labelForItem, labelForLot, type LabelView } from '../lib/labels';
-
-type Tab = 'all' | 'items' | 'lots';
+import { labelForRecord, type LabelView } from '../lib/labels';
+import {
+  BUSINESS_VERTICALS, INVENTORY_SUBTYPES, PAGE_SIZES, SORT_KEYS, SORT_LABELS,
+  VERTICAL_LABELS, describeRange, pageCount, queryFromSearchParams, rangeForPage,
+  searchParamsFromQuery, subtypeLabel, type InventoryQuery,
+} from '../lib/inventoryQuery';
 
 const GRADING_COMPANIES = ['PSA', 'CGC', 'BGS', 'SGC', 'TAG', 'AGS'];
-const VERTICALS = [
-  { value: 'tcg', label: 'Trading cards' },
-  { value: 'footwear', label: 'Footwear' },
-  { value: 'other', label: 'Other' },
+
+/** Toggle filters, in the order an operator reaches for them. */
+const FLAG_FILTERS: readonly { key: keyof InventoryQuery; label: string }[] = [
+  { key: 'needsPhotos', label: 'Needs photos' },
+  { key: 'hasPhotos', label: 'Has photos' },
+  { key: 'needsLocation', label: 'Needs location' },
+  { key: 'needsConditionDetails', label: 'Needs condition details' },
+  { key: 'recentlyAdded', label: 'Recently added' },
+  { key: 'recentlyMoved', label: 'Recently moved' },
 ];
 
 function formatDate(iso: string): string {
@@ -36,67 +54,10 @@ function formatDate(iso: string): string {
   }
 }
 
-/** One row of either grain, flattened for a single table. */
-interface UnifiedRow {
-  key: string;
-  kind: 'item' | 'lot';
-  id: string;
-  name: string;
-  vertical: string;
-  quantity: number;
-  conditionOrGrade: string | null;
-  location: string | null;
-  locationRetired: boolean;
-  scanIdentifier: string;
-  createdAt: string;
-  mediaCount: number;
-  mediaPath: string | null;
-  detail: string | null;
-}
-
-function itemToRow(r: ItemOverviewRow): UnifiedRow {
-  const grade = [r.numeric_grade, r.grade_designation].filter(Boolean).join(' ');
-  return {
-    key: `item-${r.item_id}`,
-    kind: 'item',
-    id: r.item_id,
-    name: r.product_display_name,
-    vertical: r.business_vertical,
-    quantity: 1,
-    conditionOrGrade: grade || r.condition_or_quality,
-    location: r.location_display_name || r.location_code,
-    locationRetired: r.location_retired_at !== null,
-    scanIdentifier: r.scan_sku,
-    createdAt: r.item_created_at,
-    mediaCount: r.media_count,
-    mediaPath: r.primary_media_path,
-    detail: [r.grading_company, r.certificate_number, r.serial_number, r.shoe_size, r.size_label]
-      .filter(Boolean).join(' · ') || null,
-  };
-}
-
-function lotToRow(r: LotOverviewRow): UnifiedRow {
-  return {
-    key: `lot-${r.lot_id}`,
-    kind: 'lot',
-    id: r.lot_id,
-    name: r.product_display_name,
-    vertical: r.business_vertical,
-    quantity: r.quantity,
-    conditionOrGrade: r.condition_or_quality,
-    location: r.location_display_name || r.location_code,
-    locationRetired: r.location_retired_at !== null,
-    scanIdentifier: r.lot_public_id,
-    createdAt: r.lot_created_at,
-    mediaCount: r.media_count,
-    mediaPath: r.primary_media_path,
-    detail: [r.product_format, r.seal_or_packaging_condition, r.size_label, r.shoe_size]
-      .filter(Boolean).join(' · ') || null,
-  };
-}
-
-function verticalLabel(v: string): string {
-  return VERTICALS.find((x) => x.value === v)?.label ?? 'Other';
+function detailPath(row: RecordOverviewRow): string {
+  return row.record_kind === 'item'
+    ? `/inventory/current/${row.record_id}`
+    : `/inventory/lots/${row.record_id}`;
 }
 
 /** A private-bucket thumbnail, or a neutral placeholder when there is none. */
@@ -125,19 +86,22 @@ export default function CurrentInventory() {
     [client, workspace?.id]
   );
 
-  // The Workbench links here with a filter already applied, so the URL — not
-  // local state — is the source of truth for what is being shown.
-  const tab = (params.get('tab') as Tab) || 'all';
-  const needsPhotos = params.get('needsPhotos') === '1';
-  const needsLocation = params.get('needsLocation') === '1';
-  const locationId = params.get('location') ?? '';
-  const gradingCompany = params.get('grader') ?? '';
-  const vertical = params.get('category') ?? '';
+  // The URL is the single source of truth for what is being shown. The
+  // Workbench links here with filters already applied, and Back must restore a
+  // previous page, so nothing about the query is held in component state.
+  const query = useMemo(() => queryFromSearchParams(params), [params]);
 
-  const [query, setQuery] = useState(params.get('q') ?? '');
-  const debouncedQuery = useDebounce(query, 300);
-  const [items, setItems] = useState<ItemOverviewRow[]>([]);
-  const [lots, setLots] = useState<LotOverviewRow[]>([]);
+  // The search box is the one exception: it echoes keystrokes locally and is
+  // written to the URL on a debounce, so typing does not push a history entry
+  // per character.
+  const [searchDraft, setSearchDraft] = useState(query.q);
+  const debouncedSearch = useDebounce(searchDraft, 300);
+
+  const [rows, setRows] = useState<RecordOverviewRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [itemCount, setItemCount] = useState(0);
+  const [lotCount, setLotCount] = useState(0);
+  const [exact, setExact] = useState<RecordOverviewRow | null>(null);
   const [locations, setLocations] = useState<readonly StorageLocation[]>([]);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -145,12 +109,39 @@ export default function CurrentInventory() {
   const [error, setError] = useState<string | null>(null);
   const [printing, setPrinting] = useState<LabelView[] | null>(null);
 
-  const setParam = (key: string, value: string) => {
-    const next = new URLSearchParams(params);
-    if (value) next.set(key, value);
-    else next.delete(key);
-    setParams(next, { replace: true });
-  };
+  /**
+   * Write a new query to the URL. Any change other than the page itself means
+   * the operator is looking at a different set of records, so the result
+   * returns to page one rather than stranding them on a page number that may
+   * no longer exist.
+   */
+  const updateQuery = useCallback(
+    (patch: Partial<InventoryQuery>, opts: { replace?: boolean } = {}) => {
+      const pageOnly = Object.keys(patch).length === 1 && 'page' in patch;
+      const next: InventoryQuery = { ...query, ...patch, ...(pageOnly ? {} : { page: 1 }) };
+      // Page changes are real navigation — Back should return to the previous
+      // page. Filter edits replace, so Back leaves the filtered view entirely
+      // instead of stepping through every keystroke.
+      setParams(searchParamsFromQuery(next), { replace: opts.replace ?? !pageOnly });
+    },
+    [query, setParams]
+  );
+
+  // Push the debounced search term into the URL when it settles.
+  const lastPushedSearch = useRef(query.q);
+  useEffect(() => {
+    if (debouncedSearch === lastPushedSearch.current) return;
+    lastPushedSearch.current = debouncedSearch;
+    updateQuery({ q: debouncedSearch });
+  }, [debouncedSearch, updateQuery]);
+
+  // A Back navigation changes the URL underneath us; the box must follow it.
+  useEffect(() => {
+    if (query.q !== lastPushedSearch.current) {
+      lastPushedSearch.current = query.q;
+      setSearchDraft(query.q);
+    }
+  }, [query.q]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -162,29 +153,42 @@ export default function CurrentInventory() {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setSelected(new Set());
+
+    const { from } = rangeForPage(query.page, query.pageSize);
     const filters = {
-      q: debouncedQuery || undefined,
-      locationId: locationId || undefined,
-      businessVertical: vertical || undefined,
-      needsPhotos: needsPhotos || undefined,
-      needsLocation: needsLocation || undefined,
-      limit: 100,
+      scope: query.scope,
+      q: query.q || undefined,
+      subtype: query.subtype || undefined,
+      businessVertical: query.businessVertical || undefined,
+      locationId: query.locationId || undefined,
+      condition: query.condition || undefined,
+      gradingCompany: query.gradingCompany || undefined,
+      trackingMode: query.trackingMode || undefined,
+      hasPhotos: query.hasPhotos || undefined,
+      needsPhotos: query.needsPhotos || undefined,
+      needsLocation: query.needsLocation || undefined,
+      needsConditionDetails: query.needsConditionDetails || undefined,
+      recentlyAdded: query.recentlyAdded || undefined,
+      recentlyMoved: query.recentlyMoved || undefined,
+      addedFrom: query.addedFrom || undefined,
+      addedTo: query.addedTo || undefined,
+      sort: query.sort,
+      limit: query.pageSize,
+      offset: from,
     };
-    Promise.all([
-      tab === 'lots'
-        ? Promise.resolve({ rows: [] as ItemOverviewRow[], total: 0 })
-        : data.listItems({ ...filters, gradingCompany: gradingCompany || undefined }),
-      tab === 'items'
-        ? Promise.resolve({ rows: [] as LotOverviewRow[], total: 0 })
-        : data.listLots(filters),
-    ])
-      .then(async ([itemPage, lotPage]) => {
+
+    data.listRecords(filters)
+      .then(async (page) => {
         if (cancelled) return;
-        setItems(itemPage.rows);
-        setLots(lotPage.rows);
+        setRows(page.rows);
+        setTotal(page.total);
+        setItemCount(page.itemCount);
+        setLotCount(page.lotCount);
+
         // Private bucket: each thumbnail needs its own signed URL.
-        const paths = [...itemPage.rows, ...lotPage.rows]
-          .map((r) => ('primary_media_path' in r ? r.primary_media_path : null))
+        const paths = page.rows
+          .map((r) => r.primary_media_path)
           .filter((p): p is string => Boolean(p));
         const signed = await Promise.all(
           paths.map(async (p) => [p, await data.signedUrl(p, 600)] as const)
@@ -197,16 +201,24 @@ export default function CurrentInventory() {
       .catch((e: unknown) => !cancelled && setError((e as Error).message))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [data, tab, debouncedQuery, locationId, vertical, gradingCompany, needsPhotos, needsLocation]);
+  }, [data, query]);
+
+  // An identifier the operator scanned or pasted resolves to its own record,
+  // above the substring results. Ranked separately rather than folded into the
+  // list so a certificate number can never lose to a product name that happens
+  // to contain the same digits.
+  useEffect(() => {
+    if (!data || !query.q.trim()) { setExact(null); return; }
+    let cancelled = false;
+    data.findExactRecord(query.q)
+      .then((hit) => !cancelled && setExact(hit))
+      .catch(() => !cancelled && setExact(null));
+    return () => { cancelled = true; };
+  }, [data, query.q]);
 
   if (!workspace || !data) {
     return <div className="p-6 text-sm text-ink-muted">Select a workspace to view inventory.</div>;
   }
-
-  // needsLocation is applied by the query above, over the whole workspace, so
-  // this list is not silently narrowed to whatever fell inside one page.
-  const rows: UnifiedRow[] = [...items.map(itemToRow), ...lots.map(lotToRow)];
-  rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   const toggle = (key: string) => {
     setSelected((prev) => {
@@ -217,28 +229,23 @@ export default function CurrentInventory() {
     });
   };
 
-  const selectedRows = rows.filter((r) => selected.has(r.key));
-  // Whole-record movement is only offered when every selected row supports it.
-  // A serialized unit and a quantity lot move through different governed
-  // functions, so a mixed selection is not a single safe operation.
-  const canMoveSelection =
-    selectedRows.length > 0 && selectedRows.every((r) => r.kind === selectedRows[0].kind);
+  const selectedRows = rows.filter((r) => selected.has(r.record_id));
+  const pages = pageCount(total, query.pageSize);
 
   const printSelected = () => {
-    const labels: LabelView[] = [];
-    for (const row of selectedRows) {
-      if (row.kind === 'item') {
-        const src = items.find((i) => i.item_id === row.id);
-        if (src) labels.push(labelForItem(src));
-      } else {
-        const src = lots.find((l) => l.lot_id === row.id);
-        if (src) labels.push(labelForLot(src));
-      }
-    }
+    const labels = selectedRows.map(labelForRecord);
     if (labels.length > 0) setPrinting(labels);
   };
 
-  const activeFilters = [needsPhotos, needsLocation, locationId, gradingCompany, vertical].filter(Boolean).length;
+  const activeFilterCount = [
+    query.subtype, query.businessVertical, query.locationId, query.condition,
+    query.gradingCompany, query.trackingMode, query.addedFrom, query.addedTo,
+    query.hasPhotos, query.needsPhotos, query.needsLocation,
+    query.needsConditionDetails, query.recentlyAdded, query.recentlyMoved,
+  ].filter(Boolean).length;
+
+  const inputClass =
+    'rounded-lg border border-hairline bg-surface-1 px-2.5 py-2 text-sm outline-none focus:border-accent';
 
   return (
     <div className="space-y-4 p-6">
@@ -253,18 +260,26 @@ export default function CurrentInventory() {
       </header>
 
       <div className="flex flex-wrap items-center gap-2">
-        {(['all', 'items', 'lots'] as Tab[]).map((t) => (
+        {(['all', 'items', 'lots'] as const).map((t) => (
           <button
             key={t}
             type="button"
-            onClick={() => setParam('tab', t === 'all' ? '' : t)}
+            onClick={() => updateQuery({ scope: t })}
             className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
-              tab === t ? 'bg-accent/12 text-accent-strong' : 'text-ink-secondary hover:bg-surface-2'
+              query.scope === t ? 'bg-accent/12 text-accent-strong' : 'text-ink-secondary hover:bg-surface-2'
             }`}
           >
             {t === 'all' ? 'All Inventory' : t === 'items' ? 'Individual Items' : 'Quantity Lots'}
           </button>
         ))}
+        {!loading && (
+          // Two grains, two counts. "277 records" would hide that 240 of them
+          // are individual units and 37 are quantity lots.
+          <span className="text-xs text-ink-muted">
+            {itemCount.toLocaleString()} individual · {lotCount.toLocaleString()} quantity lot
+            {lotCount === 1 ? '' : 's'}
+          </span>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -272,25 +287,38 @@ export default function CurrentInventory() {
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
           <input
             className="w-full rounded-lg border border-hairline bg-surface-1 py-2 pl-8 pr-3 text-sm outline-none focus:border-accent"
-            placeholder="Search name, scan SKU, item ID, lot ID, certificate or serial…"
-            value={query}
-            onChange={(e) => { setQuery(e.target.value); setParam('q', e.target.value); }}
+            placeholder="Search name, set, card number, style code, colorway, size, scan SKU, certificate, serial…"
+            value={searchDraft}
+            onChange={(e) => setSearchDraft(e.target.value)}
             aria-label="Search inventory"
           />
         </label>
         <select
-          className="rounded-lg border border-hairline bg-surface-1 px-2.5 py-2 text-sm"
-          value={vertical}
-          onChange={(e) => setParam('category', e.target.value)}
+          className={inputClass}
+          value={query.subtype}
+          onChange={(e) => updateQuery({ subtype: e.target.value as InventoryQuery['subtype'] })}
           aria-label="Category"
         >
           <option value="">Any category</option>
-          {VERTICALS.map((v) => <option key={v.value} value={v.value}>{v.label}</option>)}
+          {INVENTORY_SUBTYPES.map((s) => (
+            <option key={s} value={s}>{subtypeLabel(s)}</option>
+          ))}
         </select>
         <select
-          className="rounded-lg border border-hairline bg-surface-1 px-2.5 py-2 text-sm"
-          value={locationId}
-          onChange={(e) => setParam('location', e.target.value)}
+          className={inputClass}
+          value={query.businessVertical}
+          onChange={(e) => updateQuery({ businessVertical: e.target.value })}
+          aria-label="Business vertical"
+        >
+          <option value="">Any vertical</option>
+          {BUSINESS_VERTICALS.map((v) => (
+            <option key={v} value={v}>{VERTICAL_LABELS[v]}</option>
+          ))}
+        </select>
+        <select
+          className={inputClass}
+          value={query.locationId}
+          onChange={(e) => updateQuery({ locationId: e.target.value })}
           aria-label="Location"
         >
           <option value="">Any location</option>
@@ -298,39 +326,69 @@ export default function CurrentInventory() {
             <option key={l.id} value={l.id}>{l.display_name || l.location_code}</option>
           ))}
         </select>
-        {tab !== 'lots' && (
-          <select
-            className="rounded-lg border border-hairline bg-surface-1 px-2.5 py-2 text-sm"
-            value={gradingCompany}
-            onChange={(e) => setParam('grader', e.target.value)}
-            aria-label="Grading company"
+        <select
+          className={inputClass}
+          value={query.gradingCompany}
+          onChange={(e) => updateQuery({ gradingCompany: e.target.value })}
+          aria-label="Grading company"
+        >
+          <option value="">Any grader</option>
+          {GRADING_COMPANIES.map((g) => <option key={g} value={g}>{g}</option>)}
+        </select>
+        <select
+          className={inputClass}
+          value={query.trackingMode}
+          onChange={(e) => updateQuery({ trackingMode: e.target.value as InventoryQuery['trackingMode'] })}
+          aria-label="Tracking mode"
+        >
+          <option value="">Any tracking</option>
+          <option value="serialized">Individually tracked</option>
+          <option value="lot_managed">Quantity managed</option>
+        </select>
+        <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+          Added from
+          <input
+            type="date"
+            className={inputClass}
+            value={query.addedFrom}
+            onChange={(e) => updateQuery({ addedFrom: e.target.value })}
+            aria-label="Added from"
+          />
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+          to
+          <input
+            type="date"
+            className={inputClass}
+            value={query.addedTo}
+            onChange={(e) => updateQuery({ addedTo: e.target.value })}
+            aria-label="Added to"
+          />
+        </label>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {FLAG_FILTERS.map((f) => (
+          <button
+            key={String(f.key)}
+            type="button"
+            onClick={() => updateQuery({ [f.key]: !query[f.key] } as Partial<InventoryQuery>)}
+            className={`rounded-lg border px-3 py-2 text-sm font-medium ${
+              query[f.key] ? 'border-accent bg-accent/12 text-accent-strong' : 'border-hairline'
+            }`}
           >
-            <option value="">Any grader</option>
-            {GRADING_COMPANIES.map((g) => <option key={g} value={g}>{g}</option>)}
-          </select>
-        )}
-        <button
-          type="button"
-          onClick={() => setParam('needsPhotos', needsPhotos ? '' : '1')}
-          className={`rounded-lg border px-3 py-2 text-sm font-medium ${
-            needsPhotos ? 'border-accent bg-accent/12 text-accent-strong' : 'border-hairline'
-          }`}
-        >
-          Needs photos
-        </button>
-        <button
-          type="button"
-          onClick={() => setParam('needsLocation', needsLocation ? '' : '1')}
-          className={`rounded-lg border px-3 py-2 text-sm font-medium ${
-            needsLocation ? 'border-accent bg-accent/12 text-accent-strong' : 'border-hairline'
-          }`}
-        >
-          Needs location
-        </button>
-        {activeFilters > 0 && (
+            {f.label}
+          </button>
+        ))}
+        {activeFilterCount > 0 && (
           <button
             type="button"
-            onClick={() => setParams(query ? new URLSearchParams({ q: query }) : new URLSearchParams(), { replace: true })}
+            onClick={() => updateQuery({
+              subtype: '', businessVertical: '', locationId: '', condition: '',
+              gradingCompany: '', trackingMode: '', addedFrom: '', addedTo: '',
+              hasPhotos: false, needsPhotos: false, needsLocation: false,
+              needsConditionDetails: false, recentlyAdded: false, recentlyMoved: false,
+            })}
             className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-2 text-sm"
           >
             <X className="h-3.5 w-3.5" /> Clear filters
@@ -338,7 +396,51 @@ export default function CurrentInventory() {
         )}
       </div>
 
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+          Sort
+          <select
+            className={inputClass}
+            value={query.sort}
+            onChange={(e) => updateQuery({ sort: e.target.value as InventoryQuery['sort'] })}
+            aria-label="Sort inventory"
+          >
+            {SORT_KEYS.map((k) => <option key={k} value={k}>{SORT_LABELS[k]}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+          Per page
+          <select
+            className={inputClass}
+            value={query.pageSize}
+            onChange={(e) => updateQuery({ pageSize: Number(e.target.value) as InventoryQuery['pageSize'] })}
+            aria-label="Records per page"
+          >
+            {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        {!loading && (
+          <span className="text-xs text-ink-muted">
+            {describeRange(query.page, query.pageSize, total, rows.length)}
+          </span>
+        )}
+      </div>
+
       {error && <div className="rounded border border-danger/40 bg-danger/8 px-3 py-2 text-sm text-danger">{error}</div>}
+
+      {exact && (
+        <button
+          type="button"
+          onClick={() => navigate(detailPath(exact))}
+          className="flex w-full items-center gap-2 rounded-lg border border-accent bg-accent/8 px-3 py-2 text-left text-sm"
+        >
+          <Target className="h-4 w-4 shrink-0 text-accent" />
+          <span className="min-w-0 flex-1 truncate">
+            <span className="font-medium">Exact match:</span> {exact.product_display_name}
+          </span>
+          <span className="font-mono text-xs text-ink-muted">{exact.scan_identifier}</span>
+        </button>
+      )}
 
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-hairline bg-surface-1 px-3 py-2">
@@ -347,16 +449,12 @@ export default function CurrentInventory() {
             <Printer className="h-3.5 w-3.5" /> Print labels
           </button>
           <button
-            onClick={() => navigate(selectedRows[0].kind === 'item'
-              ? `/inventory/current/${selectedRows[0].id}`
-              : `/inventory/lots/${selectedRows[0].id}`)}
-            disabled={!canMoveSelection}
-            title={canMoveSelection
-              ? 'Open the first selected record to move it'
-              : 'Select only individual items, or only quantity lots — they move differently'}
-            className="flex items-center gap-1.5 rounded border border-hairline px-2.5 py-1.5 text-xs font-medium disabled:opacity-50"
+            onClick={() => navigate('/inventory/move', {
+              state: { records: selectedRows.map((r) => ({ kind: r.record_kind, id: r.record_id })) },
+            })}
+            className="flex items-center gap-1.5 rounded border border-hairline px-2.5 py-1.5 text-xs font-medium"
           >
-            <MapPin className="h-3.5 w-3.5" /> Move
+            <MapPin className="h-3.5 w-3.5" /> Move selected
           </button>
           <button onClick={() => setSelected(new Set())} className="text-xs text-ink-muted underline">
             Clear selection
@@ -368,7 +466,7 @@ export default function CurrentInventory() {
         <p className="text-sm text-ink-muted">Loading…</p>
       ) : rows.length === 0 ? (
         <p className="text-sm text-ink-muted">
-          {query || activeFilters > 0
+          {query.q || activeFilterCount > 0
             ? 'Nothing matches those filters.'
             : 'No inventory yet. Add your first item from Add Inventory.'}
         </p>
@@ -392,44 +490,50 @@ export default function CurrentInventory() {
               <tbody className="divide-y divide-hairline">
                 {rows.map((r) => (
                   <tr
-                    key={r.key}
+                    key={r.record_id}
                     className="cursor-pointer hover:bg-surface-2"
-                    onClick={() => navigate(r.kind === 'item'
-                      ? `/inventory/current/${r.id}` : `/inventory/lots/${r.id}`)}
+                    onClick={() => navigate(detailPath(r))}
                   >
                     <td className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
-                        checked={selected.has(r.key)}
-                        onChange={() => toggle(r.key)}
-                        aria-label={`Select ${r.name}`}
+                        checked={selected.has(r.record_id)}
+                        onChange={() => toggle(r.record_id)}
+                        aria-label={`Select ${r.product_display_name}`}
                       />
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-2">
-                        <Thumb path={r.mediaPath} signedUrl={r.mediaPath ? thumbs[r.mediaPath] ?? null : null} />
+                        <Thumb
+                          path={r.primary_media_path}
+                          signedUrl={r.primary_media_path ? thumbs[r.primary_media_path] ?? null : null}
+                        />
                         <div className="min-w-0">
-                          <div className="truncate font-medium">{r.name}</div>
-                          {r.detail && <div className="truncate text-xs text-ink-muted">{r.detail}</div>}
+                          <div className="truncate font-medium">{r.product_display_name}</div>
+                          {r.detail_line && (
+                            <div className="truncate text-xs text-ink-muted">{r.detail_line}</div>
+                          )}
                         </div>
                       </div>
                     </td>
                     <td className="px-3 py-2 text-ink-muted">
                       <span className="flex items-center gap-1 whitespace-nowrap text-xs">
-                        {r.kind === 'item'
+                        {r.record_kind === 'item'
                           ? <><Package className="h-3 w-3" /> Individual</>
                           : <><Boxes className="h-3 w-3" /> Quantity lot</>}
                       </span>
-                      <span className="text-xs text-ink-muted">{verticalLabel(r.vertical)}</span>
+                      <span className="text-xs text-ink-muted">{subtypeLabel(r.inventory_subtype)}</span>
                     </td>
                     <td className="px-3 py-2 tabular-nums">{r.quantity}</td>
-                    <td className="px-3 py-2 text-ink-muted">{r.conditionOrGrade ?? '—'}</td>
+                    <td className="px-3 py-2 text-ink-muted">{r.condition_or_grade ?? '—'}</td>
                     <td className="px-3 py-2 text-ink-muted">
-                      {r.location ?? <span className="text-amber-600">Needs location</span>}
-                      {r.locationRetired && <span className="ml-1 text-xs text-amber-600">(retired)</span>}
+                      {r.location_display_name || r.location_code || (
+                        <span className="text-amber-600">Needs location</span>
+                      )}
+                      {r.location_retired_at && <span className="ml-1 text-xs text-amber-600">(retired)</span>}
                     </td>
-                    <td className="px-3 py-2 font-mono text-xs text-ink-muted">{r.scanIdentifier}</td>
-                    <td className="px-3 py-2 text-ink-muted">{formatDate(r.createdAt)}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-ink-muted">{r.scan_identifier}</td>
+                    <td className="px-3 py-2 text-ink-muted">{formatDate(r.created_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -439,32 +543,55 @@ export default function CurrentInventory() {
           <div className="space-y-2 md:hidden">
             {rows.map((r) => (
               <button
-                key={r.key}
+                key={r.record_id}
                 type="button"
-                onClick={() => navigate(r.kind === 'item'
-                  ? `/inventory/current/${r.id}` : `/inventory/lots/${r.id}`)}
+                onClick={() => navigate(detailPath(r))}
                 className="flex w-full items-start gap-3 rounded-lg border border-hairline bg-surface-1 p-3 text-left"
               >
-                <Thumb path={r.mediaPath} signedUrl={r.mediaPath ? thumbs[r.mediaPath] ?? null : null} />
+                <Thumb
+                  path={r.primary_media_path}
+                  signedUrl={r.primary_media_path ? thumbs[r.primary_media_path] ?? null : null}
+                />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">{r.name}</div>
+                  <div className="truncate font-medium">{r.product_display_name}</div>
                   <div className="mt-0.5 text-xs text-ink-muted">
-                    {r.kind === 'item' ? 'Individual' : `Quantity lot · ${r.quantity}`}
-                    {r.conditionOrGrade ? ` · ${r.conditionOrGrade}` : ''}
+                    {r.record_kind === 'item' ? 'Individual' : `Quantity lot · ${r.quantity}`}
+                    {r.condition_or_grade ? ` · ${r.condition_or_grade}` : ''}
+                    {` · ${subtypeLabel(r.inventory_subtype)}`}
                   </div>
                   <div className="mt-0.5 text-xs text-ink-muted">
-                    {r.location ?? 'Needs location'} · {formatDate(r.createdAt)}
+                    {r.location_display_name || r.location_code || 'Needs location'} · {formatDate(r.created_at)}
                   </div>
-                  <div className="mt-0.5 font-mono text-xs text-ink-muted">{r.scanIdentifier}</div>
+                  <div className="mt-0.5 font-mono text-xs text-ink-muted">{r.scan_identifier}</div>
                 </div>
               </button>
             ))}
           </div>
 
-          <p className="text-xs text-ink-muted">
-            Showing {rows.length} record{rows.length === 1 ? '' : 's'}
-            {rows.length >= 100 ? ' (first 100 — narrow your search to see more)' : ''}.
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="text-xs text-ink-muted">
+              {describeRange(query.page, query.pageSize, total, rows.length)}
+              {pages > 1 && ` · page ${query.page} of ${pages}`}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => updateQuery({ page: query.page - 1 })}
+                disabled={query.page <= 1}
+                className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-2 text-sm font-medium disabled:opacity-40"
+              >
+                <ChevronLeft className="h-4 w-4" /> Previous
+              </button>
+              <button
+                type="button"
+                onClick={() => updateQuery({ page: query.page + 1 })}
+                disabled={query.page >= pages}
+                className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-2 text-sm font-medium disabled:opacity-40"
+              >
+                Next <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
         </>
       )}
 

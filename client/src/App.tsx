@@ -23,6 +23,7 @@ import LotDetail from './pages/LotDetail';
 import ScanFind from './pages/ScanFind';
 import Workbench from './pages/Workbench';
 import CurrentInventory from './pages/CurrentInventory';
+import BulkMove from './pages/BulkMove';
 import ItemDetail from './pages/ItemDetail';
 import IntakeSessions from './pages/IntakeSessions';
 import Locations from './pages/Locations';
@@ -223,6 +224,7 @@ function RoutedContent() {
       {PROVENANCE_ENABLED && <Route path="/scan" element={<ScanFind />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory/lots/:lotId" element={<LotDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory/current" element={<CurrentInventory />} />}
+      {PROVENANCE_ENABLED && <Route path="/inventory/move" element={<BulkMove />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory/current/:itemId" element={<ItemDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/intake-sessions" element={<IntakeSessions />} />}
       {PROVENANCE_ENABLED && <Route path="/locations" element={<Locations />} />}

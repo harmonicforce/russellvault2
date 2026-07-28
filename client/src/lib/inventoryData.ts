@@ -9,6 +9,10 @@
 // boundary, exactly as it is for the intake kernel.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  createdColumn, endOfDayIso, recentCutoffIso, sortSpec, startOfDayIso,
+  type ReadModel, type SortKey,
+} from './inventoryQuery';
 
 export type AnyClient = SupabaseClient<never, never, never>;
 
@@ -31,6 +35,9 @@ export interface ItemOverviewRow {
   needs_location: boolean;
   sku_public_id: string;
   business_vertical: string;
+  inventory_subtype: string;
+  needs_condition_details: boolean;
+  last_moved_at: string | null;
   product_public_id: string;
   product_display_name: string;
   numeric_grade: string | null;
@@ -57,6 +64,9 @@ export interface LotOverviewRow {
   needs_location: boolean;
   sku_public_id: string;
   business_vertical: string;
+  inventory_subtype: string;
+  needs_condition_details: boolean;
+  last_moved_at: string | null;
   product_public_id: string;
   product_display_name: string;
   condition_or_quality: string | null;
@@ -67,6 +77,45 @@ export interface LotOverviewRow {
   serialized_child_count: number;
   media_count: number;
   primary_media_path: string | null;
+}
+
+/**
+ * One row of Current Inventory, at either grain. Serialized parent lots are
+ * absent by construction — they are represented by their own units.
+ */
+export interface RecordOverviewRow {
+  record_kind: 'item' | 'lot';
+  record_id: string;
+  record_public_id: string;
+  parent_lot_id: string | null;
+  product_display_name: string;
+  business_vertical: string;
+  inventory_subtype: string;
+  quantity: number;
+  tracking_mode: 'lot_managed' | 'serialized';
+  condition_or_grade: string | null;
+  condition_or_quality: string | null;
+  grading_company: string | null;
+  location_id: string | null;
+  location_code: string | null;
+  location_display_name: string | null;
+  location_retired_at: string | null;
+  needs_location: boolean;
+  needs_condition_details: boolean;
+  scan_identifier: string;
+  created_at: string;
+  last_moved_at: string | null;
+  media_count: number;
+  primary_media_path: string | null;
+  detail_line: string | null;
+}
+
+export interface RecordPage {
+  rows: RecordOverviewRow[];
+  /** Every record matching the filters, not just this page. */
+  total: number;
+  itemCount: number;
+  lotCount: number;
 }
 
 export interface MediaRow {
@@ -100,9 +149,22 @@ export interface InventoryFilters {
   locationId?: string;
   gradingCompany?: string;
   businessVertical?: string;
+  /** The exact category — graded_card, apparel, electronics, … */
+  subtype?: string;
+  condition?: string;
+  trackingMode?: 'lot_managed' | 'serialized' | '';
+  hasPhotos?: boolean;
   needsPhotos?: boolean;
   /** Records with no active storage location — the workbench's queue. */
   needsLocation?: boolean;
+  needsConditionDetails?: boolean;
+  /** Added, or moved, inside the last RECENT_DAYS. */
+  recentlyAdded?: boolean;
+  recentlyMoved?: boolean;
+  /** Inclusive calendar-day bounds on when the record was added. */
+  addedFrom?: string;
+  addedTo?: string;
+  sort?: SortKey;
   limit?: number;
   offset?: number;
 }
@@ -111,6 +173,46 @@ export interface InventoryFilters {
 function escapeFilterValue(term: string): string {
   return term.replace(/[,()%\\]/g, (c) => `\\${c}`);
 }
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type Query = any;
+
+/**
+ * The filters both read models share, applied identically to each. Every one
+ * of these runs in the database over the whole workspace — none of them
+ * narrows a page that was already fetched, which is the only way a filtered
+ * view and the workbench count that opened it can agree.
+ */
+function applyShared(q: Query, filters: InventoryFilters, view: ReadModel): Query {
+  const created = createdColumn(view);
+  const condition = view === 'record' ? 'condition_or_grade' : 'condition_or_quality';
+
+  const term = (filters.q ?? '').trim();
+  if (term) {
+    // search_text is the view's lowercased haystack of every searchable
+    // identity fact, so one match reaches set names, style codes, colorways
+    // and serials alike. Lowercased here because the column already is.
+    q = q.ilike('search_text', `%${escapeFilterValue(term.toLowerCase())}%`);
+  }
+  if (filters.locationId) q = q.eq('location_id', filters.locationId);
+  if (filters.businessVertical) q = q.eq('business_vertical', filters.businessVertical);
+  if (filters.subtype) q = q.eq('inventory_subtype', filters.subtype);
+  if (filters.condition) q = q.eq(condition, filters.condition);
+  if (filters.trackingMode) q = q.eq('tracking_mode', filters.trackingMode);
+  if (filters.hasPhotos) q = q.gt('media_count', 0);
+  if (filters.needsPhotos) q = q.eq('media_count', 0);
+  if (filters.needsLocation) q = q.eq('needs_location', true);
+  if (filters.needsConditionDetails) q = q.eq('needs_condition_details', true);
+  if (filters.recentlyAdded) q = q.gte(created, recentCutoffIso());
+  if (filters.recentlyMoved) q = q.gte('last_moved_at', recentCutoffIso());
+
+  const from = filters.addedFrom ? startOfDayIso(filters.addedFrom) : null;
+  const to = filters.addedTo ? endOfDayIso(filters.addedTo) : null;
+  if (from) q = q.gte(created, from);
+  if (to) q = q.lte(created, to);
+  return q;
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 export function createInventoryData(client: AnyClient, workspaceId: string) {
   const db = client as unknown as {
@@ -131,30 +233,74 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
   };
 
   return {
+    /**
+     * The page Current Inventory renders. One query over the union read model,
+     * so the sort, the filters, the page window and the total all describe the
+     * same set — and the browser never receives more than one page.
+     *
+     * `scope` narrows to one grain; the per-grain counts are reported for the
+     * combined view either way, because "240 items and 37 lots" is a different
+     * and more useful fact than "277 records".
+     */
+    async listRecords(
+      filters: InventoryFilters & { scope?: 'all' | 'items' | 'lots' } = {}
+    ): Promise<RecordPage> {
+      // The select spec is passed in rather than re-selected on a shared
+      // builder: PostgREST builders are not reusable once a select is applied,
+      // so each of the three queries below is constructed from scratch with
+      // exactly the same filters.
+      const build = (columns: string, head: boolean) => {
+        let q = db
+          .from('inventory_record_overview')
+          .select(columns, { count: 'exact', head })
+          .eq('workspace_id', workspaceId);
+        if (filters.scope === 'items') q = q.eq('record_kind', 'item');
+        if (filters.scope === 'lots') q = q.eq('record_kind', 'lot');
+        if (filters.gradingCompany) q = q.eq('grading_company', filters.gradingCompany);
+        return applyShared(q, filters, 'record');
+      };
+
+      const spec = sortSpec(filters.sort ?? 'newest', 'record');
+      const limit = filters.limit ?? 50;
+      const offset = filters.offset ?? 0;
+
+      const [page, itemHead, lotHead] = await Promise.all([
+        build('*', false)
+          .order(spec.column, { ascending: spec.ascending, nullsFirst: spec.nullsFirst })
+          // Records of two grains can share every sortable value, so the page
+          // window needs a tiebreaker that is unique across the whole union.
+          .order('record_public_id', { ascending: true })
+          .range(offset, offset + limit - 1),
+        build('record_id', true).eq('record_kind', 'item'),
+        build('record_id', true).eq('record_kind', 'lot'),
+      ]);
+
+      fail(page.error);
+      fail(itemHead.error);
+      fail(lotHead.error);
+      return {
+        rows: (page.data ?? []) as RecordOverviewRow[],
+        total: page.count ?? 0,
+        itemCount: itemHead.count ?? 0,
+        lotCount: lotHead.count ?? 0,
+      };
+    },
+
     async listItems(filters: InventoryFilters = {}): Promise<{ rows: ItemOverviewRow[]; total: number }> {
       let q = db
         .from('inventory_item_overview')
         .select('*', { count: 'exact' })
         .eq('workspace_id', workspaceId);
-      const term = (filters.q ?? '').trim();
-      if (term) {
-        const t = escapeFilterValue(term);
-        q = q.or(
-          `product_display_name.ilike.%${t}%,item_public_id.ilike.%${t}%,scan_sku.ilike.%${t}%,` +
-          `certificate_number.ilike.%${t}%,serial_number.ilike.%${t}%,lot_public_id.ilike.%${t}%`
-        );
-      }
-      if (filters.locationId) q = q.eq('location_id', filters.locationId);
+      q = applyShared(q, filters, 'item');
       if (filters.gradingCompany) q = q.eq('grading_company', filters.gradingCompany);
-      if (filters.businessVertical) q = q.eq('business_vertical', filters.businessVertical);
-      if (filters.needsPhotos) q = q.eq('media_count', 0);
-      // Evaluated in the view, over the whole workspace — not in the browser
-      // over one page — so this agrees with the workbench's count.
-      if (filters.needsLocation) q = q.eq('needs_location', true);
+      const spec = sortSpec(filters.sort ?? 'newest', 'item');
       const limit = filters.limit ?? 50;
       const offset = filters.offset ?? 0;
       const { data, error, count } = await q
-        .order('item_created_at', { ascending: false })
+        // A second, always-unique key so a page boundary can never drop or
+        // repeat a row when many records share the primary sort value.
+        .order(spec.column, { ascending: spec.ascending, nullsFirst: spec.nullsFirst })
+        .order('item_public_id', { ascending: true })
         .range(offset, offset + limit - 1);
       fail(error);
       return { rows: (data ?? []) as ItemOverviewRow[], total: count ?? 0 };
@@ -164,26 +310,79 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
       let q = db
         .from('inventory_lot_overview')
         .select('*', { count: 'exact' })
-        .eq('workspace_id', workspaceId)
-        // Serialized lots are represented by their individual units in the
-        // item view; showing both would double-count the same inventory.
-        .eq('tracking_mode', 'lot_managed');
-      const term = (filters.q ?? '').trim();
-      if (term) {
-        const t = escapeFilterValue(term);
-        q = q.or(`product_display_name.ilike.%${t}%,lot_public_id.ilike.%${t}%,sku_public_id.ilike.%${t}%`);
-      }
-      if (filters.locationId) q = q.eq('location_id', filters.locationId);
-      if (filters.businessVertical) q = q.eq('business_vertical', filters.businessVertical);
-      if (filters.needsPhotos) q = q.eq('media_count', 0);
-      if (filters.needsLocation) q = q.eq('needs_location', true);
+        .eq('workspace_id', workspaceId);
+      // Serialized lots are represented by their individual units in the item
+      // view; listing both would count the same physical stock twice. An
+      // explicit tracking-mode filter may narrow this further but can never
+      // widen it back to serialized parents.
+      q = q.eq('tracking_mode', 'lot_managed');
+      q = applyShared(q, filters, 'lot');
+      const spec = sortSpec(filters.sort ?? 'newest', 'lot');
       const limit = filters.limit ?? 50;
       const offset = filters.offset ?? 0;
       const { data, error, count } = await q
-        .order('lot_created_at', { ascending: false })
+        .order(spec.column, { ascending: spec.ascending, nullsFirst: spec.nullsFirst })
+        .order('lot_public_id', { ascending: true })
         .range(offset, offset + limit - 1);
       fail(error);
       return { rows: (data ?? []) as LotOverviewRow[], total: count ?? 0 };
+    },
+
+    /**
+     * The highest-confidence answer to a search: the record whose identifier IS
+     * the term. Scanning a certificate number should land on that slab, not on
+     * whatever else happens to mention those digits somewhere in a name.
+     *
+     * Deliberately conservative. Two hits is an ambiguous answer, not a
+     * confident one, so it returns nothing and lets the ranked list speak.
+     */
+    async findExactRecord(term: string): Promise<RecordOverviewRow | null> {
+      const t = term.trim();
+      if (!t) return null;
+      const esc = escapeFilterValue(t);
+      const { data, error } = await db
+        .from('inventory_record_overview')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .or(`record_public_id.eq.${esc},scan_identifier.eq.${esc}`)
+        .limit(2);
+      fail(error);
+      const rows = (data ?? []) as RecordOverviewRow[];
+      if (rows.length === 1) return rows[0];
+      if (rows.length > 1) return null;
+
+      // Certificate and serial live only at the item grain.
+      const { data: byIdentifier, error: identifierError } = await db
+        .from('inventory_item_overview')
+        .select('item_id')
+        .eq('workspace_id', workspaceId)
+        .or(`certificate_number.eq.${esc},serial_number.eq.${esc}`)
+        .limit(2);
+      fail(identifierError);
+      const hits = (byIdentifier ?? []) as { item_id: string }[];
+      if (hits.length !== 1) return null;
+
+      const { data: record, error: recordError } = await db
+        .from('inventory_record_overview')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .eq('record_kind', 'item')
+        .eq('record_id', hits[0].item_id)
+        .maybeSingle();
+      fail(recordError);
+      return (record as RecordOverviewRow) ?? null;
+    },
+
+    /** Resolve a selection of records by id, for bulk actions. */
+    async recordsByIds(ids: readonly string[]): Promise<RecordOverviewRow[]> {
+      if (ids.length === 0) return [];
+      const { data, error } = await db
+        .from('inventory_record_overview')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .in('record_id', ids as string[]);
+      fail(error);
+      return (data ?? []) as RecordOverviewRow[];
     },
 
     async getItem(itemId: string): Promise<ItemOverviewRow | null> {

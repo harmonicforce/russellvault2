@@ -401,8 +401,8 @@ select is(
 -- + the multi-category / media / movement / read-model additions (5) ---------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  31,
-  'thirty-one migrations are recorded, including the seven additive 20260728 migrations'
+  33,
+  'thirty-three migrations are recorded, including the nine additive 20260728 migrations'
 );
 
 select results_eq(
@@ -438,7 +438,9 @@ select results_eq(
     ('20260728000400_inventory_media'),
     ('20260728000500_inventory_read_models'),
     ('20260728000600_unique_unit_identifiers'),
-    ('20260728000700_read_model_needs_location')$$,
+    ('20260728000700_read_model_needs_location'),
+    ('20260728000800_inventory_subtype'),
+    ('20260728000900_inventory_read_model_operations')$$,
   'the earlier-phase migrations are unmodified and the additive 20260728 migrations follow them'
 );
 

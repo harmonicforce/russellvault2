@@ -24,8 +24,11 @@ function item(over: Partial<ItemOverviewRow> = {}): ItemOverviewRow {
     location_display_name: 'Shelf One',
     location_retired_at: null,
     needs_location: false,
+    needs_condition_details: false,
+    last_moved_at: null,
     sku_public_id: 'RV-S-0000000001',
     business_vertical: 'tcg',
+    inventory_subtype: 'graded_card',
     product_public_id: 'RV-P-0000000001',
     product_display_name: 'Charizard',
     numeric_grade: '10',
@@ -53,8 +56,11 @@ function lot(over: Partial<LotOverviewRow> = {}): LotOverviewRow {
     location_display_name: 'Shelf One',
     location_retired_at: null,
     needs_location: false,
+    needs_condition_details: false,
+    last_moved_at: null,
     sku_public_id: 'RV-S-0000000002',
     business_vertical: 'tcg',
+    inventory_subtype: 'sealed_tcg',
     product_public_id: 'RV-P-0000000002',
     product_display_name: 'Jungle Booster Box',
     condition_or_quality: 'New',
@@ -132,32 +138,47 @@ describe('what a prefill does carry', () => {
 });
 
 describe('choosing the category to prefill into', () => {
-  it('reads a graded slab from its grading company', () => {
+  it('reads the category straight off the stored subtype', () => {
     expect(categoryForItem(item())).toBe('graded_card');
+    expect(categoryForItem(item({ inventory_subtype: 'raw_card' }))).toBe('raw_card');
+    expect(categoryForItem(item({ inventory_subtype: 'footwear' }))).toBe('footwear');
+    expect(categoryForLot(lot())).toBe('sealed_tcg');
   });
 
-  it('falls back to the raw card form for an ungraded card', () => {
-    expect(categoryForItem(item({ grading_company: null }))).toBe('raw_card');
+  it('keeps apparel and electronics apart, which the vertical alone cannot', () => {
+    // Both live in the `other` vertical. Before the subtype was stored, both
+    // reopened as Other Collectible and the operator's original choice was lost.
+    expect(categoryForItem(item({
+      business_vertical: 'other', inventory_subtype: 'apparel', grading_company: null,
+    }))).toBe('apparel');
+    expect(categoryForItem(item({
+      business_vertical: 'other', inventory_subtype: 'electronics', grading_company: null,
+    }))).toBe('electronics');
+    expect(categoryForLot(lot({
+      business_vertical: 'other', inventory_subtype: 'apparel',
+    }))).toBe('apparel');
   });
 
-  it('recognizes footwear by its vertical', () => {
-    expect(categoryForItem(item({ grading_company: null, business_vertical: 'footwear' })))
-      .toBe('footwear');
+  it('falls back to the stored facts when the subtype is unclassified', () => {
+    // Records committed before the subtype existed, and records whose facts
+    // did not identify one, still have to open SOME form.
+    expect(categoryForItem(item({ inventory_subtype: 'unclassified' }))).toBe('graded_card');
+    expect(categoryForItem(item({ inventory_subtype: 'unclassified', grading_company: null })))
+      .toBe('raw_card');
+    expect(categoryForItem(item({
+      inventory_subtype: 'unclassified', grading_company: null, business_vertical: 'footwear',
+    }))).toBe('footwear');
+    expect(categoryForLot(lot({ inventory_subtype: 'unclassified', product_format: null })))
+      .toBe('raw_card');
+    expect(categoryForItem(item({
+      inventory_subtype: 'unclassified', grading_company: null, business_vertical: 'other',
+    }))).toBe('other_collectible');
+  });
+
+  it('carries footwear sizing into the footwear form', () => {
     expect(prefillFromItem(item({
-      grading_company: null, business_vertical: 'footwear',
+      inventory_subtype: 'footwear', grading_company: null, business_vertical: 'footwear',
       product_display_name: 'Nike', shoe_size: '10.5', size_system: 'US',
     })).values.size).toBe('10.5');
-  });
-
-  it('sends a sealed product to the sealed form and a single card to the card form', () => {
-    expect(categoryForLot(lot())).toBe('sealed_tcg');
-    expect(categoryForLot(lot({ product_format: null }))).toBe('raw_card');
-  });
-
-  it('sends anything else to the general collectible form', () => {
-    expect(categoryForItem(item({ grading_company: null, business_vertical: 'other' })))
-      .toBe('other_collectible');
-    expect(categoryForLot(lot({ business_vertical: 'other', product_format: null })))
-      .toBe('other_collectible');
   });
 });
