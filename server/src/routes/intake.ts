@@ -130,6 +130,77 @@ router.post(
   })
 );
 
+// List sessions for the workspace, newest-activity first, with a per-state
+// draft-group count so the UI can show "3 open, 1 committed" without a
+// separate round trip per session. No raw ids are required from the caller —
+// this is a plain workspace-scoped, paginated read.
+const MAX_SESSION_PAGE = 100;
+function readSessionLimit(value: unknown): number {
+  const n = Number(value ?? 25);
+  if (!Number.isFinite(n) || n <= 0) return 25;
+  return Math.min(Math.floor(n), MAX_SESSION_PAGE);
+}
+function readSessionOffset(value: unknown): number {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+}
+
+router.get(
+  '/sessions',
+  requireMember,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const limit = readSessionLimit(req.query.limit);
+    const offset = readSessionOffset(req.query.offset);
+    const sessionColumns: string =
+      'id, public_id, label, state, opened_by, opened_at, abandoned_by, abandoned_at, ' +
+      'abandon_reason, created_at, updated_at';
+    const { data: sessions, error, count } = (await client
+      .from('intake_sessions')
+      .select(sessionColumns, { count: 'exact' })
+      .eq('workspace_id', workspaceId)
+      .order('updated_at', { ascending: false })
+      .range(offset, offset + limit - 1)) as unknown as {
+      data: Record<string, unknown>[] | null;
+      error: { message: string } | null;
+      count: number | null;
+    };
+    if (error) throw new SourceReadError(error.message, 400);
+
+    const ids = (sessions ?? []).map((s) => (s as { id: string }).id);
+    const counts: Record<string, Record<string, number>> = {};
+    if (ids.length > 0) {
+      const groupStateColumns: string = 'session_id, state';
+      const { data: groups, error: gErr } = (await client
+        .from('intake_draft_groups')
+        .select(groupStateColumns)
+        .eq('workspace_id', workspaceId)
+        .in('session_id', ids)) as unknown as {
+        data: { session_id: string; state: string }[] | null;
+        error: { message: string } | null;
+      };
+      if (gErr) throw new SourceReadError(gErr.message, 400);
+      for (const row of groups ?? []) {
+        counts[row.session_id] ??= {};
+        counts[row.session_id][row.state] = (counts[row.session_id][row.state] ?? 0) + 1;
+      }
+    }
+
+    res.json({
+      staging: true,
+      authoritative: false,
+      total: count ?? sessions?.length ?? 0,
+      limit,
+      offset,
+      sessions: (sessions ?? []).map((s) => ({
+        ...(s as Record<string, unknown>),
+        groupCounts: counts[(s as { id: string }).id] ?? {},
+      })),
+    });
+  })
+);
+
 // ---- Read-only recovery contract -----------------------------------------
 // These GET routes let a resumed session recover exactly what the server holds:
 // list a session's groups, and fetch one complete group snapshot. They are

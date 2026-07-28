@@ -39,6 +39,18 @@ export interface IntakeSession {
   readonly state: 'open' | 'abandoned';
   readonly group_counts?: Record<string, number>;
 }
+export interface IntakeSessionListItem {
+  readonly id: string;
+  readonly public_id: string;
+  readonly label: string | null;
+  readonly state: 'open' | 'abandoned';
+  readonly opened_at: string;
+  readonly abandoned_at: string | null;
+  readonly abandon_reason: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly groupCounts: Record<string, number>;
+}
 export interface IntakeGroupRef {
   readonly id: string;
   readonly public_id: string;
@@ -251,9 +263,18 @@ export interface EntryRef {
 }
 export type EntryMutationResult = EntryRef | IntakeCommitConflict;
 
+export interface IntakeSessionPage {
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+  readonly sessions: readonly IntakeSessionListItem[];
+}
+
 export interface IntakeTransport {
   createSession(workspaceId: string, label?: string | null): Promise<IntakeSession>;
   resumeSession(workspaceId: string, sessionId: string): Promise<IntakeSession>;
+  listSessions(workspaceId: string, limit?: number, offset?: number): Promise<IntakeSessionPage>;
+  abandonSession(workspaceId: string, sessionId: string, reason?: string | null): Promise<IntakeSession>;
   listGroups(workspaceId: string, sessionId: string): Promise<readonly IntakeGroupSummary[]>;
   getGroupSnapshot(workspaceId: string, groupId: string): Promise<IntakeGroupSnapshot>;
   createGradedGroup(workspaceId: string, sessionId: string, payload: GradedGroupPayload): Promise<IntakeGroupRef>;
@@ -337,6 +358,18 @@ export function createIntakeTransport(
     async resumeSession(workspaceId, sessionId) {
       const body = await request<{ session: IntakeSession }>(
         'GET', `/sessions/${encodeURIComponent(sessionId)}?${ws(workspaceId)}`,
+      );
+      return body.session;
+    },
+    async listSessions(workspaceId, limit = 25, offset = 0) {
+      return request<IntakeSessionPage>(
+        'GET', `/sessions?${ws(workspaceId)}&limit=${limit}&offset=${offset}`,
+      );
+    },
+    async abandonSession(workspaceId, sessionId, reason = null) {
+      const body = await request<{ session: IntakeSession }>(
+        'POST', `/sessions/${encodeURIComponent(sessionId)}/abandon`,
+        { workspaceId, reason },
       );
       return body.session;
     },

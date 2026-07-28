@@ -19,6 +19,7 @@ import provenanceRouter from './routes/provenance.js';
 import acquisitionRouter from './routes/acquisition.js';
 import inventoryIdentityRouter from './routes/inventoryIdentity.js';
 import intakeRouter from './routes/intake.js';
+import locationsRouter from './routes/locations.js';
 
 seedIfEmpty();
 migrateProductType();
@@ -61,6 +62,10 @@ app.use('/api/inventory-identity', inventoryIdentityRouter);
 // Postgres function under the caller's own JWT. The operator Quick Add UI is a
 // separate, still-gated deliverable pending the owner-approved wireflow.
 app.use('/api/intake', intakeRouter);
+// Storage location management shares the same rationale and gates: mounted
+// before the legacy write guard, 404 by default, and every mutation calls a
+// governed SECURITY DEFINER Postgres function under the caller's own JWT.
+app.use('/api/locations', locationsRouter);
 
 app.use('/api', legacyWriteGuard);
 

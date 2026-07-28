@@ -25,12 +25,72 @@ export interface LotDetail {
   readonly atCapacity: boolean;
 }
 
+export interface OriginatingSession {
+  readonly sessionId: string;
+  readonly sessionPublicId: string;
+  readonly sessionLabel: string | null;
+  readonly groupId: string;
+  readonly groupPublicId: string;
+  readonly numericGrade: string | null;
+  readonly gradeDesignation: string | null;
+}
+
 export interface ItemDetail {
   readonly product: IdentityRecord | null;
   readonly sku: IdentityRecord | null;
   readonly lot: IdentityRecord | null;
   readonly item: IdentityRecord;
   readonly location: IdentityRecord | null;
+  readonly session: OriginatingSession | null;
+}
+
+export interface InventoryOverviewRow {
+  readonly item_id: string;
+  readonly item_public_id: string;
+  readonly scan_sku: string;
+  readonly grading_company: string | null;
+  readonly certificate_number: string | null;
+  readonly serial_number: string | null;
+  readonly item_created_at: string;
+  readonly lot_id: string;
+  readonly lot_public_id: string;
+  readonly tracking_mode: 'lot_managed' | 'serialized';
+  readonly lot_quantity: number;
+  readonly location_id: string | null;
+  readonly location_public_id: string | null;
+  readonly location_code: string | null;
+  readonly location_display_name: string | null;
+  readonly location_retired_at: string | null;
+  readonly sku_id: string;
+  readonly sku_public_id: string;
+  readonly business_vertical: string;
+  readonly product_id: string;
+  readonly product_public_id: string;
+  readonly product_display_name: string;
+}
+
+export interface InventoryOverviewFilters {
+  readonly q?: string;
+  readonly gradingCompany?: string;
+  readonly locationId?: string;
+  readonly trackingMode?: string;
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+export interface InventoryOverviewPage {
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+  readonly rows: readonly InventoryOverviewRow[];
+}
+
+export interface WorkspaceSummaryStats {
+  readonly totalLots: number;
+  readonly serializedItems: number;
+  readonly itemsAddedLast7Days: number;
+  readonly openIntakeSessions: number;
+  readonly itemsWithoutActiveLocation: number;
 }
 
 export interface InventoryIdentityTransport {
@@ -39,6 +99,8 @@ export interface InventoryIdentityTransport {
   lookupScan(workspaceId: string, scanSku: string): Promise<IdentityLookupResult>;
   lotDetail(workspaceId: string, lotId: string): Promise<LotDetail>;
   itemDetail(workspaceId: string, itemId: string): Promise<ItemDetail>;
+  overview(workspaceId: string, filters: InventoryOverviewFilters): Promise<InventoryOverviewPage>;
+  summary(workspaceId: string): Promise<WorkspaceSummaryStats>;
 }
 
 /** A resolved serialized-item chain: the raw joined detail plus its summary. */
@@ -134,6 +196,19 @@ export function createInventoryIdentityTransport(
     },
     itemDetail(workspaceId, itemId) {
       return request<ItemDetail>(getToken, `/items/${encodeURIComponent(itemId)}/detail?${ws(workspaceId)}`);
+    },
+    overview(workspaceId, filters) {
+      const params = new URLSearchParams({ workspaceId });
+      if (filters.q) params.set('q', filters.q);
+      if (filters.gradingCompany) params.set('gradingCompany', filters.gradingCompany);
+      if (filters.locationId) params.set('locationId', filters.locationId);
+      if (filters.trackingMode) params.set('trackingMode', filters.trackingMode);
+      params.set('limit', String(filters.limit ?? 50));
+      params.set('offset', String(filters.offset ?? 0));
+      return request<InventoryOverviewPage>(getToken, `/overview?${params.toString()}`);
+    },
+    summary(workspaceId) {
+      return request<WorkspaceSummaryStats>(getToken, `/summary?${ws(workspaceId)}`);
     },
   };
 }

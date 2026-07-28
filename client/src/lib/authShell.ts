@@ -19,6 +19,10 @@ export type AuthShellState =
   // Sign-up succeeded but Supabase Auth requires email confirmation before a
   // session exists (the default posture for a real hosted project).
   | { kind: 'awaiting-confirmation'; email: string }
+  // A password-reset email was requested. Supabase never reveals whether the
+  // address is registered, so this shows regardless — never a fabricated
+  // "email not found" that would leak account existence.
+  | { kind: 'password-reset-sent'; email: string }
   | { kind: 'member'; email: string | null; memberships: Membership[] }
   // Signed in, but a member of no workspace yet. Carries an optional error
   // from a failed create-workspace attempt (never a fabricated membership).
@@ -48,6 +52,7 @@ export interface AuthShellClient {
       error: { message: string } | null;
     }>;
     signOut(): Promise<{ error: { message: string } | null }>;
+    resetPasswordForEmail(email: string): Promise<{ error: { message: string } | null }>;
   };
   from(table: 'workspace_members'): {
     select(columns: 'workspace_id, role'): {
@@ -77,6 +82,7 @@ export interface AuthShellController {
   // Only reachable while signed in; a workspace name is the only input — no
   // other field is ever invented for the caller.
   createWorkspace(name: string): Promise<AuthShellState>;
+  forgotPassword(email: string): Promise<AuthShellState>;
 }
 
 export function createAuthShellController(
@@ -96,6 +102,7 @@ export function createAuthShellController(
       signUp: async () => emit({ kind: 'config-absent' }),
       signOut: async () => emit({ kind: 'config-absent' }),
       createWorkspace: async () => emit({ kind: 'config-absent' }),
+      forgotPassword: async () => emit({ kind: 'config-absent' }),
     };
   }
 
@@ -166,6 +173,14 @@ export function createAuthShellController(
       // the owner; re-resolving membership picks that up, never fabricated
       // client-side.
       return resolveSession();
+    },
+    async forgotPassword(email: string) {
+      const trimmed = email.trim();
+      if (!trimmed) return emit({ kind: 'signed-out', error: 'an email address is required' });
+      emit({ kind: 'loading' });
+      const { error } = await supabase.auth.resetPasswordForEmail(trimmed);
+      if (error) return emit({ kind: 'signed-out', error: error.message });
+      return emit({ kind: 'password-reset-sent', email: trimmed });
     },
   };
 }

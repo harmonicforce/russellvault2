@@ -22,6 +22,7 @@ interface FakeOptions {
   signUpRequiresConfirmation?: boolean;
   membershipError?: string;
   createWorkspaceError?: string;
+  resetPasswordError?: string;
 }
 
 function fakeClient(options: FakeOptions): AuthShellClient {
@@ -51,6 +52,10 @@ function fakeClient(options: FakeOptions): AuthShellClient {
       },
       async signOut() {
         signedIn = false;
+        return { error: null };
+      },
+      async resetPasswordForEmail() {
+        if (options.resetPasswordError) return { error: { message: options.resetPasswordError } };
         return { error: null };
       },
     },
@@ -313,6 +318,30 @@ describe('auth shell states', () => {
     const controller = createAuthShellController(fakeClient({ session: null }), onState);
     const state = await controller.createWorkspace('Orphan Workspace');
     expect(state).toEqual({ kind: 'signed-out' });
+  });
+
+  it('forgotPassword sends a reset email regardless of whether the address is registered', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(fakeClient({ session: null }), onState);
+    const state = await controller.forgotPassword('someone@vault.test');
+    expect(state).toEqual({ kind: 'password-reset-sent', email: 'someone@vault.test' });
+  });
+
+  it('forgotPassword refuses a blank email without a server round-trip', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(fakeClient({ session: null }), onState);
+    const state = await controller.forgotPassword('   ');
+    expect(state).toEqual({ kind: 'signed-out', error: 'an email address is required' });
+  });
+
+  it('a failed forgotPassword request surfaces its error', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(
+      fakeClient({ session: null, resetPasswordError: 'rate limited' }),
+      onState
+    );
+    const state = await controller.forgotPassword('someone@vault.test');
+    expect(state).toEqual({ kind: 'signed-out', error: 'rate limited' });
   });
 });
 

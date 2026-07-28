@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 //
-// Phase 6A Quick Add — RENDERED component tests. These drive the real React
-// component through a fake transport (the SERVER stays authoritative for every
-// rule and outcome — the fake only stands in for its responses) and prove the
-// operator workflow: focus, scanner/Enter advance, keyboard commit guard,
-// session resume, stale reload, duplicate recovery, terminal read-only states,
-// responsive layout, and the shadow indicator. No network, no real Supabase.
+// Quick Add — RENDERED component tests. These drive the real React component
+// through fake transports (the SERVER stays authoritative for every rule and
+// outcome — the fakes only stand in for its responses) and prove the operator
+// workflow: focus, scanner/Enter advance, keyboard commit guard, session
+// resume, stale reload, duplicate recovery, terminal read-only states,
+// responsive layout — and that no raw workspace/session/location id is ever
+// typed anywhere on the page. No network, no real Supabase.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -15,8 +16,10 @@ import type {
   IntakeCommitReceipt,
   IntakeGroupSnapshot,
   IntakeGroupSummary,
+  IntakeSessionListItem,
   IntakeTransport,
 } from '../lib/intakeApi';
+import type { LocationsTransport, StorageLocation } from '../lib/locationsApi';
 
 const WS = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const SESSION = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
@@ -63,12 +66,16 @@ const draftSummary: IntakeGroupSummary = {
   created_at: '2026-07-26T00:00:00Z', updated_at: '2026-07-26T00:00:00Z',
 };
 
+const emptySessionPage = { total: 0, limit: 5, offset: 0, sessions: [] as IntakeSessionListItem[] };
+
 // A fully spy-able fake transport with workable defaults. Individual tests
 // override specific methods to script server outcomes.
 function makeTransport(over: Partial<IntakeTransport> = {}): IntakeTransport {
   return {
     createSession: vi.fn(async () => ({ id: SESSION, public_id: 'RV-ISESS-1', state: 'open' as const })),
     resumeSession: vi.fn(async () => ({ id: SESSION, public_id: 'RV-ISESS-1', state: 'open' as const })),
+    listSessions: vi.fn(async () => emptySessionPage),
+    abandonSession: vi.fn(async () => ({ id: SESSION, public_id: 'RV-ISESS-1', state: 'abandoned' as const })),
     listGroups: vi.fn(async () => [draftSummary]),
     getGroupSnapshot: vi.fn(async () => serverSnapshot()),
     createGradedGroup: vi.fn(async () => ({ id: 'g-1', public_id: 'RV-IG-1', state: 'draft' as const, version: 1 })),
@@ -88,23 +95,40 @@ function makeTransport(over: Partial<IntakeTransport> = {}): IntakeTransport {
   };
 }
 
-function renderQuickAdd(transport: IntakeTransport) {
+function makeLocationsTransport(over: Partial<LocationsTransport> = {}): LocationsTransport {
+  const locations: StorageLocation[] = [
+    { id: 'loc-1', public_id: 'RV-LOC-1', location_code: 'BIN-2', parent_id: null, display_name: 'Bin 2', retired_at: null, created_at: '', updated_at: '' },
+  ];
+  return {
+    list: vi.fn(async () => locations),
+    referenceCounts: vi.fn(async () => ({})),
+    create: vi.fn(async (code: string, name: string | null) => ({
+      id: 'loc-new', public_id: 'RV-LOC-2', location_code: code, parent_id: null,
+      display_name: name, retired_at: null, created_at: '', updated_at: '',
+    })),
+    retire: vi.fn(async () => undefined),
+    ...over,
+  };
+}
+
+function renderQuickAdd(
+  transport: IntakeTransport,
+  opts: { locationsTransport?: LocationsTransport; initialResumeSessionId?: string | null } = {},
+) {
   return render(
     <MemoryRouter>
-      <QuickAdd transport={transport} />
+      <QuickAdd
+        transport={transport}
+        workspaceId={WS}
+        locationsTransport={opts.locationsTransport ?? makeLocationsTransport()}
+        initialResumeSessionId={opts.initialResumeSessionId ?? null}
+      />
     </MemoryRouter>,
   );
 }
 
 async function startNewSession(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText('Workspace id'), WS);
   await user.click(screen.getByRole('button', { name: 'Start new session' }));
-}
-
-async function resume(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText('Workspace id'), WS);
-  await user.type(screen.getByLabelText('Existing session id'), SESSION);
-  await user.click(screen.getByRole('button', { name: 'Resume existing session' }));
 }
 
 let originalWidth: number;
@@ -115,6 +139,28 @@ afterEach(() => {
 });
 
 describe('Quick Add rendered workflow', () => {
+  it('never shows a workspace, session, or location id text input', async () => {
+    const user = userEvent.setup();
+    renderQuickAdd(makeTransport());
+    expect(screen.queryByLabelText(/workspace id/i)).toBeNull();
+    expect(screen.queryByLabelText(/session id/i)).toBeNull();
+    await startNewSession(user);
+    expect(screen.queryByLabelText(/workspace id/i)).toBeNull();
+    expect(screen.queryByLabelText(/session id/i)).toBeNull();
+    // Location is a dropdown, not a free-text id field.
+    expect(screen.getByLabelText('Location code').tagName).toBe('SELECT');
+  });
+
+  it('does not surface internal engineering language (shadow / non-authoritative / phase numbers)', async () => {
+    const user = userEvent.setup();
+    const { container } = renderQuickAdd(makeTransport());
+    await startNewSession(user);
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/non-authoritative/i);
+    expect(text).not.toMatch(/shadow/i);
+    expect(text).not.toMatch(/phase \d/i);
+  });
+
   it('1. starting a session focuses Certificate number', async () => {
     const user = userEvent.setup();
     renderQuickAdd(makeTransport());
@@ -160,11 +206,9 @@ describe('Quick Add rendered workflow', () => {
     expect(t.commit).not.toHaveBeenCalled();
   });
 
-  it('5. a resumed session hydrates the latest editable draft', async () => {
+  it('5. arriving with a session to resume hydrates the latest editable draft automatically', async () => {
     const t = makeTransport();
-    const user = userEvent.setup();
-    renderQuickAdd(t);
-    await resume(user);
+    renderQuickAdd(t, { initialResumeSessionId: SESSION });
     const cert = await screen.findByLabelText('Certificate number');
     await waitFor(() => expect((cert as HTMLInputElement).value).toBe('PSA-88002'));
     expect((screen.getByLabelText('Set name') as HTMLInputElement).value).toBe('Base Set');
@@ -264,9 +308,7 @@ describe('Quick Add rendered workflow', () => {
     const t = makeTransport({
       resumeSession: vi.fn(async () => ({ id: SESSION, public_id: 'RV-ISESS-1', state: 'abandoned' as const })),
     });
-    const user = userEvent.setup();
-    renderQuickAdd(t);
-    await resume(user);
+    renderQuickAdd(t, { initialResumeSessionId: SESSION });
     expect((await screen.findAllByText(/abandoned and read only/i)).length).toBeGreaterThan(0);
     expect(screen.getByRole('button', { name: 'Return to sessions' })).toBeTruthy();
     // No mutation controls.
@@ -277,6 +319,7 @@ describe('Quick Add rendered workflow', () => {
     // No group was ever created by resuming.
     expect(t.createGradedGroup).not.toHaveBeenCalled();
     // Return to sessions drops back to the picker.
+    const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Return to sessions' }));
     expect(await screen.findByRole('button', { name: 'Start new session' })).toBeTruthy();
   });
@@ -317,9 +360,17 @@ describe('Quick Add rendered workflow', () => {
     expect(container.querySelector('.overflow-x-hidden')).not.toBeNull();
   });
 
-  it('13. the SHADOW / NON-AUTHORITATIVE indicator is visible', async () => {
-    renderQuickAdd(makeTransport());
-    expect(screen.getAllByText('SHADOW / NON-AUTHORITATIVE').length).toBeGreaterThan(0);
+  it('13. the location field is a dropdown of active locations with an inline create option', async () => {
+    const locationsTransport = makeLocationsTransport();
+    const user = userEvent.setup();
+    renderQuickAdd(makeTransport(), { locationsTransport });
+    await startNewSession(user);
+    await screen.findByLabelText('Certificate number');
+    await waitFor(() => expect(locationsTransport.list).toHaveBeenCalled());
+    const select = screen.getByLabelText('Location code') as HTMLSelectElement;
+    expect(Array.from(select.options).some((o) => o.textContent?.includes('Bin 2'))).toBe(true);
+    await user.click(screen.getByRole('button', { name: /create a new location/i }));
+    expect(screen.getAllByLabelText('Location code').length).toBe(2);
   });
 
   it('14. focus moves to the first blocker after failed readiness', async () => {
@@ -351,10 +402,25 @@ describe('Quick Add rendered workflow', () => {
     await user.type(screen.getByLabelText('Certificate number'), 'CGC-77001');
     await user.click(screen.getByRole('button', { name: 'Check readiness' }));
     await user.click(await screen.findByRole('button', { name: 'Commit slab' }));
-    const receipt = await screen.findByText(/Idempotent replay/i);
+    const receipt = await screen.findByText(/already recorded/i);
     expect(receipt).toBeTruthy();
     // The single committed item id is shown once; only one commit call was made.
     expect(within(receipt.closest('div')!.parentElement!).getAllByText('RV-ITEM-1').length).toBeGreaterThan(0);
     expect(t.commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('16. offers a one-click continue for the most recently active open session', async () => {
+    const t = makeTransport({
+      listSessions: vi.fn(async () => ({
+        total: 1, limit: 5, offset: 0,
+        sessions: [{
+          id: SESSION, public_id: 'RV-ISESS-1', label: 'Morning batch', state: 'open' as const,
+          opened_at: '2026-07-27T00:00:00Z', abandoned_at: null, abandon_reason: null,
+          created_at: '2026-07-27T00:00:00Z', updated_at: '2026-07-27T01:00:00Z', groupCounts: {},
+        }],
+      })),
+    });
+    renderQuickAdd(t);
+    expect(await screen.findByRole('button', { name: /Continue "Morning batch"/ })).toBeTruthy();
   });
 });

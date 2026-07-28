@@ -1,10 +1,96 @@
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import { Package, ShoppingBag, Link2, Tag, DollarSign, ArrowRight } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+  Package, ShoppingBag, Link2, Tag, DollarSign, ArrowRight,
+  Boxes, ClipboardList, MapPin, PackagePlus, ScanLine,
+} from 'lucide-react';
 import { get } from '../lib/api';
 import { StatTile } from '../components/StatTile';
 import { money, num, shortDate } from '../lib/format';
 import { StatusBadge } from '../components/StatusBadge';
+import { getProvenanceUiConfig } from '../lib/provenanceConfig';
+import { createShadowClient } from '../lib/supabaseShadow';
+import { createInventoryIdentityTransport, type WorkspaceSummaryStats } from '../lib/inventoryIdentityApi';
+import { tokenProviderFromClient } from '../lib/tokenProvider';
+import { useWorkspace } from '../lib/workspaceContext';
+
+/** The Supabase-workspace-scoped section: current-system counts and quick
+ * actions. Kept separate from the legacy panel below (clearly labeled) so
+ * the two inventory systems are never conflated. Only mounted when the
+ * shadow surfaces are enabled and a workspace is selected. */
+function WorkspaceSummarySection() {
+  const { workspace } = useWorkspace();
+  const navigate = useNavigate();
+  const transport = useMemo(() => {
+    const client = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
+    return createInventoryIdentityTransport(tokenProviderFromClient(client));
+  }, []);
+  const [stats, setStats] = useState<WorkspaceSummaryStats | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!workspace) return;
+    transport
+      .summary(workspace.id)
+      .then(setStats)
+      .catch((e: unknown) => setError((e as Error).message));
+  }, [transport, workspace]);
+
+  if (!workspace) return null;
+
+  return (
+    <div className="rounded-xl border border-hairline bg-surface-1 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold">Current Inventory — {workspace.name}</h2>
+        <span className="rounded bg-accent/12 px-2 py-0.5 text-xs font-medium text-accent-strong">
+          New inventory system
+        </span>
+      </div>
+      {error && <p className="mb-2 text-xs text-danger">{error}</p>}
+      {stats && (
+        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <StatTile label="Inventory lots" value={num(stats.totalLots)} icon={<Package className="h-4 w-4" />} />
+          <StatTile label="Serialized items" value={num(stats.serializedItems)} icon={<Boxes className="h-4 w-4" />} />
+          <StatTile label="Added last 7 days" value={num(stats.itemsAddedLast7Days)} icon={<ScanLine className="h-4 w-4" />} />
+          <StatTile label="Open intake sessions" value={num(stats.openIntakeSessions)} icon={<ClipboardList className="h-4 w-4" />} />
+          <StatTile
+            label="Without a location"
+            value={num(stats.itemsWithoutActiveLocation)}
+            icon={<MapPin className="h-4 w-4" />}
+            tone={stats.itemsWithoutActiveLocation > 0 ? 'warning' : 'good'}
+          />
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => navigate('/quick-add')}
+          className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-white"
+        >
+          <PackagePlus className="h-3.5 w-3.5" /> Add graded slab
+        </button>
+        <button
+          onClick={() => navigate('/inventory/current')}
+          className="flex items-center gap-1.5 rounded-lg border border-hairline px-3 py-1.5 text-sm font-medium hover:bg-surface-2"
+        >
+          <Boxes className="h-3.5 w-3.5" /> View inventory
+        </button>
+        <button
+          onClick={() => navigate('/intake-sessions')}
+          className="flex items-center gap-1.5 rounded-lg border border-hairline px-3 py-1.5 text-sm font-medium hover:bg-surface-2"
+        >
+          <ClipboardList className="h-3.5 w-3.5" /> Continue intake
+        </button>
+        <button
+          onClick={() => navigate('/locations')}
+          className="flex items-center gap-1.5 rounded-lg border border-hairline px-3 py-1.5 text-sm font-medium hover:bg-surface-2"
+        >
+          <MapPin className="h-3.5 w-3.5" /> Manage locations
+        </button>
+      </div>
+    </div>
+  );
+}
 
 interface DashboardData {
   inventory: {
@@ -25,6 +111,10 @@ interface DashboardData {
 }
 
 export default function Dashboard() {
+  const config = useMemo(
+    () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
+    []
+  );
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => get<DashboardData>('/dashboard'),
@@ -44,6 +134,12 @@ export default function Dashboard() {
         <p className="text-ink-secondary text-sm mt-1">
           One workbook, four steps: add inventory → connect cost → list on eBay → record sale.
         </p>
+      </div>
+
+      {config && <WorkspaceSummarySection />}
+
+      <div>
+        <h2 className="text-sm font-semibold text-ink-secondary">Legacy spreadsheet-imported inventory</h2>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">

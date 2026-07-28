@@ -25,6 +25,7 @@ function itemDetailFor(id: string): ItemDetail {
     lot: { public_id: `RV-S-${id}` },
     item: { id, public_id: `RV-ITEM-${id}`, scan_sku: `RV-SCAN-${id}` },
     location: { public_id: `RV-LOC-${id}` },
+    session: null,
   };
 }
 
@@ -44,6 +45,8 @@ function fakeTransport(opts: FakeOpts): InventoryIdentityTransport {
       opts.scan ? opts.scan(scanSku) : nyi(),
     lotDetail: async () => nyi(),
     itemDetail: async (_ws, itemId) => (opts.detail ? opts.detail(itemId) : nyi()),
+    overview: async () => nyi(),
+    summary: async () => nyi(),
   };
 }
 

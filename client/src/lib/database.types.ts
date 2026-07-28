@@ -17,6 +17,7 @@ export interface Database {
           name: string;
           sku_prefix: string;
           last_sku_number: number;
+          setup_completed_at: string | null;
           created_by: string;
           created_at: string;
           updated_at: string;
@@ -26,6 +27,7 @@ export interface Database {
           name: string;
           sku_prefix?: string;
           last_sku_number?: number;
+          setup_completed_at?: string | null;
           created_by: string;
           created_at?: string;
           updated_at?: string;
@@ -35,6 +37,7 @@ export interface Database {
           name?: string;
           sku_prefix?: string;
           last_sku_number?: number;
+          setup_completed_at?: string | null;
           created_by?: string;
           created_at?: string;
           updated_at?: string;
