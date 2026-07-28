@@ -54,8 +54,12 @@ export interface ItemOverviewRow {
 export interface LotOverviewRow {
   lot_id: string;
   lot_public_id: string;
+  sku_id: string;
   tracking_mode: 'lot_managed' | 'serialized';
   quantity: number;
+  lot_state: 'active' | 'absorbed' | 'void';
+  /** Active, and holding something. What "can be sold or moved" means. */
+  is_available: boolean;
   lot_created_at: string;
   location_id: string | null;
   location_code: string | null;
@@ -116,6 +120,62 @@ export interface RecordPage {
   total: number;
   itemCount: number;
   lotCount: number;
+}
+
+/** Mirrors public.quantity_adjustment_reason. */
+export const ADJUSTMENT_REASONS = [
+  'received', 'recount', 'damaged', 'lost', 'stolen', 'donated',
+  'internal_use', 'returned_to_supplier', 'sold_elsewhere', 'lot_split',
+  'lot_merge', 'other',
+] as const;
+
+export type AdjustmentReason = (typeof ADJUSTMENT_REASONS)[number];
+
+/** The reasons an operator can choose. Splits and merges write their own. */
+export const OPERATOR_ADJUSTMENT_REASONS: readonly AdjustmentReason[] = [
+  'received', 'recount', 'damaged', 'lost', 'stolen', 'donated',
+  'internal_use', 'returned_to_supplier', 'sold_elsewhere', 'other',
+];
+
+export const ADJUSTMENT_REASON_LABELS: Record<AdjustmentReason, string> = {
+  received: 'Inventory received',
+  recount: 'Recount correction',
+  damaged: 'Damaged',
+  lost: 'Lost',
+  stolen: 'Stolen',
+  donated: 'Donated',
+  internal_use: 'Internal use',
+  returned_to_supplier: 'Returned to supplier',
+  sold_elsewhere: 'Sale recorded elsewhere',
+  lot_split: 'Lot split',
+  lot_merge: 'Lot merge',
+  other: 'Other',
+};
+
+export interface QuantityAdjustmentRow {
+  id: string;
+  public_id: string;
+  lot_id: string;
+  previous_quantity: number;
+  change_amount: number;
+  resulting_quantity: number;
+  reason: AdjustmentReason;
+  note: string | null;
+  source_reference: string | null;
+  adjusted_at: string;
+}
+
+export interface LotLineageRow {
+  id: string;
+  public_id: string;
+  event_kind: 'split' | 'merge';
+  quantity: number;
+  note: string | null;
+  created_at: string;
+  parent_lot_id: string;
+  parent_public_id: string;
+  child_lot_id: string;
+  child_public_id: string;
 }
 
 export interface MediaRow {
@@ -371,6 +431,121 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
         .maybeSingle();
       fail(recordError);
       return (record as RecordOverviewRow) ?? null;
+    },
+
+    /**
+     * Change a lot's quantity. `expectedQuantity` is the number the operator
+     * was looking at: if the lot moved since, the database raises rather than
+     * applying the delta to a number they never saw.
+     */
+    async adjustLotQuantity(input: {
+      lotId: string; change: number; reason: AdjustmentReason;
+      expectedQuantity: number | null; note: string | null; sourceReference?: string | null;
+    }): Promise<void> {
+      const { error } = await db.rpc('adjust_lot_quantity', {
+        p_workspace_id: workspaceId,
+        p_lot_id: input.lotId,
+        p_change: input.change,
+        p_reason: input.reason,
+        p_expected_quantity: input.expectedQuantity,
+        p_note: input.note,
+        p_source_reference: input.sourceReference ?? null,
+      });
+      fail(error);
+    },
+
+    /** Counting a shelf produces a number, not a difference. */
+    async recountLotQuantity(input: {
+      lotId: string; countedQuantity: number; expectedQuantity: number | null; note: string | null;
+    }): Promise<void> {
+      const { error } = await db.rpc('recount_lot_quantity', {
+        p_workspace_id: workspaceId,
+        p_lot_id: input.lotId,
+        p_counted_quantity: input.countedQuantity,
+        p_expected_quantity: input.expectedQuantity,
+        p_note: input.note,
+      });
+      fail(error);
+    },
+
+    async splitLot(input: {
+      lotId: string; quantity: number; toLocationCode: string; note: string | null;
+    }): Promise<{ child_lot_id: string; child_public_id: string; source_quantity: number }> {
+      const { data, error } = await db.rpc('split_inventory_lot', {
+        p_workspace_id: workspaceId,
+        p_lot_id: input.lotId,
+        p_quantity: input.quantity,
+        p_to_location_code: input.toLocationCode,
+        p_note: input.note,
+      });
+      fail(error);
+      return data as { child_lot_id: string; child_public_id: string; source_quantity: number };
+    },
+
+    async mergeLots(input: {
+      survivorLotId: string; absorbedLotIds: readonly string[]; note: string | null;
+    }): Promise<{ survivor_quantity: number; absorbed_count: number }> {
+      const { data, error } = await db.rpc('merge_inventory_lots', {
+        p_workspace_id: workspaceId,
+        p_survivor_lot_id: input.survivorLotId,
+        p_absorbed_lot_ids: input.absorbedLotIds as string[],
+        p_note: input.note,
+      });
+      fail(error);
+      return data as { survivor_quantity: number; absorbed_count: number };
+    },
+
+    /** Why two lots can or cannot merge, in the operator's words. */
+    async mergeCompatibility(survivorLotId: string, absorbedLotId: string): Promise<{
+      compatible: boolean; reasons: string[]; combined_quantity: number;
+    }> {
+      const { data, error } = await db.rpc('lot_merge_compatibility', {
+        p_workspace_id: workspaceId,
+        p_survivor_lot_id: survivorLotId,
+        p_absorbed_lot_id: absorbedLotId,
+      });
+      fail(error);
+      return data as { compatible: boolean; reasons: string[]; combined_quantity: number };
+    },
+
+    /** Lots that could plausibly merge into this one: same SKU, same shelf. */
+    async mergeCandidates(lot: LotOverviewRow): Promise<LotOverviewRow[]> {
+      let q = db
+        .from('inventory_lot_overview')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .eq('sku_id', lot.sku_id)
+        .eq('tracking_mode', 'lot_managed')
+        .eq('lot_state', 'active')
+        .neq('lot_id', lot.lot_id);
+      q = lot.location_id ? q.eq('location_id', lot.location_id) : q.is('location_id', null);
+      const { data, error } = await q.limit(50);
+      fail(error);
+      return (data ?? []) as LotOverviewRow[];
+    },
+
+    async quantityHistory(lotId: string): Promise<QuantityAdjustmentRow[]> {
+      const { data, error } = await db
+        .from('inventory_quantity_adjustments')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .eq('lot_id', lotId)
+        .order('adjusted_at', { ascending: false })
+        .limit(200);
+      fail(error);
+      return (data ?? []) as QuantityAdjustmentRow[];
+    },
+
+    async lotLineage(lotId: string): Promise<LotLineageRow[]> {
+      const { data, error } = await db
+        .from('inventory_lot_lineage_view')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .or(`parent_lot_id.eq.${lotId},child_lot_id.eq.${lotId}`)
+        .order('created_at', { ascending: false })
+        .limit(100);
+      fail(error);
+      return (data ?? []) as LotLineageRow[];
     },
 
     /** Resolve a selection of records by id, for bulk actions. */

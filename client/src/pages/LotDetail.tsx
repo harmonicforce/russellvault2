@@ -9,8 +9,12 @@ import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData, type LotOverviewRow, type MovementRow } from '../lib/inventoryData';
 import { labelForLot } from '../lib/labels';
 import { LabelPreview, MediaPanel, MoveDialog, MovementHistory } from '../components/InventoryPanels';
+import {
+  LotHistoryPanel, MergePanel, QuantityPanel, SplitPanel,
+} from '../components/LotQuantityPanels';
 import { CATEGORIES } from '../lib/intakeCategories';
 import { prefillFromLot } from '../lib/intakePrefill';
+import { subtypeLabel } from '../lib/inventoryQuery';
 
 function formatWhen(iso: string | null): string {
   if (!iso) return '—';
@@ -160,8 +164,16 @@ export default function LotDetail() {
       <section className="rounded-lg border border-hairline bg-surface-1 p-4">
         <h2 className="mb-3 text-sm font-semibold">Details</h2>
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-          <Row label="Category" value={row.business_vertical === 'tcg' ? 'Trading cards' : row.business_vertical === 'footwear' ? 'Footwear' : 'Other'} />
+          <Row label="Category" value={subtypeLabel(row.inventory_subtype)} />
           <Row label="Quantity" value={String(row.quantity)} />
+          {row.lot_state !== 'active' && (
+            <Row
+              label="Status"
+              value={row.lot_state === 'absorbed'
+                ? 'Absorbed into another lot — kept for its history'
+                : 'Voided — kept for its history'}
+            />
+          )}
           <Row label="Tracking" value={serialized ? 'Individually tracked units' : 'Tracked by quantity'} />
           <Row label="Condition" value={row.condition_or_quality} />
           <Row label="Product format" value={row.product_format} />
@@ -185,8 +197,28 @@ export default function LotDetail() {
         onChanged={load}
       />
 
+      {/* Quantity operations belong to quantity-managed lots only. A serialized
+          lot's quantity IS its unit count, and changing it here would make the
+          number disagree with the units that actually exist. */}
+      {!serialized && row.lot_state === 'active' && (
+        <>
+          <QuantityPanel lot={row} data={data} onChanged={load} />
+          <SplitPanel
+            lot={row}
+            locations={locations}
+            data={data}
+            onSplit={(childLotId) => navigate(`/inventory/lots/${childLotId}`)}
+          />
+          <MergePanel lot={row} data={data} onMerged={load} />
+        </>
+      )}
+
+      {!serialized && <LotHistoryPanel lot={row} data={data} />}
+
       <section className="rounded-lg border border-hairline bg-surface-1 p-4">
         <h2 className="mb-3 text-sm font-semibold">Movement history</h2>
+        {/* Deliberately separate from quantity history: this answers "where has
+            it been", not "how many are there". */}
         <MovementHistory movements={movements} locationName={locationName} />
       </section>
 

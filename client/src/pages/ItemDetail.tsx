@@ -17,6 +17,7 @@ import { createLocationsTransport, type StorageLocation } from '../lib/locations
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData, type ItemOverviewRow, type MovementRow } from '../lib/inventoryData';
 import { prefillFromItem } from '../lib/intakePrefill';
+import { subtypeLabel } from '../lib/inventoryQuery';
 import { labelForItem } from '../lib/labels';
 import { LabelPreview, MediaPanel, MoveDialog, MovementHistory } from '../components/InventoryPanels';
 import { CATEGORIES } from '../lib/intakeCategories';
@@ -198,7 +199,7 @@ export default function ItemDetail() {
       <section className="rounded-lg border border-hairline bg-surface-1 p-4">
         <h2 className="mb-3 text-sm font-semibold">Details</h2>
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-          <Row label="Category" value={row.business_vertical === 'tcg' ? 'Trading cards' : row.business_vertical === 'footwear' ? 'Footwear' : 'Other'} />
+          <Row label="Category" value={subtypeLabel(row.inventory_subtype)} />
           <Row label="Grading company" value={row.grading_company} />
           <Row label="Grade" value={grade || null} />
           <Row label="Certificate number" value={row.certificate_number} />

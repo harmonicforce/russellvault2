@@ -10,11 +10,10 @@ This is a maintained operational ledger, not a complete project history. Update 
 - Current canonical deployment branch: `claude/ui-better-spreadsheet-cjhwjb`
 - Live app: `https://russellvault2-production.up.railway.app`
 - Supabase project: `ykdyqnvmwpxhowbwhzqz`
-- Last product commit reviewed before these context documents: `16ac93a23acad9a27072ab31c0fe445433355dcf`
-- CI at that commit: green
-- Railway deployment at that commit: successful
+- Last product commit reviewed: see the operations-slice entry below
+- Live Supabase schema: 35 migrations applied
 
-The context-document commits follow that product commit and should not be treated as evidence that product behavior changed.
+The context-document commits are not evidence that product behavior changed.
 
 ## Confirmed implemented foundation
 
@@ -36,6 +35,17 @@ The context-document commits follow that product commit and should not be treate
 - item movement and whole-lot movement with immutable history
 - Daily Workbench foundation
 - plain PostgreSQL and local Supabase database test jobs
+- governed inventory subtype (graded card, raw card, sealed TCG, footwear,
+  apparel, electronics, other collectible, unclassified), persisted at commit
+  and frozen thereafter
+- server-backed pagination, sorting, and filtering over the whole workspace,
+  with the entire query held in the URL
+- expanded search across set, card number, style code, colorway, size, brand,
+  model, certificate, serial and location, with exact identifier matching
+  ranked separately
+- real bulk movement with per-record results and retry of failures alone
+- governed lot quantity adjustments, recount, split, and merge, with
+  append-only quantity history and lot lineage
 
 ## Recently corrected
 
@@ -54,23 +64,16 @@ These are not automatically in scope for every task.
 
 ### Inventory browsing
 
-- true pagination is not yet confirmed; current inventory may still cap results
-- server-backed sorting remains limited
-- condition, work-status, date-range, and several Workbench filters remain incomplete
-- exact Apparel/Electronics/Other subtype preservation may be incomplete
-- search coverage for style code, model, brand, and other non-card facts should be verified
-
-### Bulk operations
-
-- selected-row Move previously opened only the first record; real bulk movement must be verified or implemented
-- partial quantity movement requires an explicit split-lot workflow
+- work-status filters remain undefined (no work-status concept exists yet)
+- "needs source review" and "ready for listing prep" filters await the
+  acquisition and listing-prep features they depend on
 
 ### Corrections and quantity control
 
-- governed correction/supersession workflow is not yet confirmed
-- duplicate voiding without hard deletion is not yet confirmed
-- quantity adjustments, recounts, shrinkage, lot splitting, and lot merging are not yet confirmed
-- cycle counts are not yet confirmed
+- governed correction/supersession workflow is NOT implemented
+- duplicate voiding without hard deletion is NOT implemented (the `void` lot
+  state exists and is enforced, but nothing writes it yet)
+- cycle counts are NOT implemented
 
 ### Media
 
@@ -94,6 +97,35 @@ These are not automatically in scope for every task.
 - the historical mega-PR is not a useful review unit
 - release tags and concise release notes should be introduced
 - hosted Playwright coverage should be added or verified
+
+## Shipped: operations slice (2026-07-28)
+
+Commits on `claude/ui-better-spreadsheet-cjhwjb`, on top of `16ac93a`.
+
+Migrations added and applied to the live project:
+
+- `20260728000800_inventory_subtype`
+- `20260728000900_inventory_read_model_operations`
+- `20260728001000_lot_quantity_governance`
+- `20260728001100_read_model_lot_state`
+
+New governed functions: `adjust_lot_quantity`, `recount_lot_quantity`,
+`split_inventory_lot`, `merge_inventory_lots`, `lot_merge_compatibility`.
+`move_inventory_lot` now refuses empty and absorbed lots.
+
+New read model: `inventory_record_overview`, a SECURITY INVOKER union of both
+grains so one query can page and sort them together. Serialized parent lots and
+absorbed lots are excluded so no physical stock is counted twice; both remain
+readable through `inventory_lot_overview` for their detail pages.
+
+Verified: 281 client tests, client typecheck, client build, lint (3 pre-existing
+fast-refresh warnings), and the full pgTAP suite against a reset plain-PostgreSQL
+shim. Live Supabase confirmed at 35 migrations with all four inventory read
+models SECURITY INVOKER.
+
+NOT verified: hosted acceptance. Egress to the Railway host is blocked from the
+build environment (403 at CONNECT), so `/api/version` could not be read and no
+hosted path was exercised.
 
 ## Next-work guidance
 
