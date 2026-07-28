@@ -310,6 +310,7 @@ export default function IntakeHub({
             onChoose={chooseCategory}
             onContinueSession={(id) => setSessionId(id)}
             onViewSessions={() => navigate('/intake-sessions')}
+            onBatch={() => navigate('/batch-intake')}
           />
         )}
 
@@ -513,6 +514,7 @@ function useWorkspaceIfConfigured(): ReturnType<typeof useWorkspace> | null {
 
 function ChooseCategory({
   recentSessions, sessionId, sessionLabel, onSessionLabel, onChoose, onContinueSession, onViewSessions,
+  onBatch,
 }: {
   recentSessions: readonly IntakeSessionListItem[];
   sessionId: string | null;
@@ -521,6 +523,7 @@ function ChooseCategory({
   onChoose: (key: IntakeCategoryKey) => void;
   onContinueSession: (id: string) => void;
   onViewSessions: () => void;
+  onBatch: () => void;
 }) {
   const openSessions = recentSessions.filter((s) => s.state === 'open');
   return (
@@ -539,6 +542,32 @@ function ChooseCategory({
               <div className="mt-0.5 text-xs text-ink-muted">{c.blurb}</div>
             </button>
           ))}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-sm font-semibold">Adding a lot at once?</h2>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={onBatch}
+            className="rounded-lg border border-hairline bg-surface-1 p-3 text-left hover:border-accent hover:bg-surface-2"
+          >
+            <div className="text-sm font-medium">Batch Intake</div>
+            <div className="mt-0.5 text-xs text-ink-muted">
+              A spreadsheet-style grid for many items of one category.
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={onViewSessions}
+            className="rounded-lg border border-hairline bg-surface-1 p-3 text-left hover:border-accent hover:bg-surface-2"
+          >
+            <div className="text-sm font-medium">Resume Session</div>
+            <div className="mt-0.5 text-xs text-ink-muted">
+              Pick up an intake session you already started.
+            </div>
+          </button>
         </div>
       </section>
 

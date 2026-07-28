@@ -18,6 +18,7 @@ import ImportReview from './pages/ImportReview';
 import AcquisitionReview from './pages/AcquisitionReview';
 import InventoryIdentity from './pages/InventoryIdentity';
 import IntakeHub from './pages/IntakeHub';
+import BatchIntake from './pages/BatchIntake';
 import LotDetail from './pages/LotDetail';
 import ScanFind from './pages/ScanFind';
 import Workbench from './pages/Workbench';
@@ -217,6 +218,7 @@ function RoutedContent() {
       <Route path="/sales" element={<Sales />} />
       <Route path="/checks" element={<Checks />} />
       {PROVENANCE_ENABLED && <Route path="/quick-add" element={<IntakeHub />} />}
+      {PROVENANCE_ENABLED && <Route path="/batch-intake" element={<BatchIntake />} />}
       {PROVENANCE_ENABLED && <Route path="/workbench" element={<Workbench />} />}
       {PROVENANCE_ENABLED && <Route path="/scan" element={<ScanFind />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory/lots/:lotId" element={<LotDetail />} />}
