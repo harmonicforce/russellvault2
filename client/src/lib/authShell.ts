@@ -16,8 +16,13 @@ export type AuthShellState =
   | { kind: 'config-absent' }
   | { kind: 'loading' }
   | { kind: 'signed-out'; error?: string }
+  // Sign-up succeeded but Supabase Auth requires email confirmation before a
+  // session exists (the default posture for a real hosted project).
+  | { kind: 'awaiting-confirmation'; email: string }
   | { kind: 'member'; email: string | null; memberships: Membership[] }
-  | { kind: 'no-membership'; email: string | null };
+  // Signed in, but a member of no workspace yet. Carries an optional error
+  // from a failed create-workspace attempt (never a fabricated membership).
+  | { kind: 'no-membership'; email: string | null; error?: string };
 
 // Minimal structural surface of @supabase/supabase-js used by the shell, so
 // tests can substitute a fake without a network or a real project.
@@ -35,6 +40,13 @@ export interface AuthShellClient {
     signInWithPassword(credentials: { email: string; password: string }): Promise<{
       error: { message: string } | null;
     }>;
+    // Standard Supabase Auth sign-up. When email confirmation is required,
+    // Supabase returns a user but NO session; the shell surfaces that
+    // explicitly (awaiting-confirmation) rather than pretending success.
+    signUp(credentials: { email: string; password: string }): Promise<{
+      data: { session: { user: AuthShellUser } | null };
+      error: { message: string } | null;
+    }>;
     signOut(): Promise<{ error: { message: string } | null }>;
   };
   from(table: 'workspace_members'): {
@@ -48,12 +60,23 @@ export interface AuthShellClient {
       }>;
     };
   };
+  // Creating a workspace makes its creator the first owner (a database
+  // trigger, not client logic) — see workspaces_add_creator_as_owner.
+  from(table: 'workspaces'): {
+    insert(row: { name: string; created_by: string }): PromiseLike<{
+      error: { message: string } | null;
+    }>;
+  };
 }
 
 export interface AuthShellController {
   initialize(): Promise<AuthShellState>;
   signIn(email: string, password: string): Promise<AuthShellState>;
+  signUp(email: string, password: string): Promise<AuthShellState>;
   signOut(): Promise<AuthShellState>;
+  // Only reachable while signed in; a workspace name is the only input — no
+  // other field is ever invented for the caller.
+  createWorkspace(name: string): Promise<AuthShellState>;
 }
 
 export function createAuthShellController(
@@ -70,7 +93,9 @@ export function createAuthShellController(
     return {
       initialize: async () => emit({ kind: 'config-absent' }),
       signIn: async () => emit({ kind: 'config-absent' }),
+      signUp: async () => emit({ kind: 'config-absent' }),
       signOut: async () => emit({ kind: 'config-absent' }),
+      createWorkspace: async () => emit({ kind: 'config-absent' }),
     };
   }
 
@@ -109,9 +134,38 @@ export function createAuthShellController(
       if (error) return emit({ kind: 'signed-out', error: error.message });
       return resolveSession();
     },
+    async signUp(email: string, password: string) {
+      emit({ kind: 'loading' });
+      const { data, error } = await supabase.auth.signUp({ email, password });
+      if (error) return emit({ kind: 'signed-out', error: error.message });
+      // No session back means Auth requires email confirmation first — never
+      // claim membership or a signed-in state that does not actually exist.
+      if (!data.session) return emit({ kind: 'awaiting-confirmation', email });
+      return resolveSession();
+    },
     async signOut() {
       await supabase.auth.signOut();
       return emit({ kind: 'signed-out' });
+    },
+    async createWorkspace(name: string) {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) return emit({ kind: 'signed-out', error: sessionError.message });
+      if (!sessionData.session) return emit({ kind: 'signed-out' });
+      const uid = sessionData.session.user.id;
+      const email = sessionData.session.user.email ?? null;
+      const trimmed = name.trim();
+      if (!trimmed) {
+        return emit({ kind: 'no-membership', email, error: 'a workspace name is required' });
+      }
+      emit({ kind: 'loading' });
+      const { error } = await supabase
+        .from('workspaces')
+        .insert({ name: trimmed, created_by: uid });
+      if (error) return emit({ kind: 'no-membership', email, error: error.message });
+      // The workspaces_add_creator_as_owner trigger already made this caller
+      // the owner; re-resolving membership picks that up, never fabricated
+      // client-side.
+      return resolveSession();
     },
   };
 }

@@ -16,7 +16,12 @@ interface FakeOptions {
   // shell must filter to the session user itself.
   roster?: RosterRow[];
   signInError?: string;
+  signUpError?: string;
+  // When true, signUp succeeds but returns no session (email confirmation
+  // required) — the default posture for a real hosted Supabase project.
+  signUpRequiresConfirmation?: boolean;
   membershipError?: string;
+  createWorkspaceError?: string;
 }
 
 function fakeClient(options: FakeOptions): AuthShellClient {
@@ -35,12 +40,35 @@ function fakeClient(options: FakeOptions): AuthShellClient {
         options.session ??= { user: { id: 'u1', email: 'a@b.c' } };
         return { error: null };
       },
+      async signUp(credentials: { email: string; password: string }) {
+        if (options.signUpError) return { data: { session: null }, error: { message: options.signUpError } };
+        if (options.signUpRequiresConfirmation) {
+          return { data: { session: null }, error: null };
+        }
+        signedIn = true;
+        options.session ??= { user: { id: 'u1', email: credentials.email } };
+        return { data: { session: options.session }, error: null };
+      },
       async signOut() {
         signedIn = false;
         return { error: null };
       },
     },
-    from() {
+    from(table: 'workspace_members' | 'workspaces') {
+      if (table === 'workspaces') {
+        return {
+          insert: (row: { name: string; created_by: string }) => {
+            if (options.createWorkspaceError) {
+              return Promise.resolve({ error: { message: options.createWorkspaceError } });
+            }
+            // Simulate the workspaces_add_creator_as_owner DB trigger: the
+            // creator becomes the first owner of the new workspace.
+            options.roster ??= [];
+            options.roster.push({ workspace_id: 'ws-new', role: 'owner', user_id: row.created_by });
+            return Promise.resolve({ error: null });
+          },
+        } as never;
+      }
       return {
         select: () => ({
           eq: (_column: 'user_id', value: string) =>
@@ -55,7 +83,7 @@ function fakeClient(options: FakeOptions): AuthShellClient {
                   }
             ),
         }),
-      };
+      } as never;
     },
   };
 }
@@ -202,6 +230,89 @@ describe('auth shell states', () => {
     );
     const state = await controller.initialize();
     expect(state).toEqual({ kind: 'signed-out', error: 'network down' });
+  });
+
+  it('sign-up with immediate confirmation reaches no-membership (a fresh account has none yet)', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(fakeClient({ session: null, roster: [] }), onState);
+    const state = await controller.signUp('new@vault.test', 'pw123456');
+    expect(state).toEqual({ kind: 'no-membership', email: 'new@vault.test' });
+  });
+
+  it('sign-up requiring email confirmation never fabricates a session', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(
+      fakeClient({ session: null, signUpRequiresConfirmation: true }),
+      onState
+    );
+    const state = await controller.signUp('new@vault.test', 'pw123456');
+    expect(state).toEqual({ kind: 'awaiting-confirmation', email: 'new@vault.test' });
+  });
+
+  it('a failed sign-up surfaces its error on signed-out', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(
+      fakeClient({ session: null, signUpError: 'User already registered' }),
+      onState
+    );
+    const state = await controller.signUp('dup@vault.test', 'pw123456');
+    expect(state).toEqual({ kind: 'signed-out', error: 'User already registered' });
+  });
+
+  it('creating a workspace while signed in reaches member state as the owner', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(
+      fakeClient({ session: { user: { id: 'u1', email: 'owner@vault.test' } }, roster: [] }),
+      onState
+    );
+    await controller.initialize();
+    const state = await controller.createWorkspace('The Russell Vault');
+    expect(state).toEqual({
+      kind: 'member',
+      email: 'owner@vault.test',
+      memberships: [{ workspace_id: 'ws-new', role: 'owner' }],
+    });
+  });
+
+  it('creating a workspace with a blank name is refused without a server round-trip', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(
+      fakeClient({ session: { user: { id: 'u1', email: 'owner@vault.test' } }, roster: [] }),
+      onState
+    );
+    await controller.initialize();
+    const state = await controller.createWorkspace('   ');
+    expect(state).toEqual({
+      kind: 'no-membership',
+      email: 'owner@vault.test',
+      error: 'a workspace name is required',
+    });
+  });
+
+  it('a failed create-workspace attempt surfaces its error and stays no-membership', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(
+      fakeClient({
+        session: { user: { id: 'u1', email: 'owner@vault.test' } },
+        roster: [],
+        createWorkspaceError: 'workspace name already exists',
+      }),
+      onState
+    );
+    await controller.initialize();
+    const state = await controller.createWorkspace('Duplicate Name');
+    expect(state).toEqual({
+      kind: 'no-membership',
+      email: 'owner@vault.test',
+      error: 'workspace name already exists',
+    });
+  });
+
+  it('createWorkspace while signed out fails closed to signed-out', async () => {
+    const { onState } = collector();
+    const controller = createAuthShellController(fakeClient({ session: null }), onState);
+    const state = await controller.createWorkspace('Orphan Workspace');
+    expect(state).toEqual({ kind: 'signed-out' });
   });
 });
 
