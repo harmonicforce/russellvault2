@@ -261,12 +261,33 @@ select ok((select count(*)::int from public.inventory_item_overview) > 0,
 select ok((select count(*)::int from public.inventory_lot_overview) > 0,
   'the lot read model shows a member their own inventory');
 
--- A serialized lot is excluded from the lot read model, so its units are not
--- counted twice — once as items and again as their parent lot.
+-- No double counting: a serialized lot's units are inventory in their own
+-- right, so the lot must never be listed ALONGSIDE them as quantity stock.
+-- The read model still resolves the lot by id — its detail page has to work —
+-- so the guarantee is the listing predicate, which is what Current Inventory's
+-- quantity tab applies.
 select is(
-  (select count(*)::int from public.inventory_lot_overview where lot_id = pg_temp.get('slot')),
+  (select count(*)::int from public.inventory_lot_overview
+     where tracking_mode = 'lot_managed' and lot_id = pg_temp.get('slot')),
   0,
   'a serialized lot is not listed as quantity inventory (no double counting)');
+select is(
+  (select count(*)::int from public.inventory_lot_overview
+     where tracking_mode = 'lot_managed' and lot_id = pg_temp.get('lot')),
+  1,
+  'a lot-managed lot IS listed as quantity inventory');
+-- Its units are counted exactly once, as items.
+select is(
+  (select count(*)::int from public.inventory_item_overview
+     where lot_id = pg_temp.get('slot')),
+  2,
+  'a serialized lot''s units are counted once each, as items');
+-- The lot itself is still reachable by id so its detail page can render.
+select is(
+  (select serialized_child_count::int from public.inventory_lot_overview
+     where lot_id = pg_temp.get('slot')),
+  2,
+  'a serialized lot is still resolvable by id, reporting its unit count');
 select pg_temp.logout();
 
 -- Multi-category identity ------------------------------------------------------
