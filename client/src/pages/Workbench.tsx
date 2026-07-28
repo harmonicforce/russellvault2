@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Camera, ClipboardList, ListChecks, MapPin, PackagePlus } from 'lucide-react';
+import { Camera, ClipboardList, HelpCircle, ListChecks, MapPin, PackagePlus } from 'lucide-react';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData } from '../lib/inventoryData';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
@@ -86,6 +86,11 @@ export default function Workbench() {
   }, [config]);
 
   const [counts, setCounts] = useState({ needsLocation: 0, needsPhotos: 0, total: 0 });
+  const [opsCounts, setOpsCounts] = useState({
+    unclassified: 0, needsConditionDetails: 0, zeroQuantity: 0,
+  });
+  const [unclassified, setUnclassified] = useState<QueueRow[]>([]);
+  const [needsCondition, setNeedsCondition] = useState<QueueRow[]>([]);
   const [needsLocation, setNeedsLocation] = useState<QueueRow[]>([]);
   const [needsPhotos, setNeedsPhotos] = useState<QueueRow[]>([]);
   const [openSessions, setOpenSessions] = useState<readonly IntakeSessionListItem[]>([]);
@@ -97,14 +102,32 @@ export default function Workbench() {
     setLoading(true);
     setError(null);
     try {
-      const [c, loc, photos] = await Promise.all([
+      const [c, loc, photos, ops, unclassifiedRows, conditionRows] = await Promise.all([
         data.workQueueCounts(),
         data.workQueue('needs_location'),
         data.workQueue('needs_photos'),
+        data.operationsQueueCounts(),
+        data.operationsQueueRows('unclassified'),
+        data.operationsQueueRows('needs_condition_details'),
       ]);
       setCounts(c);
       setNeedsLocation(loc);
       setNeedsPhotos(photos);
+      setOpsCounts(ops);
+      // The record stream and the work queue name their columns differently;
+      // this is the one place that difference is reconciled.
+      const asQueueRow = (r: {
+        record_kind: 'item' | 'lot'; record_id: string;
+        record_public_id: string; product_display_name: string; created_at: string;
+      }): QueueRow => ({
+        subject_kind: r.record_kind,
+        subject_id: r.record_id,
+        subject_public_id: r.record_public_id,
+        display_name: r.product_display_name,
+        created_at: r.created_at,
+      });
+      setUnclassified(unclassifiedRows.map(asQueueRow));
+      setNeedsCondition(conditionRows.map(asQueueRow));
       if (intake) {
         const page = await intake.listSessions(workspace.id, 10, 0);
         setOpenSessions(page.sessions.filter((s) => s.state === 'open'));
@@ -161,6 +184,26 @@ export default function Workbench() {
           actionLabel="Add photos"
           onOpen={open}
           onViewAll={() => navigate('/inventory/current?needsPhotos=1')}
+        />
+        <QueueCard
+          icon={<HelpCircle className="h-4 w-4 text-accent" />}
+          title="Unclassified category"
+          count={opsCounts.unclassified}
+          explanation="Records whose stored facts do not identify an exact category. Nothing was guessed — these need an operator to say what they are."
+          rows={unclassified}
+          actionLabel="Review"
+          onOpen={open}
+          onViewAll={() => navigate('/inventory/current?subtype=unclassified')}
+        />
+        <QueueCard
+          icon={<ClipboardList className="h-4 w-4 text-accent" />}
+          title="Needs condition details"
+          count={opsCounts.needsConditionDetails}
+          explanation="No condition or grade recorded. These cannot be listed honestly until someone assesses them."
+          rows={needsCondition}
+          actionLabel="Add details"
+          onOpen={open}
+          onViewAll={() => navigate('/inventory/current?needsConditionDetails=1')}
         />
 
         <section className="rounded-lg border border-hairline bg-surface-1 p-4">

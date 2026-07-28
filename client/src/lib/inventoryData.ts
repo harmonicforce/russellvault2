@@ -727,6 +727,48 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
       };
     },
 
+    /**
+     * Queues read from the SAME view Current Inventory pages, so a count here
+     * and the filtered list it opens can never disagree — that mismatch is
+     * exactly what made the old workbench untrustworthy.
+     */
+    async operationsQueueCounts(): Promise<{
+      unclassified: number; needsConditionDetails: number; zeroQuantity: number;
+    }> {
+      const base = () => db
+        .from('inventory_record_overview')
+        .select('record_id', { count: 'exact', head: true })
+        .eq('workspace_id', workspaceId);
+      const [unclassified, condition, zero] = await Promise.all([
+        base().eq('inventory_subtype', 'unclassified'),
+        base().eq('needs_condition_details', true),
+        base().eq('record_kind', 'lot').eq('quantity', 0),
+      ]);
+      for (const r of [unclassified, condition, zero]) fail(r.error);
+      return {
+        unclassified: unclassified.count ?? 0,
+        needsConditionDetails: condition.count ?? 0,
+        zeroQuantity: zero.count ?? 0,
+      };
+    },
+
+    /** The first few records of an operations queue, for the workbench card. */
+    async operationsQueueRows(
+      kind: 'unclassified' | 'needs_condition_details' | 'zero_quantity',
+      limit = 5
+    ): Promise<RecordOverviewRow[]> {
+      let q = db
+        .from('inventory_record_overview')
+        .select('*')
+        .eq('workspace_id', workspaceId);
+      if (kind === 'unclassified') q = q.eq('inventory_subtype', 'unclassified');
+      if (kind === 'needs_condition_details') q = q.eq('needs_condition_details', true);
+      if (kind === 'zero_quantity') q = q.eq('record_kind', 'lot').eq('quantity', 0);
+      const { data, error } = await q.order('created_at', { ascending: false }).limit(limit);
+      fail(error);
+      return (data ?? []) as RecordOverviewRow[];
+    },
+
     async workQueue(kind: 'needs_location' | 'needs_photos', limit = 10) {
       const { data, error } = await db
         .from('inventory_work_queue')
