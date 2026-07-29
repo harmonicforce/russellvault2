@@ -87,27 +87,34 @@ Before claiming completion:
 
 1. run all required repository checks;
 2. confirm required CI is green;
-3. push to the canonical deployment branch;
-4. confirm Railway deployment success;
-5. verify `/api/version` returns the final SHA;
-6. run the task-specific hosted acceptance path;
-7. update `docs/ai/CURRENT_STATE.md` with:
-   - final SHA;
-   - what changed;
-   - what was verified;
-   - known remaining limitations.
+3. push to the canonical branch required by the work order;
+4. confirm Railway deployment success when network access permits;
+5. verify `/api/version` returns the final SHA when network access permits;
+6. run the task-specific hosted acceptance path when network access permits;
+7. produce the implementation evidence report defined below.
+
+Claude must not update `docs/ai/CURRENT_STATE.md`. That file is maintained independently by ChatGPT after reviewing the implementation report, repository diff, migrations, and available CI or deployment evidence.
+
+## Implementation evidence report
+
+At the end of every work order, report:
+
+1. final commit SHA and branch;
+2. files and migrations changed;
+3. owner workflows completed;
+4. tests run and exact results;
+5. CI job results;
+6. live Supabase migration status;
+7. Railway deployment and `/api/version` verification status;
+8. hosted acceptance result;
+9. incomplete requirements and exact technical reasons;
+10. reversions, false starts, latent defects, flaky tests, blocked egress, and any command whose exit code was not actually checked;
+11. newly discovered follow-up work.
+
+Do not describe a timed-out, cancelled, hanging, skipped, or unchecked command as passing.
+
+Do not treat a per-file timeout wrapper as proof that the underlying test succeeded unless the wrapper's exit code and every child exit code were checked.
 
 ## Final response format
 
-Unless a work order specifies otherwise, report only:
-
-1. final commit SHA;
-2. live URL;
-3. CI result;
-4. migrations applied;
-5. owner workflows completed;
-6. hosted acceptance result;
-7. incomplete requirements with exact reasons;
-8. newly discovered follow-up items.
-
-Do not include a long narrative of routine implementation steps.
+Unless a work order specifies otherwise, keep the evidence report concise and factual. Do not include a long narrative of routine implementation steps.
