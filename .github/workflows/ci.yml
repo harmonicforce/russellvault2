@@ -99,7 +99,13 @@ jobs:
       - name: Reset shadow DB from empty via pinned CLI
         run: SHADOW_DB_RUNNER=supabase-cli npm run db:reset
       - name: Run pgTAP suite inside the local stack
-        run: SHADOW_DB_RUNNER=supabase-cli npm run db:test
+        # Bounded at the step so a blocked suite fails here, with the runner's
+        # own suite timeout inside it, rather than running out the job clock and
+        # reporting as a cancelled job.
+        timeout-minutes: 12
+        run: |
+          set -Eeuo pipefail
+          SHADOW_DB_RUNNER=supabase-cli npm run db:test
       - name: Stop local stack
         if: always()
         run: npx --yes supabase@${{ steps.cli.outputs.version }} stop
@@ -128,7 +134,21 @@ jobs:
       - name: Reset shadow DB from empty (shim runner)
         run: npm run db:reset
       - name: Run pgTAP suite (shim runner)
-        run: npm run db:test
+        # timeout-minutes bounds the STEP; scripts/db/test.mjs additionally
+        # bounds each individual test file and reports a timeout as a failure,
+        # so a blocked file names itself instead of silently holding the job.
+        timeout-minutes: 10
+        run: |
+          set -Eeuo pipefail
+          npm run db:test
+      - name: Prove the concurrency harness fails finitely
+        # Regression guard for the deadlock this suite used to hit: if the
+        # harness ever regains an unbounded wait, this exits nonzero in seconds
+        # instead of the job hanging until its own timeout.
+        timeout-minutes: 3
+        run: |
+          set -Eeuo pipefail
+          node scripts/db/concurrency-deadline-proof.mjs
 
   # --- Full audits (dev + prod), reported but NON-BLOCKING ---
   # Development advisories are surfaced here and must be read separately; they do
