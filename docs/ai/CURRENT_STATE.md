@@ -131,6 +131,36 @@ NOT verified: hosted acceptance. Egress to the Railway host is blocked from the
 build environment (403 at CONNECT), so `/api/version` could not be read and no
 hosted path was exercised.
 
+## Known CI defect: 26_intake_concurrency can hang (pre-existing)
+
+`supabase/tests/26_intake_concurrency.sql` drives real concurrent sessions
+through dblink. Each of its four blocks waits for a session to finish with a
+bounded guard loop (`v_guard > 400`, 0.05s sleep, so ~20 seconds), then calls
+`dblink_get_result`.
+
+If the guard expires while BOTH sessions are still busy, the code proceeds to
+`dblink_get_result` on a session that is still executing, and that call blocks
+forever. The winning session never commits, because the harness is blocked
+waiting on the loser. CI does not fail -- it hangs until something cancels it.
+
+Reproduced locally on 2026-07-29 with the file UNMODIFIED and identical
+migrations: two consecutive full-suite runs, first passed in 21s, second hung
+past 150s. It is non-deterministic and not caused by the operations-slice
+changes, though a slower commit path makes crossing the 20-second threshold
+more likely.
+
+Observed in CI on `a77674a`: the `shadow-db-supabase-stack` job sat on the
+pgTAP step for 21 minutes and was cancelled. The other three jobs -- including
+`shadow-db-postgres-shim`, which runs the same suite -- passed.
+
+An attempted fix (raise the budget, raise an exception instead of blocking)
+made it fail more often rather than less, and was reverted. The file is
+untouched. Fixing it properly means understanding why both sessions can still
+be busy after 20 seconds, which is its own piece of work.
+
+Do NOT weaken or delete this test. It proves a real duplicate-prevention
+guarantee under genuine concurrency.
+
 ## Next-work guidance
 
 Before creating a work order, choose one coherent vertical slice from the incomplete areas rather than combining every open domain.
