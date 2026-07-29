@@ -29,10 +29,28 @@ Implement owner-usable vertical slices in the hosted Russell Vault application. 
 - Do not deploy with red required CI or database tests.
 - Do not modify `harmonicforce/the-russellops`.
 
+## Current-state stewardship
+
+`docs/ai/CURRENT_STATE.md` is maintained by ChatGPT as the independent project-state steward, not by the implementation agent.
+
+Claude must not edit, append to, or rewrite `docs/ai/CURRENT_STATE.md` unless a work order explicitly grants a one-time exception.
+
+At the end of each work order, Claude must instead provide a concise evidence report containing:
+
+- final commit SHA and branch;
+- files and migrations changed;
+- workflows completed;
+- tests and CI results, including failures, cancellations, hangs, and commands whose exit codes were not verified;
+- live migration and Railway verification status;
+- known limitations, reversions, and newly discovered defects.
+
+ChatGPT will inspect the repository and available CI evidence, reconcile that report against the prior state, and update `CURRENT_STATE.md` separately. Claude's report is implementation evidence, not the canonical state record.
+
 ## Current deployment
 
 - Repository: `harmonicforce/russellvault2`
-- Canonical working/deployment branch until formally normalized: `claude/ui-better-spreadsheet-cjhwjb`
+- Stable branch: `main`
+- Deployment branch until Railway is confirmed switched: `claude/ui-better-spreadsheet-cjhwjb`
 - Live app: `https://russellvault2-production.up.railway.app`
 - Supabase project: `ykdyqnvmwpxhowbwhzqz`
 
