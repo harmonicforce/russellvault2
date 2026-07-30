@@ -6,9 +6,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Camera, ClipboardList, FileWarning, HelpCircle, ListChecks, MapPin, PackagePlus } from 'lucide-react';
+import {
+  Camera, ClipboardCheck, ClipboardList, FileWarning, HelpCircle, ListChecks, MapPin, PackagePlus,
+} from 'lucide-react';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData } from '../lib/inventoryData';
+import { createCycleCountApi, type WorkbenchSummary } from '../lib/cycleCountApi';
+import { canonicalPath } from '../lib/cycleCount';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
 import { createIntakeTransport, type IntakeSessionListItem } from '../lib/intakeApi';
@@ -95,6 +99,7 @@ export default function Workbench() {
   const [needsLocation, setNeedsLocation] = useState<QueueRow[]>([]);
   const [needsPhotos, setNeedsPhotos] = useState<QueueRow[]>([]);
   const [openSessions, setOpenSessions] = useState<readonly IntakeSessionListItem[]>([]);
+  const [cycleCounts, setCycleCounts] = useState<WorkbenchSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -112,6 +117,10 @@ export default function Workbench() {
         data.operationsQueueRows('needs_condition_details'),
       ]);
       setOpenCorrections(await data.openCorrectionCount().catch(() => 0));
+      // Bounded counts plus a handful of examples. The Workbench points at the
+      // cycle-count pages; it does not reproduce the workflow.
+      setCycleCounts(await createCycleCountApi(client as never, workspace.id)
+        .workbenchSummary().catch(() => null));
       setCounts(c);
       setNeedsLocation(loc);
       setNeedsPhotos(photos);
@@ -139,7 +148,7 @@ export default function Workbench() {
     } finally {
       setLoading(false);
     }
-  }, [data, workspace, intake]);
+  }, [data, workspace, intake, client]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -243,6 +252,87 @@ export default function Workbench() {
                 </li>
               ))}
             </ul>
+          )}
+        </section>
+
+        <section className="rounded-lg border border-hairline bg-surface-1 p-4">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <ClipboardCheck className="h-4 w-4 text-accent" /> Cycle counts
+            </h2>
+            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold">
+              {(cycleCounts?.active_count ?? 0) + (cycleCounts?.awaiting_review_count ?? 0)}
+            </span>
+          </div>
+          <p className="mb-3 text-xs text-ink-muted">
+            Physical counts in progress and the ones waiting on a decision.
+          </p>
+
+          {cycleCounts === null ? (
+            <p className="text-sm text-ink-muted">Nothing waiting here.</p>
+          ) : (
+            <>
+              <dl className="mb-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                <div className="flex justify-between gap-2">
+                  <dt className="text-ink-muted">Counting now</dt>
+                  <dd className="font-semibold tabular-nums">{cycleCounts.active_count}</dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-ink-muted">Awaiting review</dt>
+                  <dd className="font-semibold tabular-nums">{cycleCounts.awaiting_review_count}</dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-ink-muted">Recounts required</dt>
+                  <dd className="font-semibold tabular-nums">{cycleCounts.recount_required_count}</dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-ink-muted">Unresolved</dt>
+                  <dd className="font-semibold tabular-nums">{cycleCounts.unresolved_discrepancy_count}</dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-ink-muted" title="Unexpected units marked for receiving through Intake. No inventory has been created for them.">
+                    Intake follow-ups
+                  </dt>
+                  <dd className="font-semibold tabular-nums">{cycleCounts.intake_followup_count}</dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-ink-muted">Deferred</dt>
+                  <dd className="font-semibold tabular-nums">{cycleCounts.deferred_count}</dd>
+                </div>
+              </dl>
+
+              {cycleCounts.examples.length === 0 ? (
+                <p className="text-sm text-ink-muted">No count is open.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {cycleCounts.examples.map((e) => (
+                    <li key={e.session_id}>
+                      <button
+                        type="button"
+                        onClick={() => navigate(canonicalPath(e.session_id, e.status))}
+                        className="flex w-full items-center justify-between gap-2 rounded border border-hairline px-3 py-2 text-left text-sm hover:bg-surface-2"
+                      >
+                        <span className="min-w-0 truncate">
+                          {e.root_location_code}
+                          <span className="ml-2 font-mono text-xs text-ink-muted">{e.public_id}</span>
+                        </span>
+                        <span className="shrink-0 text-xs text-accent-strong">
+                          {e.status === 'review' ? 'Review' : e.status === 'draft' ? 'Start' : 'Continue'}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <button
+                type="button"
+                onClick={() => navigate('/cycle-counts')}
+                className="mt-2 text-xs text-accent-strong underline"
+              >
+                Open Cycle Counts
+              </button>
+            </>
           )}
         </section>
 

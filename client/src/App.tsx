@@ -3,7 +3,7 @@ import { NavLink, Route, Routes } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingBag, Link2, Tag, DollarSign, ShieldCheck, Vault,
   FileSearch, Layers, Boxes, PackagePlus, MapPin, ClipboardList, ChevronDown, LogOut,
-  ListChecks, ScanLine, FileWarning,
+  ListChecks, ScanLine, FileWarning, ClipboardCheck,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
@@ -28,6 +28,12 @@ import Corrections from './pages/Corrections';
 import ItemDetail from './pages/ItemDetail';
 import IntakeSessions from './pages/IntakeSessions';
 import Locations from './pages/Locations';
+import CycleCounts from './pages/CycleCounts';
+import CycleCountNew from './pages/CycleCountNew';
+import CycleCountDraft from './pages/CycleCountDraft';
+import CycleCountActive from './pages/CycleCountActive';
+import CycleCountReview from './pages/CycleCountReview';
+import CycleCountAudit from './pages/CycleCountAudit';
 import FirstRunSetup from './components/FirstRunSetup';
 import { isProvenanceUiEnabled } from './lib/provenanceConfig';
 import { useWorkspace } from './lib/workspaceContext';
@@ -50,6 +56,7 @@ const PRIMARY_NAV = [
   { to: '/inventory', label: 'Legacy Inventory', icon: Package, end: true },
   { to: '/intake-sessions', label: 'Intake Sessions', icon: ClipboardList, end: false },
   { to: '/locations', label: 'Locations', icon: MapPin, end: false },
+  { to: '/cycle-counts', label: 'Cycle Counts', icon: ClipboardCheck, end: false },
   { to: '/corrections', label: 'Corrections', icon: FileWarning, end: false },
 ];
 
@@ -231,6 +238,15 @@ function RoutedContent() {
       {PROVENANCE_ENABLED && <Route path="/inventory/current/:itemId" element={<ItemDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/intake-sessions" element={<IntakeSessions />} />}
       {PROVENANCE_ENABLED && <Route path="/locations" element={<Locations />} />}
+      {/* Ordered so /new is not swallowed by the :sessionId parameter. Each
+          route survives direct navigation and a refresh, and the session hook
+          redirects a session whose status belongs on a different page. */}
+      {PROVENANCE_ENABLED && <Route path="/cycle-counts" element={<CycleCounts />} />}
+      {PROVENANCE_ENABLED && <Route path="/cycle-counts/new" element={<CycleCountNew />} />}
+      {PROVENANCE_ENABLED && <Route path="/cycle-counts/:sessionId" element={<CycleCountDraft />} />}
+      {PROVENANCE_ENABLED && <Route path="/cycle-counts/:sessionId/count" element={<CycleCountActive />} />}
+      {PROVENANCE_ENABLED && <Route path="/cycle-counts/:sessionId/review" element={<CycleCountReview />} />}
+      {PROVENANCE_ENABLED && <Route path="/cycle-counts/:sessionId/audit" element={<CycleCountAudit />} />}
       {PROVENANCE_ENABLED && <Route path="/import-review" element={<ImportReview />} />}
       {PROVENANCE_ENABLED && <Route path="/acquisition-review" element={<AcquisitionReview />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory-identity" element={<InventoryIdentity />} />}

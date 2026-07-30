@@ -16,6 +16,8 @@ import { tokenProviderFromClient } from '../lib/tokenProvider';
 import { createLocationsTransport, type StorageLocation } from '../lib/locationsApi';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData, type ItemOverviewRow, type MovementRow } from '../lib/inventoryData';
+import { createCycleCountApi, type LossHistoryRow } from '../lib/cycleCountApi';
+import { LOSS_TERM } from '../lib/cycleCount';
 import { prefillFromItem } from '../lib/intakePrefill';
 import { subtypeLabel } from '../lib/inventoryQuery';
 import { CorrectionHistory, RequestCorrectionDialog } from '../components/CorrectionPanels';
@@ -79,6 +81,7 @@ export default function ItemDetail() {
   const [row, setRow] = useState<ItemOverviewRow | null>(null);
   const [chain, setChain] = useState<ItemChain | null>(null);
   const [movements, setMovements] = useState<MovementRow[]>([]);
+  const [lossEvents, setLossEvents] = useState<readonly LossHistoryRow[]>([]);
   const [locations, setLocations] = useState<readonly StorageLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -102,6 +105,12 @@ export default function ItemDetail() {
       setRow(overview);
       setMovements(history);
       setLocations(locs);
+      // A write-off is rare, so this is loaded quietly and only rendered when
+      // there is one. A failure here must not blank the whole detail page.
+      if (workspace) {
+        createCycleCountApi(client as never, workspace.id)
+          .lossHistory(itemId).then(setLossEvents).catch(() => setLossEvents([]));
+      }
       if (workspace && chainTransport) {
         // The intake-session link comes from the identity chain endpoint.
         chainTransport.itemDetail(workspace.id, itemId).then(setChain).catch(() => setChain(null));
@@ -111,7 +120,7 @@ export default function ItemDetail() {
     } finally {
       setLoading(false);
     }
-  }, [data, itemId, locationsTransport, workspace, chainTransport]);
+  }, [data, itemId, locationsTransport, workspace, chainTransport, client]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -244,6 +253,42 @@ export default function ItemDetail() {
         <h2 className="mb-3 text-sm font-semibold">Movement history</h2>
         <MovementHistory movements={movements} locationName={locationName} />
       </section>
+
+      {/* Only rendered when the unit has actually been written off. The wording
+          is deliberate: this unit existed and its record stands — it stopped
+          being countable stock. It is not a void and not a deletion. */}
+      {lossEvents.length > 0 && (
+        <section className="rounded-lg border border-danger/40 bg-danger/4 p-4">
+          <h2 className="mb-1 text-sm font-semibold text-danger">{LOSS_TERM}</h2>
+          <p className="mb-3 text-xs text-ink-secondary">
+            This unit is written off from countable stock. Its record, identifiers and history are
+            kept in full.
+          </p>
+          <ul className="space-y-2">
+            {lossEvents.map((l) => (
+              <li key={l.loss_public_id} className="rounded border border-hairline bg-surface-1 px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="font-medium">{l.previous_item_state} → {l.new_item_state}</span>
+                  <span className="text-ink-muted">{l.recorded_at}</span>
+                  {l.recorded_by_email && <span className="text-ink-muted">{l.recorded_by_email}</span>}
+                  <span className="font-mono text-ink-muted">{l.loss_public_id}</span>
+                </div>
+                <div className="mt-0.5 text-ink-secondary">{l.reason}</div>
+                {l.cycle_count_session_id && (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/cycle-counts/${l.cycle_count_session_id}/audit`)}
+                    className="mt-1 text-accent underline"
+                  >
+                    Found missing during cycle count {l.cycle_count_public_id}
+                    {l.discrepancy_public_id ? ` · ${l.discrepancy_public_id}` : ''}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="rounded-lg border border-hairline bg-surface-1 p-4">
         <h2 className="mb-3 text-sm font-semibold">Reported problems</h2>
