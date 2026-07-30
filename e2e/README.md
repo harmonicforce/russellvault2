@@ -19,6 +19,11 @@ an actual reload, a governed refusal arriving over the wire.
 - **No teardown.** The schema is append-only by design; deleting a workspace
   would be refused by the database and would misrepresent what the run did.
   Local stacks are disposable, and CI starts a fresh one per run.
+- **No Supabase SDK in the seed.** `@supabase/supabase-js` builds a realtime
+  client on `createClient`, which needs a native WebSocket and therefore
+  Node 22+. The seed subscribes to nothing, so it calls GoTrue and PostgREST
+  over plain `fetch` instead — one fewer dependency and no Node-version
+  coupling. The *application* still uses the SDK; only the harness does not.
 
 ## Running locally
 

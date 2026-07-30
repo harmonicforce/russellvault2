@@ -33,7 +33,6 @@
   "license": "ISC",
   "devDependencies": {
     "@playwright/test": "^1.56.0",
-    "@supabase/supabase-js": "^2.47.10",
     "@types/node": "^22.20.1",
     "concurrently": "^10.0.3",
     "typescript": "^5.9.3"

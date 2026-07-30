@@ -40,6 +40,10 @@ export default defineConfig({
     {
       name: 'desktop',
       use: { ...devices['Desktop Chrome'] },
+      // @mobile specs belong to the phone project. Without this they run in
+      // both, which doubles the cost and reports a phone-width assertion under
+      // a desktop viewport.
+      grepInvert: /@mobile/,
     },
     {
       // The counting screens are used on a phone at a shelf. Specs tagged

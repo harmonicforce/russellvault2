@@ -6,18 +6,25 @@
 // inventory even if pointed at a populated database — a brand-new user is a
 // member of exactly one workspace, the one it just made.
 //
-// The whole seed runs through the anon key under the signed-up user's own
-// session. Locations, products, SKUs, lots and units are all created by the
-// same governed functions the application calls, which means the fixtures are
-// only ever in states the real system can actually produce.
+// The whole seed runs under the signed-up user's own session with the anon key.
+// Locations, products, SKUs, lots and units are all created by the same governed
+// functions the application calls, so the fixtures are only ever in states the
+// real system can actually produce.
+//
+// Plain fetch against GoTrue and PostgREST rather than @supabase/supabase-js:
+// the SDK constructs a realtime client on createClient, which needs a native
+// WebSocket and therefore Node 22+, and this seed never subscribes to anything.
+// Dropping it removes a dependency, removes the Node-version coupling, and
+// leaves the harness doing exactly what it says — signed HTTP calls to the two
+// endpoints the application itself uses.
 
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { e2eEnv } from './env';
 
 export interface SeededWorkspace {
   readonly workspaceId: string;
   readonly email: string;
   readonly password: string;
+  readonly accessToken: string;
   readonly locations: {
     readonly room: string;
     readonly shelfA: string;
@@ -45,23 +52,73 @@ function lotPublicId(index: number): string {
   return `RV-E2E-${LOT_ID_BASE + index}`;
 }
 
-function anonClient(): SupabaseClient {
-  const env = e2eEnv();
-  return createClient(env.supabaseUrl, env.supabaseAnonKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+interface Session {
+  readonly accessToken: string;
+  readonly userId: string;
 }
 
+async function readError(response: Response, what: string): Promise<never> {
+  const body = await response.text().catch(() => '');
+  // Name the step and quote the server. A half-built fixture otherwise surfaces
+  // as a puzzling failure somewhere unrelated.
+  throw new Error(`seed: ${what} failed (${response.status}) — ${body.slice(0, 500)}`);
+}
+
+/** Sign up, and fall back to sign-in if the stack is configured to confirm. */
+async function signUp(email: string, password: string): Promise<Session> {
+  const { supabaseUrl, supabaseAnonKey } = e2eEnv();
+  const headers = { apikey: supabaseAnonKey, 'Content-Type': 'application/json' };
+
+  const signUpResponse = await fetch(`${supabaseUrl}/auth/v1/signup`, {
+    method: 'POST', headers, body: JSON.stringify({ email, password }),
+  });
+  if (!signUpResponse.ok) await readError(signUpResponse, 'sign-up');
+  const signUpBody = await signUpResponse.json() as {
+    access_token?: string; user?: { id?: string };
+  };
+
+  if (signUpBody.access_token && signUpBody.user?.id) {
+    return { accessToken: signUpBody.access_token, userId: signUpBody.user.id };
+  }
+
+  const signInResponse = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+    method: 'POST', headers, body: JSON.stringify({ email, password }),
+  });
+  if (!signInResponse.ok) {
+    await readError(
+      signInResponse,
+      'sign-in after sign-up returned no session (the local stack needs ' +
+      '[auth.email] enable_confirmations = false)'
+    );
+  }
+  const signInBody = await signInResponse.json() as {
+    access_token: string; user: { id: string };
+  };
+  return { accessToken: signInBody.access_token, userId: signInBody.user.id };
+}
+
+function authHeaders(session: Session): Record<string, string> {
+  const { supabaseAnonKey } = e2eEnv();
+  return {
+    apikey: supabaseAnonKey,
+    Authorization: `Bearer ${session.accessToken}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+/** Calls a governed SECURITY DEFINER function through PostgREST. */
 async function rpc(
-  client: SupabaseClient,
+  session: Session,
   fn: string,
   args: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  const { data, error } = await client.rpc(fn, args);
-  // Fail loudly and name the function. A half-built fixture produces a test
-  // failure somewhere unrelated, which is much harder to read than this.
-  if (error) throw new Error(`seed: ${fn} failed — ${error.message}`);
-  return (data ?? {}) as Record<string, unknown>;
+  const { supabaseUrl } = e2eEnv();
+  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/${fn}`, {
+    method: 'POST', headers: authHeaders(session), body: JSON.stringify(args),
+  });
+  if (!response.ok) await readError(response, fn);
+  const body = await response.json().catch(() => ({}));
+  return (body ?? {}) as Record<string, unknown>;
 }
 
 export interface SeedOptions {
@@ -79,67 +136,62 @@ export interface SeedOptions {
 export async function seedWorkspace(options: SeedOptions = {}): Promise<SeededWorkspace> {
   const serializedUnits = options.serializedUnits ?? 2;
   const lotQuantities = options.lotQuantities ?? [12, 4];
+  const { supabaseUrl } = e2eEnv();
 
   const suffix = uniqueSuffix();
   const email = `e2e-${suffix}@russellvault.test`;
   const password = `e2e-${suffix}-Aa1!`;
-  const client = anonClient();
-
-  const { data: signUp, error: signUpError } = await client.auth.signUp({ email, password });
-  if (signUpError) throw new Error(`seed: sign-up failed — ${signUpError.message}`);
-  const userId = signUp.user?.id;
-  if (!userId) {
-    throw new Error(
-      'seed: sign-up returned no user. The local stack needs ' +
-      '[auth.email] enable_confirmations = false so a new user has a session immediately.'
-    );
-  }
-  if (!signUp.session) {
-    const { error: signInError } = await client.auth.signInWithPassword({ email, password });
-    if (signInError) throw new Error(`seed: sign-in failed — ${signInError.message}`);
-  }
+  const session = await signUp(email, password);
 
   // The workspace. An after-insert trigger records the creator as owner, which
   // is what makes every governed call below authorize.
-  const { data: workspace, error: workspaceError } = await client
-    .from('workspaces')
-    .insert({ name: `E2E ${suffix}`, created_by: userId })
-    .select('id')
-    .single();
-  if (workspaceError) throw new Error(`seed: workspace insert failed — ${workspaceError.message}`);
-  const workspaceId = (workspace as { id: string }).id;
+  const workspaceResponse = await fetch(`${supabaseUrl}/rest/v1/workspaces`, {
+    method: 'POST',
+    headers: { ...authHeaders(session), Prefer: 'return=representation' },
+    body: JSON.stringify({ name: `E2E ${suffix}`, created_by: session.userId }),
+  });
+  if (!workspaceResponse.ok) await readError(workspaceResponse, 'workspace insert');
+  const [workspace] = await workspaceResponse.json() as { id: string }[];
+  const workspaceId = workspace.id;
 
   // Complete first-run setup, or every route sits behind the setup gate.
-  const { error: setupError } = await client
-    .from('workspaces')
-    .update({ sku_prefix: 'RV-E2E-', setup_completed_at: new Date().toISOString() })
-    .eq('id', workspaceId);
-  if (setupError) throw new Error(`seed: first-run setup failed — ${setupError.message}`);
+  const setupResponse = await fetch(
+    `${supabaseUrl}/rest/v1/workspaces?id=eq.${workspaceId}`,
+    {
+      method: 'PATCH',
+      headers: authHeaders(session),
+      body: JSON.stringify({
+        sku_prefix: 'RV-E2E-',
+        setup_completed_at: new Date().toISOString(),
+      }),
+    }
+  );
+  if (!setupResponse.ok) await readError(setupResponse, 'first-run setup');
 
   const locations = { room: 'E2E-ROOM', shelfA: 'E2E-SHELF-A', shelfB: 'E2E-SHELF-B' };
-  await rpc(client, 'register_storage_location', {
+  await rpc(session, 'register_storage_location', {
     p_workspace_id: workspaceId, p_location_code: locations.room,
     p_parent_code: null, p_display_name: 'E2E Room',
   });
   for (const [code, name] of [[locations.shelfA, 'Shelf A'], [locations.shelfB, 'Shelf B']]) {
-    await rpc(client, 'register_storage_location', {
+    await rpc(session, 'register_storage_location', {
       p_workspace_id: workspaceId, p_location_code: code,
       p_parent_code: locations.room, p_display_name: name,
     });
   }
 
-  const product = await rpc(client, 'register_product', {
+  const product = await rpc(session, 'register_product', {
     p_workspace_id: workspaceId, p_business_vertical: 'tcg',
     p_display_name: 'E2E Charizard',
     p_product_canonical_key: `tcg|e2e-charizard|${suffix}`,
     p_attrs: { set_name: 'E2E Set', card_number: '4' },
   });
 
-  const slabSku = await rpc(client, 'register_sellable_sku', {
+  const slabSku = await rpc(session, 'register_sellable_sku', {
     p_workspace_id: workspaceId, p_product_id: product.id,
     p_attrs: { grading_company: 'PSA', numeric_grade: '10', product_format: 'Graded slab' },
   });
-  const sealedSku = await rpc(client, 'register_sellable_sku', {
+  const sealedSku = await rpc(session, 'register_sellable_sku', {
     p_workspace_id: workspaceId, p_product_id: product.id,
     p_attrs: { product_format: 'Booster Box', condition_or_quality: 'Sealed' },
   });
@@ -147,7 +199,7 @@ export async function seedWorkspace(options: SeedOptions = {}): Promise<SeededWo
   // Serialized units on shelf A, each with a scannable certificate.
   const certificates: string[] = [];
   if (serializedUnits > 0) {
-    const slabLot = await rpc(client, 'stage_inventory_lot', {
+    const slabLot = await rpc(session, 'stage_inventory_lot', {
       p_workspace_id: workspaceId, p_public_id: lotPublicId(0),
       p_sku_id: slabSku.id, p_tracking_mode: 'serialized', p_quantity: serializedUnits,
       p_location_code: locations.shelfA, p_record_origin: 'e2e',
@@ -155,7 +207,7 @@ export async function seedWorkspace(options: SeedOptions = {}): Promise<SeededWo
     });
     for (let i = 1; i <= serializedUnits; i += 1) {
       const certificate = `E2E-${suffix}-${i}`.toUpperCase();
-      await rpc(client, 'mint_serialized_item', {
+      await rpc(session, 'mint_serialized_item', {
         p_workspace_id: workspaceId, p_lot_id: slabLot.id,
         p_grading_company: 'PSA', p_certificate_number: certificate, p_serial_number: null,
       });
@@ -167,7 +219,7 @@ export async function seedWorkspace(options: SeedOptions = {}): Promise<SeededWo
   const lots: { publicId: string; quantity: number }[] = [];
   for (const [index, quantity] of lotQuantities.entries()) {
     const publicId = lotPublicId(index + 1);
-    await rpc(client, 'stage_inventory_lot', {
+    await rpc(session, 'stage_inventory_lot', {
       p_workspace_id: workspaceId, p_public_id: publicId,
       p_sku_id: sealedSku.id, p_tracking_mode: 'lot_managed', p_quantity: quantity,
       p_location_code: locations.shelfA, p_record_origin: 'e2e',
@@ -176,6 +228,11 @@ export async function seedWorkspace(options: SeedOptions = {}): Promise<SeededWo
     lots.push({ publicId, quantity });
   }
 
-  await client.auth.signOut();
-  return { workspaceId, email, password, locations, certificates, lots };
+  // Nothing is torn down. The workspace is unique to this test and append-only
+  // evidence is the point of the schema — deleting it would be both refused by
+  // the database and dishonest about what the run did.
+  return {
+    workspaceId, email, password, accessToken: session.accessToken,
+    locations, certificates, lots,
+  };
 }
