@@ -119,6 +119,25 @@ select is(
   1,
   'the identity columns of the frozen lot snapshot are still readable');
 
+-- Views are covered by role_table_grants too, and a hosted Supabase project
+-- grants ALL on new tables and views to authenticated by default. Asserting
+-- only the base tables is what let that drift reach the live project unnoticed.
+select is(
+  (select count(*)::int from information_schema.role_table_grants
+    where grantee = 'authenticated'
+      and table_name in ('cycle_count_session_overview', 'cycle_count_post_snapshot_activity')
+      and privilege_type <> 'SELECT'),
+  0,
+  'authenticated holds nothing but SELECT on the cycle-count read models');
+
+select is(
+  (select count(*)::int from information_schema.role_table_grants
+    where grantee = 'authenticated'
+      and (table_name like 'cycle_count%' or table_name = 'inventory_loss_events')
+      and privilege_type in ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER')),
+  0,
+  'and no write privilege of any kind on any cycle-count object, view included');
+
 -- Fixtures --------------------------------------------------------------------
 select pg_temp.login('ca111111-1111-4111-8111-111111111111');
 select public.register_storage_location('ca000000-0000-4000-8000-000000000001', 'ROOM', null, 'Room');
