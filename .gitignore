@@ -28,3 +28,8 @@ backups/
 preflight-evidence/
 *.backup
 
+
+# Playwright browser-test artifacts
+/playwright-report/
+/test-results/
+/blob-report/

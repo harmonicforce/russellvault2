@@ -150,6 +150,67 @@ jobs:
           set -Eeuo pipefail
           node scripts/db/concurrency-deadline-proof.mjs
 
+  # --- Browser workflows against a local stack (local only, never remote) ---
+  # Signs up its own user and creates its own workspace through the anon key, so
+  # there is no service-role key anywhere in this job and nothing it does can
+  # reach a project other than the disposable stack it starts here.
+  browser-workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Clean install (root)
+        run: npm ci
+      - name: Clean install (client)
+        run: npm ci --prefix client
+
+      - name: Read pinned Supabase CLI version
+        id: cli
+        run: echo "version=$(cat supabase/cli-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Start local Supabase stack (pinned CLI, local only)
+        run: npx --yes supabase@${{ steps.cli.outputs.version }} start -x studio,imgproxy
+
+      - name: Apply migrations to the local stack
+        run: SHADOW_DB_RUNNER=supabase-cli npm run db:reset
+
+      # Read from the CLI rather than hardcoded: a pasted key would rot, and a
+      # rotted key fails as an unreadable login rather than as a clear error.
+      - name: Export local stack configuration
+        run: |
+          set -Eeuo pipefail
+          STATUS=$(npx --yes supabase@${{ steps.cli.outputs.version }} status -o json)
+          echo "VITE_SUPABASE_URL=$(echo "$STATUS" | jq -r '.API_URL')" >> "$GITHUB_ENV"
+          echo "VITE_SUPABASE_ANON_KEY=$(echo "$STATUS" | jq -r '.ANON_KEY')" >> "$GITHUB_ENV"
+
+      - name: Typecheck the browser harness
+        run: npm run typecheck:e2e
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the browser workflows
+        timeout-minutes: 20
+        run: |
+          set -Eeuo pipefail
+          npm run test:e2e
+
+      - name: Upload the Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+      - name: Stop local stack
+        if: always()
+        run: npx --yes supabase@${{ steps.cli.outputs.version }} stop
+
   # --- Full audits (dev + prod), reported but NON-BLOCKING ---
   # Development advisories are surfaced here and must be read separately; they do
   # not override the production high/critical block enforced in build-and-verify.

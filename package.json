@@ -19,7 +19,10 @@
     "db:reset": "node scripts/db/reset.mjs",
     "db:test": "node scripts/db/test.mjs",
     "start": "npm run start --prefix server",
-    "seed": "npm run seed --prefix server"
+    "seed": "npm run seed --prefix server",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "typecheck:e2e": "tsc -p tsconfig.e2e.json"
   },
   "repository": {
     "type": "git",
@@ -29,6 +32,10 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "concurrently": "^10.0.3"
+    "@playwright/test": "^1.56.0",
+    "@supabase/supabase-js": "^2.47.10",
+    "@types/node": "^22.20.1",
+    "concurrently": "^10.0.3",
+    "typescript": "^5.9.3"
   }
 }
