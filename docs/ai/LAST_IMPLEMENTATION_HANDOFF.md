@@ -36,28 +36,35 @@ See `docs/ai/CURRENT_STATE.md` under â€œShipped: operations slice (2026-07-28)â€
 | Lint | passed with 3 pre-existing fast-refresh warnings |
 | Full pgTAP against reset plain-PostgreSQL shim | passed |
 | Live Supabase migration inspection | 35 migrations confirmed; four inventory read models confirmed SECURITY INVOKER |
-| Hosted Railway acceptance | not verified; environment egress blocked with 403 CONNECT |
+| Hosted Railway acceptance | not verified by the implementation environment; egress was blocked with 403 CONNECT |
+
+## Current production branch
+
+- Owner-confirmed on 2026-07-30: Railway deploys from `main`.
+- `main` is therefore both the canonical stable branch and the Railway deployment branch.
+- The older statement that production still used `claude/ui-better-spreadsheet-cjhwjb` is superseded.
+- An incoming agent must still inspect the actual `main` head and compare it with any newer work branches before implementation.
 
 ## Not run or not verified
 
-- Hosted `/api/version` and end-to-end Railway acceptance were not verified.
+- Hosted `/api/version` and end-to-end Railway acceptance were not verified by the prior implementation environment.
 - The local Supabase-stack concurrency suite is not reliably green because `26_intake_concurrency.sql` can hang nondeterministically.
 
 ## Known issues and risks
 
 - `supabase/tests/26_intake_concurrency.sql` can deadlock its own harness after the bounded busy-wait expires, then block forever in `dblink_get_result`.
 - Cycle counts are not implemented.
-- Media hardening, owner-facing acquisition/cost completion, Listing Prep, repository normalization, release tags, and hosted Playwright remain incomplete.
-- Production still uses a temporary Claude-named branch.
+- Media hardening, owner-facing acquisition/cost completion, Listing Prep, release tags, and hosted Playwright remain incomplete.
+- Branch ancestry and exact head alignment must be verified before starting new implementation; do not assume the former Claude-named line is ahead of `main`.
 
 ## Owner-only actions
 
-- Approve deployment/default-branch normalization or any production configuration change.
+- Authorize any production deployment or configuration change beyond the existing `main` deployment.
 - Provide access or perform hosted acceptance where the implementation environment cannot reach Railway.
 
 ## Exact next step
 
-Choose one coherent vertical slice. The recommended next engineering sequence is:
+First independently establish the current `main` head, open PRs, and any unmerged descendants. Then choose one coherent vertical slice. The recommended engineering sequence is:
 
 1. repair the nondeterministic `26_intake_concurrency.sql` harness without weakening its real concurrency guarantee;
 2. then implement governed Cycle Count as the next inventory-control slice, including frozen scope/snapshot, blind counting, serialized and lot-managed counts, discrepancy/recount/resolution workflows, Workbench integration, browser coverage, migrations, and complete evidence reporting.
