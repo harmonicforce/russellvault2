@@ -122,25 +122,67 @@ with both rounds preserved.
 
 ---
 
-## Phase C — browser-test infrastructure (open)
+## Phase C — browser-test infrastructure (built, gate not yet green)
 
-The repository has no browser-test infrastructure at all: no Playwright
-dependency, no config, no spec files, no CI job. Phase C builds it.
+**Built and committed.** `playwright.config.ts`, `tsconfig.e2e.json`,
+`e2e/support/{env,seed,fixtures}.ts`, `e2e/smoke.spec.ts`, `e2e/README.md`, and
+a `browser-workflows` CI job that starts its own stack, applies migrations, and
+reads the URL and anon key from `supabase status` rather than a hardcoded value.
 
-Planned deliverables:
+Design points worth keeping:
 
-1. `@playwright/test` dev dependency, pinned; reuse the preinstalled Chromium at
-   `/opt/pw-browsers` rather than downloading (`PLAYWRIGHT_BROWSERS_PATH`,
-   `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`).
-2. `playwright.config.ts` with a single Chromium project, phone and iPad
-   viewports, and a webServer that builds and serves the client.
-3. An authenticated storage-state fixture that signs in once per run.
-4. An isolated-workspace seed and teardown that creates its own workspace,
-   locations and inventory through the governed functions, and never touches an
-   existing workspace.
-5. A CI job running the suite, reported independently of the existing four.
+- **No service-role key.** The seed signs up an ordinary user and does
+  everything through the anon key under that user's own session, so a spec
+  cannot pass by way of privileges the real application lacks.
+- **No Supabase SDK in the harness.** `createClient` builds a realtime client
+  needing native WebSocket (Node 22+); the seed subscribes to nothing, so it
+  calls GoTrue and PostgREST over plain `fetch`.
+- **Isolation from the data model, not from cleanup.** Each test seeds its own
+  user and workspace; a new user belongs to exactly one workspace, so no spec
+  can reach another's data or any pre-existing inventory. Nothing is torn down.
+- **`retries: 0`.** A counting workflow is a sequence of governed writes;
+  retrying re-runs half-applied state against a database that correctly refuses
+  it, so a flake must be read as a failure.
+- **`env.ts` refuses any non-localhost Supabase URL** and has no defaults.
 
-Exit gate: one trivial spec signs in and reaches an authenticated route in CI.
+**Exit gate not yet met.** Docker is unavailable in the development container,
+so the suite cannot be run locally and CI is the only gate. Three runs so far,
+each failing differently and each further along — the harness is converging, not
+stuck:
+
+| Run | Failure | Resolution |
+|---|---|---|
+| `30522061766` | `Node.js detected but native WebSocket not found` | Dropped the Supabase SDK from the harness; seed now uses `fetch` |
+| `30522808770` | `42501` on the workspace insert | `created_by` now taken from the token's `sub` claim, not the sign-up body |
+| `30523428416` | `42501` still, now with diagnostics: `sub=30b98069-… role=authenticated` | **Open** |
+
+The remaining failure is precise: the policy is
+`with check (created_by = (select auth.uid()))`, the token's subject is a valid
+uuid, and `created_by` is set to exactly that subject — yet the insert is
+refused, so `auth.uid()` is evaluating to something else inside PostgREST.
+
+Ranked hypotheses for the next session, most likely first:
+
+1. **PostgREST is not applying the bearer token, and the request runs as
+   `anon`.** The `role=authenticated` in the diagnostic came from decoding the
+   JWT *client-side*; it is not evidence of what PostgREST did. Supabase CLI
+   2.109 issues new-format API keys (`sb_publishable_…`), and a mismatch between
+   the `apikey` header format and the bearer JWT can leave the request on the
+   anon role — under which a `for insert to authenticated` policy never applies
+   and the refusal looks exactly like this. *Probe:* send only `Authorization`
+   without `apikey`, and separately compare `supabase status -o json` key
+   formats against the token.
+2. **`auth.uid()` on the stack resolves from a claim path PostgREST no longer
+   sets.** *Probe:* add a temporary read of `current_setting('request.jwt.claims')`
+   through a throwaway function on a scratch stack — not committed to the
+   repository schema.
+3. **The CLI reset leaves PostgREST's schema cache stale.** Less likely — that
+   usually surfaces as 404, not 42501. *Probe:* `NOTIFY pgrst, 'reload schema'`
+   after `db:reset` in the job.
+
+Note the shim's `auth.uid()` is irrelevant here: `reset.mjs` applies the shim
+only when the `auth` schema is absent, and on the Supabase stack it exists, so
+the platform's own definition is in use.
 
 ## Phase D — the five §25 workflows (open)
 
