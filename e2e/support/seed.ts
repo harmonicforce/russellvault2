@@ -54,7 +54,30 @@ function lotPublicId(index: number): string {
 
 interface Session {
   readonly accessToken: string;
+  /** The token's own `sub` claim — definitionally what auth.uid() returns. */
   readonly userId: string;
+  readonly role: string;
+}
+
+/**
+ * Reads the claims out of a JWT without verifying it. The server verifies;
+ * this only needs to know which subject the token will authorize as.
+ *
+ * `created_by` is taken from `sub` rather than from the sign-up response body
+ * because the RLS policy on workspaces is `created_by = auth.uid()`, and
+ * auth.uid() reads the token. Sourcing it from anywhere else invites exactly
+ * the mismatch that shows up as an opaque 42501.
+ */
+function decodeClaims(token: string): { sub?: string; role?: string } {
+  const payload = token.split('.')[1];
+  if (!payload) return {};
+  try {
+    const json = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64')
+      .toString('utf8');
+    return JSON.parse(json) as { sub?: string; role?: string };
+  } catch {
+    return {};
+  }
 }
 
 async function readError(response: Response, what: string): Promise<never> {
@@ -77,24 +100,32 @@ async function signUp(email: string, password: string): Promise<Session> {
     access_token?: string; user?: { id?: string };
   };
 
-  if (signUpBody.access_token && signUpBody.user?.id) {
-    return { accessToken: signUpBody.access_token, userId: signUpBody.user.id };
+  let accessToken = signUpBody.access_token;
+
+  // Some GoTrue versions return the user rather than a session from /signup
+  // even with confirmations disabled, so sign in explicitly when that happens.
+  if (!accessToken) {
+    const signInResponse = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+      method: 'POST', headers, body: JSON.stringify({ email, password }),
+    });
+    if (!signInResponse.ok) {
+      await readError(
+        signInResponse,
+        'sign-in after sign-up returned no session (the local stack needs ' +
+        '[auth.email] enable_confirmations = false)'
+      );
+    }
+    accessToken = (await signInResponse.json() as { access_token: string }).access_token;
   }
 
-  const signInResponse = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
-    method: 'POST', headers, body: JSON.stringify({ email, password }),
-  });
-  if (!signInResponse.ok) {
-    await readError(
-      signInResponse,
-      'sign-in after sign-up returned no session (the local stack needs ' +
-      '[auth.email] enable_confirmations = false)'
+  const claims = decodeClaims(accessToken);
+  if (!claims.sub) {
+    throw new Error(
+      `seed: the access token carries no sub claim, so auth.uid() would be null ` +
+      `and every workspace-scoped policy would refuse. Claims: ${JSON.stringify(claims)}`
     );
   }
-  const signInBody = await signInResponse.json() as {
-    access_token: string; user: { id: string };
-  };
-  return { accessToken: signInBody.access_token, userId: signInBody.user.id };
+  return { accessToken, userId: claims.sub, role: claims.role ?? 'unknown' };
 }
 
 function authHeaders(session: Session): Record<string, string> {
@@ -150,7 +181,15 @@ export async function seedWorkspace(options: SeedOptions = {}): Promise<SeededWo
     headers: { ...authHeaders(session), Prefer: 'return=representation' },
     body: JSON.stringify({ name: `E2E ${suffix}`, created_by: session.userId }),
   });
-  if (!workspaceResponse.ok) await readError(workspaceResponse, 'workspace insert');
+  if (!workspaceResponse.ok) {
+    // Name the subject the token authorizes as. The policy is
+    // `created_by = auth.uid()`, so a refusal here is almost always a
+    // disagreement between the two, and printing both settles it in one run.
+    await readError(
+      workspaceResponse,
+      `workspace insert as sub=${session.userId} role=${session.role}`
+    );
+  }
   const [workspace] = await workspaceResponse.json() as { id: string }[];
   const workspaceId = workspace.id;
 
