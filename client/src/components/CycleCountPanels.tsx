@@ -640,11 +640,13 @@ function ResolutionHistory({ rows }: { rows: readonly DiscrepancyRow['resolution
 }
 
 export function DiscrepancyCard({
-  row, busy, readOnly, onResolve, onRecount, onOpenRecord,
+  row, busy, readOnly, quantitiesWithheld = false, onResolve, onRecount, onOpenRecord,
 }: {
   row: DiscrepancyRow;
   busy: boolean;
   readOnly: boolean;
+  /** True while a blind count is mid-recount: the server sends no figures. */
+  quantitiesWithheld?: boolean;
   onResolve: (row: DiscrepancyRow, action: ResolutionAction, note: string | null, toLocationCode: string | null) => Promise<void>;
   onRecount: (row: DiscrepancyRow, note: string | null) => Promise<void>;
   onOpenRecord?: (row: DiscrepancyRow) => void;
@@ -750,12 +752,23 @@ export function DiscrepancyCard({
               </li>
             ))}
           </ul>
+          {/* Whether the rounds agree is itself a disclosure: while a blind
+              count is being recounted the server sends no figures and every lot
+              observation reads as "saved", so comparing them would report
+              agreement that has not been established. */}
           {row.observations.filter((o) => !o.voided_at).length > 1 && (
-            <p className="mt-1 text-xs text-ink-muted">
-              {new Set(row.observations.filter((o) => !o.voided_at).map((o) => o.observed_quantity ?? o.outcome)).size === 1
-                ? 'The rounds agree.'
-                : 'The rounds disagree — both are kept.'}
-            </p>
+            quantitiesWithheld ? (
+              <p className="mt-1 text-xs text-ink-muted">
+                Both rounds are recorded. Whether they agree is withheld until this blind count
+                returns to review.
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-ink-muted">
+                {new Set(row.observations.filter((o) => !o.voided_at).map((o) => o.observed_quantity ?? o.outcome)).size === 1
+                  ? 'The rounds agree.'
+                  : 'The rounds disagree — both are kept.'}
+              </p>
+            )
           )}
         </div>
       )}

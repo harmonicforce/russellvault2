@@ -119,6 +119,52 @@ select is(
   1,
   'the identity columns of the frozen lot snapshot are still readable');
 
+-- The same treatment on the discrepancy queue and the resolution log, which
+-- both copy those two numbers. Without this the recount round of a blind count
+-- is not blind: the discrepancy row names the expected quantity for the very
+-- lot the counter is being sent back to recount.
+select is(
+  (select count(*)::int from information_schema.column_privileges
+    where grantee = 'authenticated'
+      and table_name = 'cycle_count_discrepancies'
+      and column_name in ('expected_quantity', 'observed_quantity')
+      and privilege_type = 'SELECT'),
+  0,
+  'authenticated cannot read the discrepancy quantities directly');
+
+select is(
+  (select count(*)::int from information_schema.column_privileges
+    where grantee = 'authenticated'
+      and table_name = 'cycle_count_resolutions'
+      and column_name in ('expected_value', 'observed_value')
+      and privilege_type = 'SELECT'),
+  0,
+  'nor the copies kept on the resolution log');
+
+-- The rest of the discrepancy queue stays directly readable, or the review
+-- screen would have nothing to group by.
+select is(
+  (select count(*)::int from information_schema.column_privileges
+    where grantee = 'authenticated'
+      and table_name = 'cycle_count_discrepancies'
+      and column_name in ('public_id', 'discrepancy_kind', 'status')
+      and privilege_type = 'SELECT'),
+  3,
+  'the identity and status of a discrepancy are still readable');
+
+-- The whole class, not just the two views found first. Six earlier read models
+-- carried the same inert grants on the live project.
+select is(
+  (select count(*)::int from information_schema.role_table_grants
+    where grantee = 'authenticated'
+      and table_name in (
+        'inventory_correction_overview', 'inventory_item_overview',
+        'inventory_lot_lineage_view', 'inventory_lot_overview',
+        'inventory_record_overview', 'inventory_work_queue')
+      and privilege_type <> 'SELECT'),
+  0,
+  'no read model in the schema grants authenticated anything but SELECT');
+
 -- Views are covered by role_table_grants too, and a hosted Supabase project
 -- grants ALL on new tables and views to authenticated by default. Asserting
 -- only the base tables is what let that drift reach the live project unnoticed.
@@ -615,6 +661,132 @@ select is(
     'ca000000-0000-4000-8000-000000000001', 100000)->>'example_limit')::int),
   20,
   'and clamps how many examples it will return');
+
+-- ==========================================================================
+-- A blind recount round is still blind
+-- ==========================================================================
+-- The round a recount produces is the one where blindness matters most: a
+-- recount exists to obtain an INDEPENDENT second observation, and an
+-- observation made while looking at the number it is meant to confirm is not
+-- independent. This walks the whole cycle and checks disclosure at each step.
+select pg_temp.login('ca111111-1111-4111-8111-111111111111');
+
+select pg_temp.put('blind2', (public.create_cycle_count(
+  'ca000000-0000-4000-8000-000000000001', 'SHELF-2', false, null, null, true,
+  'recount disclosure')->>'id')::uuid);
+select public.start_cycle_count('ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'));
+select pg_temp.age_snapshot(pg_temp.get('blind2'), interval '1 hour');
+select pg_temp.login('ca111111-1111-4111-8111-111111111111');
+
+select pg_temp.put('splitlot', (
+  select lot_id from public.cycle_count_expected_lots
+  where session_id = pg_temp.get('blind2') limit 1));
+select isnt(pg_temp.get('splitlot'), null,
+  'the split child lot on SHELF-2 is in the blind count');
+
+-- Count it short, so submission produces a shortage to recount.
+select public.observe_cycle_count_lot(
+  'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'),
+  (select lot_public_id from public.cycle_count_expected_lots
+     where session_id = pg_temp.get('blind2') limit 1),
+  1);
+select public.submit_cycle_count_for_review(
+  'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'), true);
+
+select pg_temp.put('rdisc', (
+  select id from public.cycle_count_discrepancies
+  where session_id = pg_temp.get('blind2') and discrepancy_kind = 'lot_shortage'));
+select isnt(pg_temp.get('rdisc'), null, 'the short count became a discrepancy');
+
+-- In review, the figures are disclosed. That is the point of blind counting:
+-- delayed disclosure, not secrecy.
+select is(
+  ((public.cycle_count_review(
+     'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'))
+   ->>'quantities_withheld')::boolean),
+  false,
+  'review discloses the figures');
+
+select is(
+  ((public.cycle_count_review(
+     'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'))
+   -> 'rows' -> 0 ->>'expected_quantity')::int),
+  3,
+  'and the reviewer can see the frozen expected quantity');
+
+-- Send it back to the floor.
+select public.request_cycle_count_recount(
+  'ca000000-0000-4000-8000-000000000001', pg_temp.get('rdisc'), 'count it again');
+
+select is(
+  (select status from public.cycle_count_sessions where id = pg_temp.get('blind2')),
+  'in_progress'::public.cycle_count_status,
+  'the recount returns the session to counting');
+
+-- ...and the figures go back behind the boundary.
+select is(
+  ((public.cycle_count_review(
+     'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'))
+   ->>'quantities_withheld')::boolean),
+  true,
+  'which withholds the figures again for the recount round');
+
+select is(
+  ((public.cycle_count_review(
+     'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'))
+   -> 'rows' -> 0 -> 'expected_quantity')),
+  'null'::jsonb,
+  'the expected quantity is absent from the review payload during a recount');
+
+select is(
+  ((public.cycle_count_review(
+     'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'))
+   -> 'rows' -> 0 -> 'variance')),
+  'null'::jsonb,
+  'and so is the variance, which would give it away by arithmetic');
+
+select is(
+  ((public.cycle_count_review(
+     'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'))
+   -> 'rows' -> 0 -> 'observations' -> 0 ->>'outcome')),
+  'saved',
+  'the first round reads as saved, not as short — the word alone leaks the sign');
+
+-- And the table itself refuses, so the function is the only path.
+select throws_ok(
+  format($$select expected_quantity from public.cycle_count_discrepancies
+           where session_id = %L$$, pg_temp.get('blind2')),
+  '42501', null,
+  'the discrepancy quantity cannot be read straight out of the table');
+
+select is(
+  ((public.cycle_count_lot_queue(
+     'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'))
+   ->>'quantities_withheld')::boolean),
+  true,
+  'the counting queue withholds them too');
+
+-- Resubmitting discloses again.
+select public.observe_cycle_count_lot(
+  'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'),
+  (select lot_public_id from public.cycle_count_expected_lots
+     where session_id = pg_temp.get('blind2') limit 1),
+  2);
+select public.submit_cycle_count_for_review(
+  'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'), true);
+
+select is(
+  ((public.cycle_count_review(
+     'ca000000-0000-4000-8000-000000000001', pg_temp.get('blind2'))
+   ->>'quantities_withheld')::boolean),
+  false,
+  'and the second submission discloses them once more');
+
+select is(
+  (select count(*)::int from public.cycle_count_lot_observations
+    where session_id = pg_temp.get('blind2') and voided_at is null),
+  2,
+  'both rounds are kept — the recount never overwrote the first observation');
 
 -- Isolation -------------------------------------------------------------------
 select pg_temp.login('ca444444-4444-4444-8444-444444444444');

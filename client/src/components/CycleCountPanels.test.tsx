@@ -245,13 +245,13 @@ describe('the lot queue', () => {
 // Discrepancy resolution
 // ---------------------------------------------------------------------------
 
-function renderDiscrepancy(row: DiscrepancyRow, readOnly = false) {
+function renderDiscrepancy(row: DiscrepancyRow, readOnly = false, quantitiesWithheld = false) {
   const onResolve = vi.fn().mockResolvedValue(undefined);
   const onRecount = vi.fn().mockResolvedValue(undefined);
   render(
     <ul>
       <DiscrepancyCard
-        row={row} busy={false} readOnly={readOnly}
+        row={row} busy={false} readOnly={readOnly} quantitiesWithheld={quantitiesWithheld}
         onResolve={onResolve} onRecount={onRecount}
       />
     </ul>
@@ -404,6 +404,40 @@ describe('a discrepancy', () => {
       ],
     }));
     expect(screen.getByText('The rounds disagree — both are kept.')).toBeTruthy();
+  });
+
+  it('does not claim the rounds agree while a blind recount withholds the figures', () => {
+    // Every lot observation reads as "saved" when withheld, so comparing them
+    // would report agreement that has not been established.
+    renderDiscrepancy(discrepancy({
+      expected_quantity: null, observed_quantity: null,
+      observations: [
+        { observation_id: 'o1', count_round: 1, outcome: 'saved', observed_at: 't1', observed_by_email: null, note: null, observed_quantity: 1, expected_quantity: null, variance: null, voided_at: null, void_reason: null },
+        { observation_id: 'o2', count_round: 2, outcome: 'saved', observed_at: 't2', observed_by_email: null, note: null, observed_quantity: 2, expected_quantity: null, variance: null, voided_at: null, void_reason: null },
+      ],
+    }), false, true);
+    expect(screen.queryByText('The rounds agree.')).toBeNull();
+    expect(screen.queryByText('The rounds disagree — both are kept.')).toBeNull();
+    expect(screen.getByText(/Whether they agree is withheld/)).toBeTruthy();
+  });
+
+  it('renders no expected or counted figure while a blind recount withholds them', () => {
+    renderDiscrepancy(discrepancy({
+      expected_quantity: null, observed_quantity: null, variance: 0,
+    }), false, true);
+    expect(screen.queryByText('Expected')).toBeNull();
+    expect(screen.queryByText('Counted')).toBeNull();
+    expect(screen.queryByText('Variance')).toBeNull();
+  });
+
+  it('still says whether the rounds agree once the figures are disclosed', () => {
+    renderDiscrepancy(discrepancy({
+      observations: [
+        { observation_id: 'o1', count_round: 1, outcome: 'short', observed_at: 't1', observed_by_email: null, note: null, observed_quantity: 9, voided_at: null, void_reason: null },
+        { observation_id: 'o2', count_round: 2, outcome: 'short', observed_at: 't2', observed_by_email: null, note: null, observed_quantity: 9, voided_at: null, void_reason: null },
+      ],
+    }), false, false);
+    expect(screen.getByText('The rounds agree.')).toBeTruthy();
   });
 
   it('offers no controls at all when the count is read only', () => {

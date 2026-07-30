@@ -326,7 +326,7 @@ export interface CycleCountApi {
   review(sessionId: string, opts?: {
     kinds?: readonly DiscrepancyKind[]; statuses?: readonly DiscrepancyStatus[];
     limit?: number; offset?: number;
-  }): Promise<Paged<DiscrepancyRow>>;
+  }): Promise<Paged<DiscrepancyRow> & { quantities_withheld: boolean }>;
   readiness(sessionId: string): Promise<Readiness>;
   requestRecount(discrepancyId: string, note: string | null): Promise<void>;
   resolve(discrepancyId: string, action: ResolutionAction, note: string | null, toLocationCode: string | null): Promise<{ outcome: string }>;
@@ -441,7 +441,7 @@ export function createCycleCountApi(client: CycleCountClient, workspaceId: strin
         p_limit: opts.limit ?? 50,
         p_offset: opts.offset ?? 0,
       });
-      return data as Paged<DiscrepancyRow>;
+      return data as Paged<DiscrepancyRow> & { quantities_withheld: boolean };
     },
 
     async readiness(sessionId) {

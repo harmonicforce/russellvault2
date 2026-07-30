@@ -341,7 +341,7 @@ describe('the review page', () => {
         recount_requested_count: 0, resolved_count: 0, deferred_count: 0, total_count: rows.length,
       },
     }),
-    cycle_count_review: { rows, total: rows.length, limit: 200, offset: 0 },
+    cycle_count_review: { rows, total: rows.length, limit: 200, offset: 0, quantities_withheld: false },
     cycle_count_completion_readiness: {
       status: 'review', can_complete: rows.length === 0, can_complete_with_deferrals: false,
       open_count: rows.length, recount_requested_count: 0, resolved_count: 0, deferred_count: 0,
@@ -427,6 +427,18 @@ describe('the review page', () => {
         p_discrepancy_id: 'd1', p_action: 'observation_mistaken',
       });
     });
+  });
+
+  it('says plainly that a blind recount is withholding the figures', async () => {
+    renderAt('/cycle-counts/s1/review', {
+      ...reviewReplies([{ ...shortage, expected_quantity: null, observed_quantity: null }]),
+      cycle_count_review: {
+        rows: [{ ...shortage, expected_quantity: null, observed_quantity: null, variance: 0 }],
+        total: 1, limit: 200, offset: 0, quantities_withheld: true,
+      },
+    });
+    expect(await screen.findByText(/Figures withheld — this blind count is being recounted\./))
+      .toBeTruthy();
   });
 
   it('requests a recount through its own governed function', async () => {

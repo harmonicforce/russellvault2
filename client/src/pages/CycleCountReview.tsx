@@ -26,6 +26,8 @@ export default function CycleCountReview() {
     useCycleCountSession(sessionId, ['review']);
 
   const [rows, setRows] = useState<readonly DiscrepancyRow[]>([]);
+  // The server's word, not a guess. True while a blind count is mid-recount.
+  const [quantitiesWithheld, setQuantitiesWithheld] = useState(false);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [loadingRows, setLoadingRows] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -40,6 +42,7 @@ export default function CycleCountReview() {
         api.readiness(sessionId),
       ]);
       setRows(page.rows);
+      setQuantitiesWithheld(page.quantities_withheld);
       setReadiness(ready);
       setError(null);
     } catch (e) {
@@ -179,6 +182,18 @@ export default function CycleCountReview() {
 
       <ErrorNote message={error} />
 
+      {/* A blind count sent back for a recount is blind again. Saying so is
+          better than silently rendering blank figures, which reads as a bug. */}
+      {quantitiesWithheld && (
+        <div className="rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-sm">
+          <span className="font-semibold">Figures withheld — this blind count is being recounted.</span>{' '}
+          <span className="text-ink-secondary">
+            Expected and counted quantities are hidden until the recount is submitted, so the second
+            observation stays independent of the first.
+          </span>
+        </div>
+      )}
+
       <ProgressPanel
         progress={progress}
         reviewTotals={bundle?.review_totals ?? null}
@@ -210,6 +225,7 @@ export default function CycleCountReview() {
                   row={row}
                   busy={busyId === row.discrepancy_id}
                   readOnly={!canReview}
+                  quantitiesWithheld={quantitiesWithheld}
                   onResolve={resolve}
                   onRecount={recount}
                   onOpenRecord={(r) => navigate(
