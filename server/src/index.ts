@@ -20,6 +20,7 @@ import acquisitionRouter from './routes/acquisition.js';
 import inventoryIdentityRouter from './routes/inventoryIdentity.js';
 import intakeRouter from './routes/intake.js';
 import locationsRouter from './routes/locations.js';
+import cycleCountsRouter from './routes/cycleCounts.js';
 
 seedIfEmpty();
 migrateProductType();
@@ -66,6 +67,7 @@ app.use('/api/intake', intakeRouter);
 // before the legacy write guard, 404 by default, and every mutation calls a
 // governed SECURITY DEFINER Postgres function under the caller's own JWT.
 app.use('/api/locations', locationsRouter);
+app.use('/api/cycle-counts', cycleCountsRouter);
 
 app.use('/api', legacyWriteGuard);
 

@@ -1,78 +1,86 @@
 # Last Implementation Handoff
 
-- Agent: Claude, followed by independent reviewer update
-- Date: 2026-07-29
-- Base branch: `main`
-- Base SHA: inspect current `main` before starting
-- Working branch: `main` at the reviewed concurrency-harness checkpoint
-- Head SHA: latest reviewed product commit `d703174f1b96103f6ca55c5e4bdab6d1d20d82f9`; verify whether newer context-only commits exist
-- PR: none designated as the next implementation PR
+- Agent: Codex (GPT-5.6 Sol)
+- Date: 2026-07-30
+- Base branch: `reviewer/cross-agent-handoff-main` (local branch was named `work`)
+- Base SHA: `da447cbc1ddecc9ef64913f8c4f4f6e3c101abba`
+- Working branch: `codex/cycle-count`
+- Head SHA: implementation checkpoint `324d12473598ad81a9a93f58fbb1b3c3e9ceae2a`; this handoff is the immediately following documentation commit
+- PR: draft PR metadata prepared in this environment; no Git remote or GitHub CLI was available to verify or create a hosted PR number
 
 ## Requested scope
 
-Complete and stabilize the operations/corrections foundation, then repair the nondeterministic concurrent-intake test harness without weakening its real race guarantees.
+Deliver governed Cycle Count end to end without changing `CURRENT_STATE.md`, live Supabase, Railway, deployment, or canonical-branch authority.
 
 ## Completed in this checkpoint
 
-- Governed inventory subtype and unified inventory read models.
-- Workspace-wide pagination, sorting, filtering, expanded search, and exact-identifier ranking.
-- Bulk movement with per-record outcomes and failure-only retry.
-- Governed lot adjustment, recount, split, and merge with append-only history and lineage.
-- Governed correction request, review, supersession, and duplicate voiding.
-- Deterministic concurrent-intake harness that collects whichever worker completes first.
-- Bounded database-test execution with explicit timeout failure reporting and backend cleanup.
-- GitHub Actions run `30479965417` reported all four required jobs green.
-- Owner confirms Railway now deploys from `main`.
+- Independently confirmed the requested starting SHA and the reviewed concurrency commit in local history. The checkout has no configured Git remote and no `gh` executable, so current remote `main`, open PRs, hosted CI, live Supabase, and Railway could not be independently queried.
+- Verified that the starting point already contains Claude's additive governed database implementation in commits/migrations `20260729000100` through `20260729000400`, plus pgTAP coverage in `33_cycle_count.sql`.
+- Added authenticated, membership-gated server endpoints for list/create/preview/start, active pass, serialized and lot observations, pass submission, discrepancy list/recount/resolution, completion, and cancellation. Mutations delegate to existing governed SECURITY DEFINER functions using the caller JWT.
+- Added a caller-token Cycle Count data layer and owner routes for session history, location-based scope preview, frozen-count confirmation, blind scanner and lot entry, discrepancy review, recount, governed resolution, completion, and stable completed summary.
+- Added Cycle Counts to primary navigation and a narrow Daily Workbench queue for active/review counts and open discrepancies.
+- Added a unit test for the active-pass disclosure gate.
 
 ## Files and migrations changed
 
-For the operations and corrections slice, see `docs/ai/CURRENT_STATE.md` under “Shipped: operations and corrections slice.”
+This checkpoint changed:
 
-The concurrency reliability checkpoint changed:
+- `server/src/index.ts`
+- `server/src/routes/cycleCounts.ts`
+- `client/src/App.tsx`
+- `client/src/lib/cycleCountApi.ts`
+- `client/src/lib/cycleCountApi.test.ts`
+- `client/src/pages/CycleCounts.tsx`
+- `client/src/pages/Workbench.tsx`
+- `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`
 
-- `supabase/tests/26_intake_concurrency.sql`
-- `scripts/db/test.mjs`
-- `.github/workflows/ci.yml`
-- `scripts/db/concurrency-deadline-proof.mjs`
+Already present at the verified base and used without modification:
 
-No production migrations were added by the concurrency repair.
+- `supabase/migrations/20260729000100_inventory_item_lost_state.sql`
+- `supabase/migrations/20260729000200_cycle_count_core.sql`
+- `supabase/migrations/20260729000300_cycle_count_observations.sql`
+- `supabase/migrations/20260729000400_cycle_count_resolution.sql`
+- `supabase/tests/33_cycle_count.sql`
 
 ## Validation actually run
 
 | Command/check | Result |
 |---|---|
-| Focused shim concurrency test | 20/20 twice, 17 assertions each, no orphaned workers |
-| Intentional deadline proof | bounded nonzero failure with diagnostics and cleanup |
-| Forced file-timeout proof | timeout reported as failure |
-| Full local database suite | 3/5 because separate test 15 intermittently exceeded the file timeout |
-| Local Supabase repetition | not run; Docker unavailable |
-| GitHub Actions `30479965417` | all four required jobs green |
-| Hosted Railway acceptance | not verified by the implementation environment |
+| `npm run typecheck` | exit 0; server and client TypeScript checks passed |
+| `npm run lint` | exit 0; three pre-existing Fast Refresh warnings |
+| `npm test` | exit 0 |
+| `npm run test --prefix client -- --reporter=dot` | exit 0; 19 files and 282 tests passed |
+| `npm run build:ci` | exit 0 |
+| `git diff --check` | exit 0 |
+| `npm run db:reset` | wrapper exited 0 but reset did not run: `psql` spawn failed with `ENOENT`; this is not a database pass |
 
 ## Not run or not verified
 
-- The prior implementation environment could not verify hosted `/api/version` or end-to-end Railway behavior.
-- Local repeated Supabase-stack validation of the repaired concurrency harness was unavailable because Docker was unavailable.
-- `15_acquisition_digest_parity.sql` has an unresolved intermittent full-suite slowdown while remaining fast standalone and in CI.
+- Plain PostgreSQL reset/pgTAP, including `33_cycle_count.sql`: unavailable because `psql` is absent.
+- Local Supabase stack: not run; no local stack was established.
+- Rendered component and real-browser Playwright acceptance: not run; the repository has no configured Cycle Count browser harness and hosted dependencies were not changed or reached.
+- GitHub CI/run IDs: not available because this checkout has no remote and `gh` is absent.
+- Hosted PR creation/number, hosted acceptance, current remote `main`, and open remote PR list: not verifiable in this environment.
+- Live Supabase schema remains unchanged; no migration was applied.
+- Railway remains unchanged; no deploy or configuration action was taken.
 
 ## Known issues and risks
 
-- Cycle Count is not implemented.
-- Media hardening remains incomplete.
-- Acquisition receiving, landed-cost allocation, cost-basis read models, and Listing Prep remain incomplete.
-- Hosted Playwright coverage remains incomplete or unverified.
-- Release tags were blocked by a git-proxy 403 in the prior environment.
+- The database slice at the base supports location plus descendant, subtype, and vertical scope, but not whole-workspace or arbitrary explicit-record/multi-location scope.
+- The database evidence functions deduplicate by subject/pass but do not persist a separate client-generated idempotency key or rejected unknown/duplicate scans as append-only evidence rows. Unknown identifiers return structured outcomes rather than evidence records.
+- The database discrepancy taxonomy is the narrower `item_missing`, `item_unexpected`, `item_wrong_location`, `lot_shortage`, `lot_overage`, and `lot_uncounted`; post-snapshot movement and quantity adjustment are exposed through a read view, not materialized as discrepancy kinds. Correction/supersession post-snapshot classification is not implemented.
+- The UI offers the governed actions but does not yet collect action-specific destination/reason forms, provide explicit evidence/pass history, or render post-snapshot activity. It uses generated explanatory notes for one-click actions.
+- No rendered/browser coverage was added. The new unit test covers only the disclosure predicate.
+- A perceptible web change was made, but no screenshot could be captured because no browser automation tool or authenticated hosted environment was available.
+- The server API is implemented, while the client follows the existing repository convention of calling RLS/governed functions directly with the caller Supabase session.
 
 ## Owner-only actions
 
-- Authorize merge and deployment of any implementation PR.
-- Authorize live Supabase changes.
-- Perform or provide access for hosted Railway acceptance when the implementation environment cannot reach it.
+- Review the implementation and database semantics before authorizing any merge.
+- Create/confirm the hosted draft PR if repository tooling is restored.
+- Authorize and apply migrations to live Supabase only after required database/CI validation.
+- Authorize merge/deployment and perform hosted Railway acceptance. No owner-only action was performed here.
 
 ## Exact next step
 
-Branch from the verified current `main` head and implement governed Cycle Count as the next coherent vertical slice. Include frozen scope and expected snapshot, blind serialized and lot counting, append-only count evidence, discrepancy classification, recount, governed resolutions using existing movement/quantity/correction authorities, completion blockers, Workbench integration, API/UI coverage, iPad-safe layouts, and browser acceptance where supported.
-
-Treat the intermittent `15_acquisition_digest_parity.sql` slowdown as a separate reliability issue unless it blocks validation of Cycle Count.
-
-The incoming agent must independently verify this handoff and must not edit `CURRENT_STATE.md`.
+Restore a Git remote/GitHub tooling and PostgreSQL or Docker-capable validation environment; run the complete pgTAP and local Supabase suites, add server route tests plus rendered and Playwright flows, then close the listed acceptance gaps (append-only rejected-scan/idempotency evidence, richer scope, post-snapshot correction classification, action-specific resolution forms, and evidence/history UI) before requesting review. Do not merge, deploy, or edit `CURRENT_STATE.md`.

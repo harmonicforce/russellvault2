@@ -6,13 +6,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Camera, ClipboardList, FileWarning, HelpCircle, ListChecks, MapPin, PackagePlus } from 'lucide-react';
+import { Camera, ClipboardCheck, ClipboardList, FileWarning, HelpCircle, ListChecks, MapPin, PackagePlus } from 'lucide-react';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData } from '../lib/inventoryData';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
 import { createIntakeTransport, type IntakeSessionListItem } from '../lib/intakeApi';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
+import { createCycleCountApi, type CountSession } from '../lib/cycleCountApi';
 
 interface QueueRow {
   subject_kind: 'item' | 'lot';
@@ -95,6 +96,7 @@ export default function Workbench() {
   const [needsLocation, setNeedsLocation] = useState<QueueRow[]>([]);
   const [needsPhotos, setNeedsPhotos] = useState<QueueRow[]>([]);
   const [openSessions, setOpenSessions] = useState<readonly IntakeSessionListItem[]>([]);
+  const [cycleCounts, setCycleCounts] = useState<CountSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -130,6 +132,8 @@ export default function Workbench() {
       });
       setUnclassified(unclassifiedRows.map(asQueueRow));
       setNeedsCondition(conditionRows.map(asQueueRow));
+      const cycleApi = createCycleCountApi(client as never, () => workspace.id);
+      setCycleCounts((await cycleApi.list()).filter((c) => c.status !== 'completed' && c.status !== 'cancelled'));
       if (intake) {
         const page = await intake.listSessions(workspace.id, 10, 0);
         setOpenSessions(page.sessions.filter((s) => s.state === 'open'));
@@ -217,6 +221,13 @@ export default function Workbench() {
           onOpen={() => navigate('/corrections')}
           onViewAll={() => navigate('/corrections')}
         />
+
+        <section className="rounded-lg border border-hairline bg-surface-1 p-4">
+          <div className="mb-1 flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-semibold"><ClipboardCheck className="h-4 w-4 text-accent" /> Cycle counts</h2><span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold">{cycleCounts.length}</span></div>
+          <p className="mb-3 text-xs text-ink-muted">Counts in progress, awaiting review, or carrying unresolved differences.</p>
+          {cycleCounts.length === 0 ? <p className="text-sm text-ink-muted">Nothing waiting here.</p> : <ul className="space-y-1">{cycleCounts.slice(0, 5).map(c => <li key={c.session_id}><button type="button" onClick={() => navigate(`/cycle-counts/${c.session_id}`)} className="flex w-full items-center justify-between rounded border border-hairline px-3 py-2 text-sm hover:bg-surface-2"><span>{c.public_id}</span><span className="capitalize text-accent-strong">{c.status.replace('_', ' ')} · {c.open_discrepancy_count} open</span></button></li>)}</ul>}
+          <button type="button" onClick={() => navigate('/cycle-counts')} className="mt-2 text-xs text-accent-strong underline">Open Cycle Counts</button>
+        </section>
 
         <section className="rounded-lg border border-hairline bg-surface-1 p-4">
           <div className="mb-1 flex items-center justify-between gap-2">
