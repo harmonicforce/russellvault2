@@ -279,9 +279,24 @@ select is(
   'duplicate',
   'a repeated lot count in the same round is idempotent');
 
+-- The variance is no longer a column an authenticated member may read: it is
+-- derived from the frozen expected quantity, which is the one number a blind
+-- count exists to withhold. The claim under test is unchanged — the variance is
+-- computed against the FROZEN expectation, not against current stock — but it
+-- is now asserted through the governed queue that decides disclosure, and the
+-- direct read is asserted to be refused.
+select throws_ok(
+  format($$select variance from public.cycle_count_lot_observations
+           where session_id = %L$$, pg_temp.get('cc')),
+  '42501', null,
+  'an authenticated member cannot read the variance column directly');
+
 select is(
-  (select variance from public.cycle_count_lot_observations
-    where session_id = pg_temp.get('cc') and lot_id = pg_temp.get('qlot') and voided_at is null),
+  (select (r->>'variance')::int
+     from jsonb_array_elements(
+       public.cycle_count_lot_queue(
+         'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'all', 50, 0) -> 'rows') r
+    where (r->>'lot_id')::uuid = pg_temp.get('qlot')),
   -2,
   'the variance is computed against the FROZEN expected quantity');
 

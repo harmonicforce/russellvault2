@@ -401,8 +401,8 @@ select is(
 -- + the multi-category / media / movement / read-model additions (5) ---------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  41,
-  'forty-one migrations are recorded, including the four additive 20260729 cycle-count migrations'
+  42,
+  'forty-two migrations are recorded, including the cycle-count application layer'
 );
 
 select results_eq(
@@ -448,7 +448,8 @@ select results_eq(
     ('20260729000100_inventory_item_lost_state'),
     ('20260729000200_cycle_count_core'),
     ('20260729000300_cycle_count_observations'),
-    ('20260729000400_cycle_count_resolution')$$,
+    ('20260729000400_cycle_count_resolution'),
+    ('20260730000100_cycle_count_application_layer')$$,
   'the earlier-phase migrations are unmodified and the additive 20260728 migrations follow them'
 );
 
