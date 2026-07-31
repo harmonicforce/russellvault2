@@ -230,8 +230,9 @@ begin
   where rs.round_id=v_round.id;
 
   if v_round.round_type='recount' and (v_missing_items>0 or v_missing_lots>0) then
-    return jsonb_build_object('outcome','incomplete_round','code','RECOUNT_SCOPE_INCOMPLETE',
-      'missing_item_count',v_missing_items,'missing_lot_count',v_missing_lots);
+    -- Recounts are blind: revealing either missing count lets a counter derive
+    -- the frozen recount scope from the observations they have submitted.
+    return jsonb_build_object('outcome','incomplete_round','code','RECOUNT_SCOPE_INCOMPLETE');
   end if;
   if v_round.round_type='initial' and (v_missing_items>0 or v_missing_lots>0)
      and not coalesce(p_confirm_uncounted,false) then
