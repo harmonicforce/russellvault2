@@ -89,6 +89,45 @@ alter table public.cycle_count_round_results
     foreign key (lot_observation_id,workspace_id)
     references public.cycle_count_lot_observations(id,workspace_id);
 
+-- Review sessions evaluated by the legacy submit function already have
+-- discrepancies. Give each one an immutable result in its migrated initial
+-- round so governed reads and resolution attempts retain their provenance.
+do $$
+declare d public.cycle_count_discrepancies%rowtype;v_round_id uuid;v_result_id uuid;
+  v_item_observation uuid;v_lot_observation uuid;
+begin
+ for d in select * from public.cycle_count_discrepancies where round_result_id is null loop
+  select current_round_id into v_round_id from public.cycle_count_sessions where id=d.session_id;
+  if v_round_id is null then continue; end if;
+  select id into v_item_observation from public.cycle_count_item_observations
+   where round_id=v_round_id and item_id=d.item_id and voided_at is null limit 1;
+  select id into v_lot_observation from public.cycle_count_lot_observations
+   where round_id=v_round_id and lot_id=d.lot_id and voided_at is null limit 1;
+  insert into public.cycle_count_round_results(
+   workspace_id,session_id,round_id,subject_type,expected_item_id,expected_lot_id,item_id,lot_id,
+   item_observation_id,lot_observation_id,expected_present,expected_location_id,
+   observed_location_id,expected_quantity,observed_quantity,computed_variance,classification)
+  values(d.workspace_id,d.session_id,v_round_id,
+   case when d.item_id is not null then 'item' else 'lot' end::public.cycle_count_subject_type,
+   d.expected_item_id,d.expected_lot_id,d.item_id,d.lot_id,v_item_observation,v_lot_observation,
+   d.discrepancy_kind<>'item_unexpected',d.expected_location_id,d.observed_location_id,
+   d.expected_quantity,d.observed_quantity,
+   case when d.expected_quantity is not null and d.observed_quantity is not null
+    then d.observed_quantity-d.expected_quantity end,
+   case d.discrepancy_kind when 'item_missing' then 'missing'
+    when 'item_unexpected' then 'unexpected' when 'item_wrong_location' then 'wrong_location'
+    when 'lot_shortage' then 'shortage' when 'lot_overage' then 'overage'
+    else 'uncounted' end::public.cycle_count_round_result_classification)
+  on conflict do nothing returning id into v_result_id;
+  if v_result_id is null then
+   select id into v_result_id from public.cycle_count_round_results
+    where round_id=v_round_id and
+     ((d.item_id is not null and item_id=d.item_id) or (d.lot_id is not null and lot_id=d.lot_id));
+  end if;
+  update public.cycle_count_discrepancies set round_result_id=v_result_id where id=d.id;
+ end loop;
+end $$;
+
 create function app.cycle_count_kind_for_result(
   p_subject_type public.cycle_count_subject_type,
   p_expected_present boolean, p_expected_location uuid, p_observed_location uuid,
@@ -166,7 +205,8 @@ begin
     expected_location_id,observed_location_id,expected_quantity,observed_quantity,
     computed_variance,classification,post_snapshot_classification,predecessor_result_id)
   select p_workspace_id,p_session_id,v_round.id,rs.subject_type,rs.expected_item_id,
-    rs.expected_lot_id,rs.item_id,rs.lot_id,io.id,lo.id,ia.id,true,
+    rs.expected_lot_id,rs.item_id,rs.lot_id,io.id,lo.id,ia.id,
+    (rs.expected_item_id is not null or rs.expected_lot_id is not null),
     coalesce(ei.expected_location_id,el.expected_location_id),io.observed_location_id,
     el.expected_quantity,lo.observed_quantity,
     case when lo.id is not null then lo.observed_quantity-el.expected_quantity end,

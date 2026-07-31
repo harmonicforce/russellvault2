@@ -30,6 +30,22 @@ create trigger cycle_count_round_subjects_append_only
   before update or delete on public.cycle_count_round_subjects
   for each row execute function app.forbid_update_delete();
 
+-- The foundation gave pre-existing active/review sessions an explicit round.
+-- Freeze their already-existing snapshot into that round as well; the start
+-- trigger below only handles sessions started after these migrations run.
+insert into public.cycle_count_round_subjects (
+  workspace_id,session_id,round_id,subject_type,expected_item_id,item_id)
+select r.workspace_id,r.session_id,r.id,'item',e.id,e.item_id
+from public.cycle_count_rounds r
+join public.cycle_count_expected_items e on e.session_id=r.session_id
+where r.round_number=1;
+insert into public.cycle_count_round_subjects (
+  workspace_id,session_id,round_id,subject_type,expected_lot_id,lot_id)
+select r.workspace_id,r.session_id,r.id,'lot',e.id,e.lot_id
+from public.cycle_count_rounds r
+join public.cycle_count_expected_lots e on e.session_id=r.session_id
+where r.round_number=1;
+
 create table public.cycle_count_observation_attempts (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete restrict,
@@ -228,11 +244,24 @@ begin
   if v_prior.id is null or v_prior.status not in ('submitted','reviewed') then
     raise exception 'the current round is not reviewable' using errcode = '23514';
   end if;
-  select count(*) into v_selected from public.cycle_count_recount_selections
-   where session_id=p_session_id and assigned_round_id is null;
+  -- Lock and revalidate the selection together with its discrepancy.  A
+  -- resolution between selection and begin must never resurrect stale work.
+  perform 1 from public.cycle_count_recount_selections s
+  join public.cycle_count_discrepancies d
+    on d.id=s.discrepancy_id and d.workspace_id=p_workspace_id
+  where s.session_id=p_session_id and s.assigned_round_id is null
+    and d.session_id=p_session_id and d.status='open'
+    and d.superseded_by_discrepancy_id is null
+  for update of s,d;
+  get diagnostics v_selected = row_count;
   if v_selected = 0 then
     raise exception 'select at least one discrepancy before beginning a recount'
       using errcode = '23514';
+  end if;
+  if v_selected <> (select count(*) from public.cycle_count_recount_selections
+      where session_id=p_session_id and assigned_round_id is null) then
+    raise exception 'one or more recount selections are no longer current'
+      using errcode = '40001';
   end if;
   v_round_number := v_prior.round_number + 1;
   insert into public.cycle_count_rounds (
@@ -249,7 +278,9 @@ begin
     d.expected_item_id,d.expected_lot_id,d.item_id,d.lot_id,d.id
   from public.cycle_count_recount_selections s
   join public.cycle_count_discrepancies d on d.id=s.discrepancy_id
-  where s.session_id=p_session_id and s.assigned_round_id is null;
+  where s.session_id=p_session_id and s.assigned_round_id is null
+    and d.workspace_id=p_workspace_id and d.session_id=p_session_id
+    and d.status='open' and d.superseded_by_discrepancy_id is null;
   update public.cycle_count_recount_selections set assigned_round_id=v_round_id
    where session_id=p_session_id and assigned_round_id is null;
   update public.cycle_count_discrepancies d

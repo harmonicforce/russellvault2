@@ -253,4 +253,36 @@ revoke all on function public.complete_cycle_count(uuid,uuid,boolean,text) from 
 revoke all on function public.complete_cycle_count_latest(uuid,uuid,boolean,text) from public,anon;
 grant execute on function public.complete_cycle_count_latest(uuid,uuid,boolean,text) to authenticated;
 
+-- Governed attempts supersede legacy resolution rows, so cancellation must
+-- treat either source of a successful inventory mutation as durable evidence.
+create or replace function public.cancel_cycle_count(
+ p_workspace_id uuid,p_session_id uuid,p_reason text)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare v_uid uuid;v_s public.cycle_count_sessions%rowtype;v_applied int;
+begin
+ v_uid:=app.cycle_count_require_counter(p_workspace_id);
+ if nullif(btrim(coalesce(p_reason,'')),'') is null then
+  raise exception 'say why this count is being cancelled' using errcode='23514'; end if;
+ select * into v_s from public.cycle_count_sessions
+  where id=p_session_id and workspace_id=p_workspace_id for update;
+ if v_s.id is null then raise exception 'cycle count not found in this workspace' using errcode='23514'; end if;
+ if v_s.status not in ('draft','in_progress','review') then
+  raise exception 'a % cycle count cannot be cancelled',v_s.status using errcode='23514'; end if;
+ select count(*)::int into v_applied from (
+  select r.id from public.cycle_count_resolutions r
+   where r.session_id=p_session_id and r.succeeded
+    and r.action in ('item_moved_to_counted_location','item_loss_recorded','lot_quantity_adjusted')
+  union all
+  select a.id from public.cycle_count_resolution_attempts a
+   where a.session_id=p_session_id and a.workspace_id=p_workspace_id and a.status='succeeded'
+    and a.action in ('item_moved_to_counted_location','item_moved_to_reviewed_location',
+      'item_loss_recorded','lot_quantity_adjusted')) applied;
+ if v_applied>0 then raise exception
+  'cannot cancel: % inventory changes have already been applied from this count',v_applied
+  using errcode='23514'; end if;
+ update public.cycle_count_sessions set status='cancelled',cancelled_at=now(),cancelled_by=v_uid,
+  cancellation_reason=btrim(p_reason),updated_at=now() where id=p_session_id;
+ return jsonb_build_object('outcome','cancelled','session_id',p_session_id);
+end $$;
+
 insert into public.schema_migrations_log(migration_name) values('20260730000500_cycle_count_resolution_governance');
