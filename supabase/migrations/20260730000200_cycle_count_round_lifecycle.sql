@@ -133,6 +133,24 @@ create trigger cycle_count_sessions_initial_round
   before update on public.cycle_count_sessions
   for each row execute function app.cycle_count_create_initial_round();
 
+-- The foundation migration creates rounds for sessions that were already
+-- counting or in review.  They will not cross draft -> in_progress again, so
+-- freeze their existing expected snapshot here as part of the upgrade.
+insert into public.cycle_count_round_subjects (
+  workspace_id,session_id,round_id,subject_type,expected_item_id,item_id)
+select r.workspace_id,r.session_id,r.id,'item',e.id,e.item_id
+from public.cycle_count_rounds r
+join public.cycle_count_expected_items e on e.session_id=r.session_id
+where r.round_type='initial'
+on conflict (round_id,item_id) where item_id is not null do nothing;
+insert into public.cycle_count_round_subjects (
+  workspace_id,session_id,round_id,subject_type,expected_lot_id,lot_id)
+select r.workspace_id,r.session_id,r.id,'lot',e.id,e.lot_id
+from public.cycle_count_rounds r
+join public.cycle_count_expected_lots e on e.session_id=r.session_id
+where r.round_type='initial'
+on conflict (round_id,lot_id) where lot_id is not null do nothing;
+
 -- Serialize the legacy submission transition into the explicit round while it
 -- is being replaced. The session row is already locked by the submit RPC.
 create function app.cycle_count_mirror_round_transition()

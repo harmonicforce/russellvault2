@@ -18,6 +18,22 @@ create table public.cycle_count_round_item_attestations (
 );
 create trigger cycle_count_round_item_attestations_append_only before update or delete
   on public.cycle_count_round_item_attestations for each row execute function app.forbid_update_delete();
+
+-- Observations and attestations are mutually exclusive regardless of which
+-- mutation arrives first.  The attestation RPC checks observations; this
+-- trigger closes the inverse race for the pre-existing observation RPC.
+create function app.reject_cycle_count_item_observation_after_attestation()
+returns trigger language plpgsql security definer set search_path='' as $$
+begin
+  if exists (select 1 from public.cycle_count_round_item_attestations a
+    where a.round_id=new.round_id and a.item_id=new.item_id) then
+    raise exception 'subject already attested' using errcode='23505';
+  end if;
+  return new;
+end $$;
+create trigger cycle_count_item_observation_attestation_exclusion
+  before insert on public.cycle_count_item_observations for each row
+  execute function app.reject_cycle_count_item_observation_after_attestation();
 alter table public.cycle_count_round_item_attestations enable row level security;
 revoke all on public.cycle_count_round_item_attestations from public,anon,authenticated;
 
@@ -166,11 +182,14 @@ begin
     expected_location_id,observed_location_id,expected_quantity,observed_quantity,
     computed_variance,classification,post_snapshot_classification,predecessor_result_id)
   select p_workspace_id,p_session_id,v_round.id,rs.subject_type,rs.expected_item_id,
-    rs.expected_lot_id,rs.item_id,rs.lot_id,io.id,lo.id,ia.id,true,
+    rs.expected_lot_id,rs.item_id,rs.lot_id,io.id,lo.id,ia.id,
+    case when v_round.round_type='recount' then pr.expected_present else true end,
     coalesce(ei.expected_location_id,el.expected_location_id),io.observed_location_id,
     el.expected_quantity,lo.observed_quantity,
     case when lo.id is not null then lo.observed_quantity-el.expected_quantity end,
     case
+      when v_round.round_type='initial' and rs.subject_type='item'
+        and ia.attestation='unable_to_count' then 'uncounted'
       when v_round.round_type='initial' and rs.subject_type='item' and io.id is null then 'missing'
       when v_round.round_type='initial' and rs.subject_type='item'
         and io.observed_location_id=ei.expected_location_id then 'matched'
@@ -237,7 +256,9 @@ begin
       'open',r.expected_item_id,r.expected_lot_id,r.item_id,r.lot_id,
       r.expected_quantity,r.observed_quantity,r.expected_location_id,r.observed_location_id,r.id
     from public.cycle_count_round_results r
-    where r.round_id=v_round.id and r.classification<>'matched';
+    -- unable_to_count is unresolved evidence, not evidence of loss.  Keep the
+    -- result visible to review without manufacturing an item_missing action.
+    where r.round_id=v_round.id and r.classification not in ('matched','uncounted');
   else
     -- Matched recounts close their historical discrepancy without deleting it.
     update public.cycle_count_discrepancies d set status='resolved',resolved_at=now(),

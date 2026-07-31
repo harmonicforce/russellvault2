@@ -51,16 +51,26 @@ create table public.cycle_count_resolution_attempts (
 );
 create table public.cycle_count_resolution_attempt_events (
   id uuid primary key default gen_random_uuid(),workspace_id uuid not null references public.workspaces(id),
-  attempt_id uuid not null,event_type text not null check(event_type in ('created','started','failed','succeeded','recovered')),
+  attempt_id uuid not null,event_type text not null check(event_type in ('created','approved','started','failed','succeeded','recovered')),
   actor_id uuid not null references auth.users(id),failure_classification text,
   occurred_at timestamptz not null default now(),unique(id,workspace_id),
   foreign key(attempt_id,workspace_id) references public.cycle_count_resolution_attempts(id,workspace_id)
 );
 create trigger cycle_count_resolution_attempt_events_append_only before update or delete
  on public.cycle_count_resolution_attempt_events for each row execute function app.forbid_update_delete();
+create table public.cycle_count_resolution_approvals (
+  id uuid primary key default gen_random_uuid(),workspace_id uuid not null references public.workspaces(id),
+  attempt_id uuid not null,approved_by uuid not null references auth.users(id),
+  approved_at timestamptz not null default now(),unique(attempt_id),unique(id,workspace_id),
+  foreign key(attempt_id,workspace_id) references public.cycle_count_resolution_attempts(id,workspace_id)
+);
+create trigger cycle_count_resolution_approvals_append_only before update or delete
+ on public.cycle_count_resolution_approvals for each row execute function app.forbid_update_delete();
 alter table public.cycle_count_resolution_attempts enable row level security;
 alter table public.cycle_count_resolution_attempt_events enable row level security;
-revoke all on public.cycle_count_resolution_attempts,public.cycle_count_resolution_attempt_events
+alter table public.cycle_count_resolution_approvals enable row level security;
+revoke all on public.cycle_count_resolution_attempts,public.cycle_count_resolution_attempt_events,
+ public.cycle_count_resolution_approvals
  from public,anon,authenticated;
 
 alter table public.inventory_items add column retirement_reason text;
@@ -126,11 +136,39 @@ begin
  return jsonb_build_object('outcome','created','attempt_id',v_id,'status','pending');
 end $$;
 
+create function public.approve_cycle_count_resolution_attempt(p_workspace_id uuid,p_attempt_id uuid)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare v_uid uuid;v_a public.cycle_count_resolution_attempts%rowtype;
+ v_d public.cycle_count_discrepancies%rowtype;v_rule public.cycle_count_resolution_action_rules%rowtype;
+begin
+ v_uid:=app.cycle_count_require_reviewer(p_workspace_id);
+ select * into v_a from public.cycle_count_resolution_attempts
+  where id=p_attempt_id and workspace_id=p_workspace_id for update;
+ if v_a.id is null then raise exception 'resolution attempt not found in this workspace' using errcode='23514'; end if;
+ if v_a.created_by=v_uid then
+  return jsonb_build_object('outcome','approval_required','code','SEPARATE_APPROVER_REQUIRED');
+ end if;
+ select * into v_d from public.cycle_count_discrepancies where id=v_a.discrepancy_id;
+ select * into v_rule from public.cycle_count_resolution_action_rules
+  where discrepancy_kind=v_d.discrepancy_kind and action=v_a.action;
+ if not v_rule.approval_required then
+  return jsonb_build_object('outcome','not_required','attempt_id',v_a.id);
+ end if;
+ insert into public.cycle_count_resolution_approvals(workspace_id,attempt_id,approved_by)
+ values(p_workspace_id,v_a.id,v_uid) on conflict(attempt_id) do nothing;
+ insert into public.cycle_count_resolution_attempt_events(workspace_id,attempt_id,event_type,actor_id)
+ select p_workspace_id,v_a.id,'approved',v_uid
+ where not exists(select 1 from public.cycle_count_resolution_attempt_events
+  where attempt_id=v_a.id and event_type='approved');
+ return jsonb_build_object('outcome','approved','attempt_id',v_a.id);
+end $$;
+
 create function public.execute_cycle_count_resolution_attempt(p_workspace_id uuid,p_attempt_id uuid)
 returns jsonb language plpgsql security definer set search_path='' as $$
 declare v_uid uuid;v_a public.cycle_count_resolution_attempts%rowtype;v_d public.cycle_count_discrepancies%rowtype;
  v_s public.cycle_count_sessions%rowtype;v_r public.cycle_count_round_results%rowtype;
  v_rule public.cycle_count_resolution_action_rules%rowtype;v_code text;v_delta int;v_move uuid;v_adjust uuid;
+ v_lot_quantity int;
 begin
  v_uid:=app.cycle_count_require_reviewer(p_workspace_id);
  select * into v_a from public.cycle_count_resolution_attempts where id=p_attempt_id and workspace_id=p_workspace_id for update;
@@ -143,6 +181,12 @@ begin
  if v_d.round_result_id<>v_r.id or v_d.superseded_by_discrepancy_id is not null or v_d.status not in ('open','deferred') then
   return jsonb_build_object('outcome','conflict','code','RESULT_NO_LONGER_CURRENT'); end if;
  select * into v_rule from public.cycle_count_resolution_action_rules where discrepancy_kind=v_d.discrepancy_kind and action=v_a.action;
+ if v_rule.approval_required and not exists (
+   select 1 from public.cycle_count_resolution_approvals ap
+   where ap.attempt_id=v_a.id and ap.workspace_id=p_workspace_id
+     and ap.approved_by<>v_a.created_by) then
+  return jsonb_build_object('outcome','approval_required','code','APPROVAL_REQUIRED','attempt_id',v_a.id);
+ end if;
  update public.cycle_count_resolution_attempts set status='executing',last_attempted_at=now(),failure_classification=null where id=v_a.id;
  insert into public.cycle_count_resolution_attempt_events(workspace_id,attempt_id,event_type,actor_id)
  values(p_workspace_id,v_a.id,case when v_a.status='failed' then 'recovered' else 'started' end,v_uid);
@@ -156,10 +200,12 @@ begin
    perform public.move_inventory_item(p_workspace_id,v_r.item_id,v_a.reviewed_destination_code,v_a.reason);
    select id into v_move from public.inventory_movements where workspace_id=p_workspace_id and item_id=v_r.item_id order by moved_at desc limit 1;
   elsif v_a.action='lot_quantity_adjusted' then
-   select v_r.observed_quantity-l.quantity into v_delta from public.inventory_lots l where l.id=v_r.lot_id and l.workspace_id=p_workspace_id;
+   select l.quantity into v_lot_quantity from public.inventory_lots l
+    where l.id=v_r.lot_id and l.workspace_id=p_workspace_id for update;
+   v_delta:=v_r.observed_quantity-v_lot_quantity;
    if v_delta<>0 then
     perform public.adjust_lot_quantity(p_workspace_id,v_r.lot_id,v_delta,'recount',
-      (select quantity from public.inventory_lots where id=v_r.lot_id),v_a.reason,null);
+      v_lot_quantity,v_a.reason,null);
     select id into v_adjust from public.inventory_quantity_adjustments where workspace_id=p_workspace_id and lot_id=v_r.lot_id order by adjusted_at desc limit 1;
    end if;
   elsif v_a.action='item_loss_recorded' then
@@ -191,8 +237,10 @@ end $$;
 
 revoke all on function public.resolve_cycle_count_discrepancy(uuid,uuid,public.cycle_count_resolution_action,text,text) from authenticated;
 revoke all on function public.create_cycle_count_resolution_attempt(uuid,uuid,text,text,text,uuid) from public,anon;
+revoke all on function public.approve_cycle_count_resolution_attempt(uuid,uuid) from public,anon;
 revoke all on function public.execute_cycle_count_resolution_attempt(uuid,uuid) from public,anon;
 grant execute on function public.create_cycle_count_resolution_attempt(uuid,uuid,text,text,text,uuid) to authenticated;
+grant execute on function public.approve_cycle_count_resolution_attempt(uuid,uuid) to authenticated;
 grant execute on function public.execute_cycle_count_resolution_attempt(uuid,uuid) to authenticated;
 
 create function public.record_inventory_item_loss_event(

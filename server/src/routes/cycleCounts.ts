@@ -74,6 +74,7 @@ router.post('/:sessionId/recount-selection', requireOwner, asyncRoute(async (req
 router.post('/:sessionId/recount', requireOwner, asyncRoute(async (req, res) => rpc(req, res, 'begin_cycle_count_recount', { p_session_id: req.params.sessionId, p_reason: text(body(req).reason) })));
 router.post('/discrepancies/:id/attempts', requireOwner, asyncRoute(async (req, res) => rpc(req, res, 'create_cycle_count_resolution_attempt', { p_discrepancy_id: req.params.id, p_action: text(body(req).action), p_reason: text(body(req).reason), p_reviewed_destination_code: text(body(req).destinationCode), p_idempotency_key: uuid(body(req).idempotencyKey) })));
 router.post('/attempts/:id/execute', requireOwner, asyncRoute(async (req, res) => rpc(req, res, 'execute_cycle_count_resolution_attempt', { p_attempt_id: req.params.id })));
+router.post('/attempts/:id/approve', requireOwner, asyncRoute(async (req, res) => rpc(req, res, 'approve_cycle_count_resolution_attempt', { p_attempt_id: req.params.id })));
 router.post('/:sessionId/complete', requireOwner, asyncRoute(async (req, res) => rpc(req, res, 'complete_cycle_count_latest', { p_session_id: req.params.sessionId, p_allow_deferred: bool(body(req).allowDeferred), p_note: text(body(req).note) })));
 router.post('/:sessionId/cancel', requireOwner, asyncRoute(async (req, res) => rpc(req, res, 'cancel_cycle_count', { p_session_id: req.params.sessionId, p_reason: text(body(req).reason) })));
 
