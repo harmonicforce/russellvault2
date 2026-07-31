@@ -9,8 +9,8 @@ select has_function('public','execute_cycle_count_resolution_attempt',array['uui
 select has_function('public','complete_cycle_count_latest',array['uuid','uuid','boolean','text'],'latest-result completion exists');
 select function_privs_are('public','resolve_cycle_count_discrepancy',array['uuid','uuid','cycle_count_resolution_action','text','text'],'authenticated',array[]::text[],'legacy resolution is revoked');
 select function_privs_are('public','complete_cycle_count',array['uuid','uuid','boolean','text'],'authenticated',array[]::text[],'legacy all-observation completion is revoked');
-select trigger_is('public','inventory_loss_events','inventory_loss_events_append_only','app.forbid_update_delete()','loss events are append-only');
-select trigger_is('public','cycle_count_resolution_attempt_events','cycle_count_resolution_attempt_events_append_only','app.forbid_update_delete()','attempt events are append-only');
+select trigger_is('public','inventory_loss_events','inventory_loss_events_append_only','app','forbid_update_delete','loss events are append-only');
+select trigger_is('public','cycle_count_resolution_attempt_events','cycle_count_resolution_attempt_events_append_only','app','forbid_update_delete','attempt events are append-only');
 select is((select count(*)::int from public.cycle_count_resolution_action_rules where action='item_moved_to_counted_location' and destination_mode='observed'),1,'counted relocation derives its destination');
 select is((select count(*)::int from public.cycle_count_resolution_action_rules where action='item_moved_to_reviewed_location' and destination_mode='reviewed'),1,'reviewed relocation is separately named');
 select is((select count(*)::int from public.cycle_count_resolution_action_rules where discrepancy_kind='lot_shortage' and action='item_loss_recorded'),0,'nonsensical loss action is forbidden for lots');

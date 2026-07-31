@@ -49,61 +49,61 @@ reset role;commit;
 -- Observation versus submit: either evidence is evaluated or receives a closed-round outcome.
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);
 insert into cc_ids values('item_submit',pg_temp.new_count('ROOT',true));reset role;commit;
-select pg_temp.race('item_submit',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0001-4000-8000-000000000001')$$,(select v from cc_ids where k='item_submit')),
+select pg_temp.race('item_submit',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0001-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='item_submit')),
  format($$public.submit_cycle_count_round('eeee0000-0000-4000-8000-000000000001',%L,true)$$,(select v from cc_ids where k='item_submit')));
 select is((select status::text from public.cycle_count_sessions where id=(select v from cc_ids where k='item_submit')),'review','item submit race closes the session deterministically');
 select ok(not exists(select 1 from public.cycle_count_item_observations o join public.cycle_count_rounds r on r.id=o.round_id where o.session_id=(select v from cc_ids where k='item_submit') and o.observed_at>r.submitted_at),'no item evidence lands after evaluation');
 
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);insert into cc_ids values('lot_submit',pg_temp.new_count('L'));reset role;commit;
-select pg_temp.race('lot_submit',format($$public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',%L,'RV-C-9000000002',8,'eebbbbbb-0001-4000-8000-000000000001')$$,(select v from cc_ids where k='lot_submit')),
+select pg_temp.race('lot_submit',format($$public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',%L,'RV-C-9000000002',8,'eebbbbbb-0001-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='lot_submit')),
  format($$public.submit_cycle_count_round('eeee0000-0000-4000-8000-000000000001',%L,true)$$,(select v from cc_ids where k='lot_submit')));
 select is((select status::text from public.cycle_count_sessions where id=(select v from cc_ids where k='lot_submit')),'review','lot submit race closes the session deterministically');
 select ok(not exists(select 1 from public.cycle_count_lot_observations o join public.cycle_count_rounds r on r.id=o.round_id where o.session_id=(select v from cc_ids where k='lot_submit') and o.observed_at>r.submitted_at),'no lot evidence lands after evaluation');
 
 -- Observation versus cancellation.
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);insert into cc_ids values('item_cancel',pg_temp.new_count('ROOT',true));reset role;commit;
-select pg_temp.race('item_cancel',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0002-4000-8000-000000000001')$$,(select v from cc_ids where k='item_cancel')),
+select pg_temp.race('item_cancel',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0002-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='item_cancel')),
  format($$public.cancel_cycle_count('eeee0000-0000-4000-8000-000000000001',%L,'cancel race')$$,(select v from cc_ids where k='item_cancel')));
 select is((select status::text from public.cycle_count_sessions where id=(select v from cc_ids where k='item_cancel')),'cancelled','item observation serializes with cancel');
 select ok(not exists(select 1 from public.cycle_count_item_observations o join public.cycle_count_sessions s on s.id=o.session_id where o.session_id=(select v from cc_ids where k='item_cancel') and o.observed_at>s.cancelled_at),'no item evidence lands after cancel');
 
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);insert into cc_ids values('lot_cancel',pg_temp.new_count('L'));reset role;commit;
-select pg_temp.race('lot_cancel',format($$public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',%L,'RV-C-9000000002',8,'eebbbbbb-0002-4000-8000-000000000001')$$,(select v from cc_ids where k='lot_cancel')),
+select pg_temp.race('lot_cancel',format($$public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',%L,'RV-C-9000000002',8,'eebbbbbb-0002-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='lot_cancel')),
  format($$public.cancel_cycle_count('eeee0000-0000-4000-8000-000000000001',%L,'cancel race')$$,(select v from cc_ids where k='lot_cancel')));
 select is((select status::text from public.cycle_count_sessions where id=(select v from cc_ids where k='lot_cancel')),'cancelled','lot observation serializes with cancel');
 select ok(not exists(select 1 from public.cycle_count_lot_observations o join public.cycle_count_sessions s on s.id=o.session_id where o.session_id=(select v from cc_ids where k='lot_cancel') and o.observed_at>s.cancelled_at),'no lot evidence lands after cancel');
 
 -- Concurrent subjects and key semantics.
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);insert into cc_ids values('item_dupe',pg_temp.new_count('ROOT',true));reset role;commit;
-select pg_temp.race('item_dupe',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0003-4000-8000-000000000001')$$,(select v from cc_ids where k='item_dupe')),
- format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0004-4000-8000-000000000001')$$,(select v from cc_ids where k='item_dupe')));
+select pg_temp.race('item_dupe',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0003-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='item_dupe')),
+ format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0004-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='item_dupe')));
 select is((select count(*)::int from public.cycle_count_item_observations where session_id=(select v from cc_ids where k='item_dupe') and voided_at is null),1,'two item scans create one live observation');
 select is((select count(*)::int from public.cycle_count_observation_idempotency where session_id=(select v from cc_ids where k='item_dupe')),2,'both item keys receive canonical structured outcomes');
 
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);insert into cc_ids values('lot_dupe',pg_temp.new_count('L'));reset role;commit;
-select pg_temp.race('lot_dupe',format($$public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',%L,'RV-C-9000000002',8,'eebbbbbb-0003-4000-8000-000000000001')$$,(select v from cc_ids where k='lot_dupe')),
- format($$public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',%L,'RV-C-9000000002',9,'eebbbbbb-0004-4000-8000-000000000001')$$,(select v from cc_ids where k='lot_dupe')));
+select pg_temp.race('lot_dupe',format($$public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',%L,'RV-C-9000000002',8,'eebbbbbb-0003-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='lot_dupe')),
+ format($$public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',%L,'RV-C-9000000002',9,'eebbbbbb-0004-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='lot_dupe')));
 select is((select count(*)::int from public.cycle_count_lot_observations where session_id=(select v from cc_ids where k='lot_dupe') and voided_at is null),1,'two lot submissions create one live observation');
 select is((select count(*)::int from public.cycle_count_observation_idempotency where session_id=(select v from cc_ids where k='lot_dupe')),2,'both lot keys receive canonical structured outcomes');
 
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);insert into cc_ids values('key_replay',pg_temp.new_count('ROOT',true));reset role;commit;
-select pg_temp.race('key_replay',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0005-4000-8000-000000000001')$$,(select v from cc_ids where k='key_replay')),
- format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0005-4000-8000-000000000001')$$,(select v from cc_ids where k='key_replay')));
+select pg_temp.race('key_replay',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0005-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='key_replay')),
+ format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0005-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='key_replay')));
 select is((select count(*)::int from public.cycle_count_observation_idempotency where session_id=(select v from cc_ids where k='key_replay')),1,'concurrent exact replay has one canonical key');
 select is((select count(*)::int from public.cycle_count_observation_attempts where session_id=(select v from cc_ids where k='key_replay')),2,'both exact replay attempts remain append-only');
 
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);insert into cc_ids values('key_conflict',pg_temp.new_count('ROOT',true));reset role;commit;
-select pg_temp.race('key_conflict',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0006-4000-8000-000000000001')$$,(select v from cc_ids where k='key_conflict')),
- format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','J','eeaaaaaa-0006-4000-8000-000000000001')$$,(select v from cc_ids where k='key_conflict')));
+select pg_temp.race('key_conflict',format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','I','eeaaaaaa-0006-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='key_conflict')),
+ format($$public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',%L,'EE-CERT','J','eeaaaaaa-0006-4000-8000-000000000001'::uuid)$$,(select v from cc_ids where k='key_conflict')));
 select is((select count(*)::int from public.cycle_count_observation_idempotency where session_id=(select v from cc_ids where k='key_conflict')),1,'conflicting key reuse keeps one canonical payload');
 select is((select count(*)::int from public.cycle_count_observation_attempts where session_id=(select v from cc_ids where k='key_conflict') and outcome='idempotency_conflict'),1,'conflicting reuse is a structured append-only attempt');
 
 -- Resolution attempt race and completion versus resolution.
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);insert into cc_ids values('resolve_race',pg_temp.new_count('ROOT',true));
-select public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='resolve_race'),'EE-CERT','J','eeaaaaaa-0007-4000-8000-000000000001');
+select public.observe_cycle_count_item('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='resolve_race'),'EE-CERT','J','eeaaaaaa-0007-4000-8000-000000000001'::uuid);
 select public.submit_cycle_count_round('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='resolve_race'),true);
-insert into cc_ids values('resolve_d',(select id from public.cycle_count_discrepancies where session_id=(select v from cc_ids where k='resolve_race') and status='open'));
-insert into cc_ids values('resolve_a',(public.create_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='resolve_d'),'item_moved_to_counted_location','race',null,'eecccccc-0001-4000-8000-000000000001')->>'attempt_id')::uuid);reset role;commit;
+reset role;insert into cc_ids values('resolve_d',(select id from public.cycle_count_discrepancies where session_id=(select v from cc_ids where k='resolve_race') and status='open'));set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);
+insert into cc_ids values('resolve_a',(public.create_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='resolve_d'),'item_moved_to_counted_location','race',null,'eecccccc-0001-4000-8000-000000000001'::uuid)->>'attempt_id')::uuid);reset role;commit;
 select pg_temp.race('resolve_attempt',format($$public.execute_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',%L)$$,(select v from cc_ids where k='resolve_a')),
  format($$public.execute_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',%L)$$,(select v from cc_ids where k='resolve_a')));
 select is((select status from public.cycle_count_resolution_attempts where id=(select v from cc_ids where k='resolve_a')),'succeeded','concurrent attempt execution succeeds once');
@@ -111,9 +111,9 @@ select is((select count(*)::int from public.inventory_movements where item_id=(s
 
 -- Return item to I so the final fixture starts from a stable snapshot.
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);select public.move_inventory_item('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='item'),'I','reset');
-insert into cc_ids values('complete_race',pg_temp.new_count('L'));select public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_race'),'RV-C-9000000002',8,'eebbbbbb-0005-4000-8000-000000000001');select public.submit_cycle_count_round('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_race'),false);
-insert into cc_ids values('complete_d',(select id from public.cycle_count_discrepancies where session_id=(select v from cc_ids where k='complete_race') and status='open'));
-insert into cc_ids values('complete_a',(public.create_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_d'),'lot_quantity_adjusted','race',null,'eecccccc-0002-4000-8000-000000000001')->>'attempt_id')::uuid);reset role;commit;
+insert into cc_ids values('complete_race',pg_temp.new_count('L'));select public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_race'),'RV-C-9000000002',8,'eebbbbbb-0005-4000-8000-000000000001'::uuid);select public.submit_cycle_count_round('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_race'),false);
+reset role;insert into cc_ids values('complete_d',(select id from public.cycle_count_discrepancies where session_id=(select v from cc_ids where k='complete_race') and status='open'));set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);
+insert into cc_ids values('complete_a',(public.create_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_d'),'lot_quantity_adjusted','race',null,'eecccccc-0002-4000-8000-000000000001'::uuid)->>'attempt_id')::uuid);reset role;commit;
 select pg_temp.race('complete_resolution',format($$public.execute_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',%L)$$,(select v from cc_ids where k='complete_a')),
  format($$public.complete_cycle_count_latest('eeee0000-0000-4000-8000-000000000001',%L,false,'race')$$,(select v from cc_ids where k='complete_race')));
 select is((select status from public.cycle_count_resolution_attempts where id=(select v from cc_ids where k='complete_a')),'succeeded','resolution wins or follows completion check exactly once');

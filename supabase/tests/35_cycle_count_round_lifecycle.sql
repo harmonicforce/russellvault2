@@ -21,7 +21,7 @@ select is((select proconfig @> array['search_path=""'] from pg_proc p join pg_na
 select is((select count(*)::int from information_schema.role_table_grants where table_schema='public'
   and table_name in ('cycle_count_round_subjects','cycle_count_observation_attempts')
   and grantee in ('authenticated','anon','PUBLIC')),0,'round scope and attempts have no direct API grants');
-select trigger_is('public','cycle_count_sessions','cycle_count_sessions_initial_round','app.cycle_count_create_initial_round()','initial round is created atomically with start');
-select trigger_is('public','cycle_count_round_subjects','cycle_count_round_subjects_append_only','app.forbid_update_delete()','frozen round scope is append-only');
+select trigger_is('public','cycle_count_sessions','cycle_count_sessions_initial_round','app','cycle_count_create_initial_round','initial round is created atomically with start');
+select trigger_is('public','cycle_count_round_subjects','cycle_count_round_subjects_append_only','app','forbid_update_delete','frozen round scope is append-only');
 select * from finish();
 rollback;
