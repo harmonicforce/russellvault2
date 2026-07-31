@@ -428,7 +428,10 @@ begin
   select ((select count(*) from public.cycle_count_item_observations where session_id=p_session_id)+
           (select count(*) from public.cycle_count_lot_observations where session_id=p_session_id))::int
     into v_total_observations;
-  v_hide_expected:=v_session.blind_count and v_session.status='in_progress';
+  -- Every recount is blind, even when its initial round was not. The persisted
+  -- round type is authoritative for that lifecycle rule.
+  v_hide_expected:=v_session.status='in_progress'
+    and (v_session.blind_count or v_round.round_type='recount');
   return jsonb_build_object('round_id',v_round.id,'round_number',v_round.round_number,
     'round_type',v_round.round_type,'round_status',v_round.status,
     'current_round_expected_subject_count',case when v_hide_expected then null else v_expected end,
