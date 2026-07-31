@@ -230,8 +230,9 @@ begin
   where rs.round_id=v_round.id;
 
   if v_round.round_type='recount' and (v_missing_items>0 or v_missing_lots>0) then
-    return jsonb_build_object('outcome','incomplete_round','code','RECOUNT_SCOPE_INCOMPLETE',
-      'missing_item_count',v_missing_items,'missing_lot_count',v_missing_lots);
+    -- Recounts are blind: revealing either missing count lets a counter derive
+    -- the frozen recount scope from the observations they have submitted.
+    return jsonb_build_object('outcome','incomplete_round','code','RECOUNT_SCOPE_INCOMPLETE');
   end if;
   if v_round.round_type='initial' and (v_missing_items>0 or v_missing_lots>0)
      and not coalesce(p_confirm_uncounted,false) then
@@ -428,7 +429,10 @@ begin
   select ((select count(*) from public.cycle_count_item_observations where session_id=p_session_id)+
           (select count(*) from public.cycle_count_lot_observations where session_id=p_session_id))::int
     into v_total_observations;
-  v_hide_expected:=v_session.blind_count and v_session.status='in_progress';
+  -- Every recount is blind, even when its initial round was not. The persisted
+  -- round type is authoritative for that lifecycle rule.
+  v_hide_expected:=v_session.status='in_progress'
+    and (v_session.blind_count or v_round.round_type='recount');
   return jsonb_build_object('round_id',v_round.id,'round_number',v_round.round_number,
     'round_type',v_round.round_type,'round_status',v_round.status,
     'current_round_expected_subject_count',case when v_hide_expected then null else v_expected end,

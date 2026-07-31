@@ -499,6 +499,10 @@ select is((public.mark_cycle_count_discrepancies_for_recount(
   '2','two discrepancies are selected while review remains open');
 select is((public.begin_cycle_count_recount('cc000000-0000-4000-8000-000000000001',
   pg_temp.get('recount_cc'),'verify both'))->>'subject_count','2','one recount freezes both selected subjects');
+select is(public.submit_cycle_count_round('cc000000-0000-4000-8000-000000000001',
+  pg_temp.get('recount_cc'),false),
+  '{"code":"RECOUNT_SCOPE_INCOMPLETE","outcome":"incomplete_round"}'::jsonb,
+  'incomplete recount response does not reveal missing item or lot counts');
 select public.observe_cycle_count_item('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),
   'CC-CERT-2','BIN-B','ccaaaaaa-2001-4000-8000-000000000001');
 select public.observe_cycle_count_lot('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),

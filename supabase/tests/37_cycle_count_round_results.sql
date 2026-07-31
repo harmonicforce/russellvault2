@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema public;
-select plan(21);
+select plan(25);
 select has_table('public','cycle_count_round_item_attestations','blind missing-item attestations are durable');
 select has_function('public','attest_cycle_count_item_absence',array['uuid','uuid','text','text','text','uuid'],'blind absence RPC exists');
 select col_is_fk('public','cycle_count_round_results','item_attestation_id','result references absence evidence');
@@ -21,6 +21,10 @@ select col_is_fk('public','cycle_count_round_results','lot_observation_id','lot 
 select has_index('public','cycle_count_round_results','cycle_count_round_results_item_once','one item result per round');
 select has_index('public','cycle_count_round_results','cycle_count_round_results_lot_once','one lot result per round');
 select is((select count(*)::int from information_schema.role_table_grants where table_schema='public' and table_name='cycle_count_latest_round_results' and grantee in ('authenticated','anon','PUBLIC')),0,'latest results have no direct client grant');
+select is((select count(*)::int from information_schema.role_table_grants where table_schema='public' and table_name='cycle_count_item_observations' and grantee in ('authenticated','anon','PUBLIC')),0,'item observations have no direct client grant');
+select is((select count(*)::int from information_schema.role_table_grants where table_schema='public' and table_name='cycle_count_lot_observations' and grantee in ('authenticated','anon','PUBLIC')),0,'lot observations have no direct client grant');
+select is((select count(*)::int from pg_policies where schemaname='public' and tablename='cycle_count_item_observations' and 'authenticated'=any(roles)),0,'item observations have no authenticated read policy');
+select is((select count(*)::int from pg_policies where schemaname='public' and tablename='cycle_count_lot_observations' and 'authenticated'=any(roles)),0,'lot observations have no authenticated read policy');
 select is((select count(*)::int from information_schema.routine_privileges where grantee='anon' and routine_schema='public' and routine_name in ('submit_cycle_count_round','list_cycle_count_round_results','get_cycle_count_round_progress')),0,'anon cannot use governed round reads or submit');
 select * from finish();
 rollback;

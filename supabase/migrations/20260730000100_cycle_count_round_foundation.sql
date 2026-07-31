@@ -245,8 +245,11 @@ create unique index cycle_count_discrepancies_result_once
 drop policy if exists cycle_count_expected_items_select on public.cycle_count_expected_items;
 drop policy if exists cycle_count_expected_lots_select on public.cycle_count_expected_lots;
 drop policy if exists cycle_count_discrepancies_select on public.cycle_count_discrepancies;
+drop policy if exists cycle_count_item_obs_select on public.cycle_count_item_observations;
+drop policy if exists cycle_count_lot_obs_select on public.cycle_count_lot_observations;
 revoke all on table public.cycle_count_expected_items, public.cycle_count_expected_lots,
-  public.cycle_count_discrepancies
+  public.cycle_count_discrepancies, public.cycle_count_item_observations,
+  public.cycle_count_lot_observations
   from public, anon, authenticated;
 
 alter table public.cycle_count_rounds enable row level security;
