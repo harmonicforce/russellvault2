@@ -43,7 +43,9 @@ begin
   select coalesce(jsonb_agg(jsonb_build_object(
     'id',r.id,'public_id',r.public_id,'round_number',r.round_number,'round_type',r.round_type,
     'status',r.status,'reason',r.reason,'started_at',r.started_at,'submitted_at',r.submitted_at,
-    'subject_count',(select count(*) from public.cycle_count_round_subjects s where s.round_id=r.id),
+    'subject_count',case when v_s.blind_count and v_s.status='in_progress'
+      and r.id=v_s.current_round_id then null else
+      (select count(*) from public.cycle_count_round_subjects s where s.round_id=r.id) end,
     'item_observation_count',(select count(*) from public.cycle_count_item_observations o where o.round_id=r.id),
     'lot_observation_count',(select count(*) from public.cycle_count_lot_observations o where o.round_id=r.id),
     'result_count',(select count(*) from public.cycle_count_round_results x where x.round_id=r.id)
