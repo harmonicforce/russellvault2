@@ -41,17 +41,25 @@ $$;
 create or replace function pg_temp.resolve_current(p_workspace uuid,p_discrepancy uuid,
   p_action text,p_reason text,p_destination text default null)
 returns jsonb language plpgsql as $$
-declare v_created jsonb;
+declare v_created jsonb;v_creator uuid;
 begin
+  v_creator:=auth.uid();
   v_created:=public.create_cycle_count_resolution_attempt(p_workspace,p_discrepancy,
     p_action,p_reason,p_destination,gen_random_uuid());
+  -- Destructive actions require a different owner to approve. Approving every
+  -- attempt keeps this helper usable for both governed and non-governed rules.
+  perform pg_temp.login('cc444444-4444-4444-8444-444444444444');
+  perform public.approve_cycle_count_resolution_attempt(
+    p_workspace,(v_created->>'attempt_id')::uuid);
+  perform pg_temp.login(v_creator);
   return public.execute_cycle_count_resolution_attempt(p_workspace,(v_created->>'attempt_id')::uuid);
 end $$;
 
 insert into auth.users (id, email) values
   ('cc111111-1111-4111-8111-111111111111', 'owner-cc@test.local'),
   ('cc222222-2222-4222-8222-222222222222', 'owner-nb@test.local'),
-  ('cc333333-3333-4333-8333-333333333333', 'viewer-cc@test.local')
+  ('cc333333-3333-4333-8333-333333333333', 'viewer-cc@test.local'),
+  ('cc444444-4444-4444-8444-444444444444', 'approver-cc@test.local')
 on conflict do nothing;
 
 insert into public.workspaces (id, name, created_by) values
@@ -59,7 +67,8 @@ insert into public.workspaces (id, name, created_by) values
   ('cc000000-0000-4000-8000-000000000002', 'CC Neighbour', 'cc222222-2222-4222-8222-222222222222');
 
 insert into public.workspace_members (workspace_id, user_id, role) values
-  ('cc000000-0000-4000-8000-000000000001', 'cc333333-3333-4333-8333-333333333333', 'viewer')
+  ('cc000000-0000-4000-8000-000000000001', 'cc333333-3333-4333-8333-333333333333', 'viewer'),
+  ('cc000000-0000-4000-8000-000000000001', 'cc444444-4444-4444-8444-444444444444', 'owner')
 on conflict do nothing;
 
 -- Structure ---------------------------------------------------------------------

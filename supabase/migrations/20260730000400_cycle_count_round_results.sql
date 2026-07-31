@@ -256,9 +256,13 @@ begin
       'open',r.expected_item_id,r.expected_lot_id,r.item_id,r.lot_id,
       r.expected_quantity,r.observed_quantity,r.expected_location_id,r.observed_location_id,r.id
     from public.cycle_count_round_results r
-    -- unable_to_count is unresolved evidence, not evidence of loss.  Keep the
-    -- result visible to review without manufacturing an item_missing action.
-    where r.round_id=v_round.id and r.classification not in ('matched','uncounted');
+    -- unable_to_count is unresolved item evidence, not evidence of loss. Keep
+    -- that result visible without manufacturing an item_missing action, while
+    -- still turning an unobserved lot's uncounted result into lot_uncounted.
+    where r.round_id=v_round.id and r.classification<>'matched'
+      and not (r.subject_type='item' and r.classification='uncounted' and exists (
+        select 1 from public.cycle_count_round_item_attestations ia
+        where ia.id=r.item_attestation_id and ia.attestation='unable_to_count'));
   else
     -- Matched recounts close their historical discrepancy without deleting it.
     update public.cycle_count_discrepancies d set status='resolved',resolved_at=now(),
