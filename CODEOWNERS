@@ -1,0 +1,12 @@
+# Code owners for harmonicforce/russellvault2
+#
+# NOTE: CODEOWNERS only *enforces* review when branch protection on `main` is
+# configured to "Require review from Code Owners". The handles below must be
+# valid GitHub users or teams with access to this repository, or GitHub will
+# silently ignore the rule. Replace @harmonicforce with the correct handle/team
+# if it differs.
+#
+# The project-state record is stewarded independently of the implementation
+# agent (see CLAUDE.md -> "Current-state stewardship"): edits to it must go
+# through the owner's review rather than being changed by the build session.
+docs/ai/CURRENT_STATE.md @harmonicforce

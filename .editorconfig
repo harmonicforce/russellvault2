@@ -1,0 +1,16 @@
+# EditorConfig — https://editorconfig.org
+# Consistent formatting across the three dependency roots (root, client, server)
+# and the SQL migrations. The repo convention is 2-space indent and LF endings.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+# Two trailing spaces are a Markdown hard line break — do not strip them.
+trim_trailing_whitespace = false

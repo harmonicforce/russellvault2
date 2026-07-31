@@ -31,22 +31,19 @@ This is a **working prototype, not the authoritative system of record.**
 - **Unsafe financial writes remain a concern for later target-model phases**,
   and money/quantities are stored as SQLite `REAL` rather than integer cents
   (though request-level validation now rejects non-integer quantities).
-- The GitHub **default branch (`Beginner`) is wrong** — it has no app. The
-  application lives on `claude/ui-better-spreadsheet-cjhwjb`, and `main` now
-  tracks that same commit as the intended stable branch.
+- **`main` is the stable branch and the source of truth.** The GitHub default
+  branch is now `main` (the old empty `Beginner` branch has been deleted), and the
+  former deployment branch `claude/ui-better-spreadsheet-cjhwjb` has been merged
+  into `main` and now sits behind it. All work lands on `main`.
 
-  **Two owner actions remain, and neither can be done from a build session:**
+  **One owner action remains, and it cannot be done from a build session:**
 
-  1. In Railway, change the deployed branch from
-     `claude/ui-better-spreadsheet-cjhwjb` to `main`
-     (Service → Settings → Source → Branch). Both branches point at the same
-     commit, so this is a no-op deploy rather than a change of what is served.
-  2. In GitHub, change the default branch to `main`
-     (Settings → General → Default branch).
-
-  Until step 1 is done, `claude/ui-better-spreadsheet-cjhwjb` remains the branch
-  Railway serves and is where work must land. `Beginner` is kept as an archive
-  and is not deleted.
+  1. **Verify the Railway service source is `main`** (Service → Settings → Source →
+     Branch). Because `claude/ui-better-spreadsheet-cjhwjb` is now *behind* `main`,
+     if Railway still points at it the live app is serving stale code. Confirm the
+     served commit with `GET /api/version` (see "Verify the deployed commit" below),
+     and switch the source to `main` if it is not already. Only after that is
+     confirmed should `claude/ui-better-spreadsheet-cjhwjb` be deleted.
 
 See [`docs/architecture.md`](docs/architecture.md) for repository/branch reality
 and data paths, and
@@ -151,8 +148,7 @@ cloud account needed. Everything below is typed into the **Linux Terminal**.
 3. **Get the code and run it** (single-port production mode — one URL, simplest):
    ```bash
    git clone https://github.com/harmonicforce/russellvault2.git russellvault2
-   cd russellvault2
-   git checkout claude/ui-better-spreadsheet-cjhwjb
+   cd russellvault2   # clones `main`, the default branch
    npm install
    npm run build     # installs deps + builds the client (first run takes a few minutes)
    npm start         # serves the whole app on http://localhost:4000
