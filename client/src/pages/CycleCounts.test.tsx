@@ -3,14 +3,14 @@ import {fireEvent,render,screen,waitFor} from '@testing-library/react';
 import CycleCounts from './CycleCounts';
 
 const api={list:vi.fn(),progress:vi.fn(),history:vi.fn(),discrepancies:vi.fn(),attempts:vi.fn(),
- observeItem:vi.fn(),observeLot:vi.fn(),attestItemAbsence:vi.fn(),submit:vi.fn(),selectRecount:vi.fn(),beginRecount:vi.fn(),createAttempt:vi.fn(),executeAttempt:vi.fn(),complete:vi.fn(),cancel:vi.fn()};
+ observeItem:vi.fn(),observeLot:vi.fn(),observations:vi.fn(),voidObservation:vi.fn(),attestItemAbsence:vi.fn(),submit:vi.fn(),selectRecount:vi.fn(),beginRecount:vi.fn(),createAttempt:vi.fn(),approveAttempt:vi.fn(),executeAttempt:vi.fn(),complete:vi.fn(),cancel:vi.fn()};
 let role:'owner'|'operator'='owner';
 vi.mock('../lib/workspaceContext',()=>({useWorkspace:()=>({workspace:{id:'ws',name:'Vault',role},client:{}})}));
 vi.mock('../lib/cycleCountApi',async(importOriginal)=>{const actual=await importOriginal<typeof import('../lib/cycleCountApi')>();return {...actual,createCycleCountTransport:()=>api}});
 const review={id:'s',public_id:'RV-CC-REVIEW',status:'review',blind_count:true,created_at:'2026-01-01',current_round_id:'r'};
 const counting={...review,public_id:'RV-CC-COUNT',status:'in_progress'};
 const progress={round_id:'r',round_number:2,round_type:'recount',round_status:'counting',current_round_expected_subject_count:null,current_round_observed_item_count:1,current_round_observed_lot_count:1,current_round_remaining_count:null,historical_round_count:2,total_historical_observations:4,blind:true};
-beforeEach(()=>{vi.clearAllMocks();role='owner';api.progress.mockResolvedValue(progress);api.history.mockResolvedValue({status:'review',completion_summary:null,rounds:[{id:'r',public_id:'RV-CCR-2',round_number:2,round_type:'recount',status:'submitted',reason:'verify',subject_count:2,item_observation_count:1,lot_observation_count:1,result_count:2}]});api.attempts.mockResolvedValue([]);api.discrepancies.mockResolvedValue([])});
+beforeEach(()=>{vi.clearAllMocks();role='owner';api.progress.mockResolvedValue(progress);api.history.mockResolvedValue({status:'review',completion_summary:null,rounds:[{id:'r',public_id:'RV-CCR-2',round_number:2,round_type:'recount',status:'submitted',reason:'verify',subject_count:2,item_observation_count:1,lot_observation_count:1,result_count:2}]});api.attempts.mockResolvedValue([]);api.observations.mockResolvedValue([]);api.discrepancies.mockResolvedValue([])});
 describe('Cycle Counts rendered states',()=>{
  it('keeps active blind recount entry free of stale resolution controls',async()=>{role='operator';api.list.mockResolvedValue([counting]);render(<CycleCounts/>);fireEvent.click(await screen.findByText('RV-CC-COUNT'));expect(await screen.findByText('Blind counting')).toBeTruthy();expect(screen.getByText('recount round 2')).toBeTruthy();expect(screen.getByLabelText('Item identifier')).toBeTruthy();expect(screen.queryByText('Current discrepancies')).toBeNull();expect(screen.getByText('Hidden')).toBeTruthy()});
  it('does not request protected history while an operator is counting',async()=>{role='operator';api.list.mockResolvedValue([counting]);render(<CycleCounts/>);fireEvent.click(await screen.findByText('RV-CC-COUNT'));await screen.findByText('Blind counting');expect(api.history).not.toHaveBeenCalled()});

@@ -56,12 +56,40 @@ create table public.cycle_count_resolution_attempt_events (
   occurred_at timestamptz not null default now(),unique(id,workspace_id),
   foreign key(attempt_id,workspace_id) references public.cycle_count_resolution_attempts(id,workspace_id)
 );
+create table public.cycle_count_resolution_approvals (
+  id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id),
+  attempt_id uuid not null, approved_by uuid not null references auth.users(id),
+  approved_at timestamptz not null default now(), unique(attempt_id), unique(id,workspace_id),
+  foreign key(attempt_id,workspace_id) references public.cycle_count_resolution_attempts(id,workspace_id)
+);
+create trigger cycle_count_resolution_approvals_append_only before update or delete
+ on public.cycle_count_resolution_approvals for each row execute function app.forbid_update_delete();
 create trigger cycle_count_resolution_attempt_events_append_only before update or delete
  on public.cycle_count_resolution_attempt_events for each row execute function app.forbid_update_delete();
 alter table public.cycle_count_resolution_attempts enable row level security;
 alter table public.cycle_count_resolution_attempt_events enable row level security;
+alter table public.cycle_count_resolution_approvals enable row level security;
 revoke all on public.cycle_count_resolution_attempts,public.cycle_count_resolution_attempt_events
  from public,anon,authenticated;
+revoke all on public.cycle_count_resolution_approvals from public,anon,authenticated;
+
+create function public.approve_cycle_count_resolution_attempt(p_workspace_id uuid,p_attempt_id uuid)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare v_uid uuid;v_a public.cycle_count_resolution_attempts%rowtype;v_id uuid;
+begin
+ v_uid:=app.cycle_count_require_reviewer(p_workspace_id);
+ select * into v_a from public.cycle_count_resolution_attempts
+  where id=p_attempt_id and workspace_id=p_workspace_id for update;
+ if v_a.id is null then raise exception 'resolution attempt not found in this workspace' using errcode='23514'; end if;
+ if v_a.status<>'pending' then return jsonb_build_object('outcome','conflict','code','ATTEMPT_NOT_PENDING'); end if;
+ if v_a.created_by=v_uid then return jsonb_build_object('outcome','forbidden','code','DISTINCT_APPROVER_REQUIRED'); end if;
+ insert into public.cycle_count_resolution_approvals(workspace_id,attempt_id,approved_by)
+ values(p_workspace_id,v_a.id,v_uid) on conflict(attempt_id) do nothing returning id into v_id;
+ if v_id is null then return jsonb_build_object('outcome','already_approved','attempt_id',v_a.id); end if;
+ return jsonb_build_object('outcome','approved','attempt_id',v_a.id,'approval_id',v_id);
+end $$;
+revoke all on function public.approve_cycle_count_resolution_attempt(uuid,uuid) from public,anon;
+grant execute on function public.approve_cycle_count_resolution_attempt(uuid,uuid) to authenticated;
 
 alter table public.inventory_items add column retirement_reason text;
 create table public.inventory_loss_events (
@@ -143,6 +171,12 @@ begin
  if v_d.round_result_id<>v_r.id or v_d.superseded_by_discrepancy_id is not null or v_d.status not in ('open','deferred') then
   return jsonb_build_object('outcome','conflict','code','RESULT_NO_LONGER_CURRENT'); end if;
  select * into v_rule from public.cycle_count_resolution_action_rules where discrepancy_kind=v_d.discrepancy_kind and action=v_a.action;
+ if v_rule.approval_required and not exists (
+   select 1 from public.cycle_count_resolution_approvals ap
+   where ap.attempt_id=v_a.id and ap.workspace_id=p_workspace_id and ap.approved_by<>v_a.created_by
+ ) then
+  return jsonb_build_object('outcome','approval_required','code','DISTINCT_APPROVAL_REQUIRED','attempt_id',v_a.id);
+ end if;
  update public.cycle_count_resolution_attempts set status='executing',last_attempted_at=now(),failure_classification=null where id=v_a.id;
  insert into public.cycle_count_resolution_attempt_events(workspace_id,attempt_id,event_type,actor_id)
  values(p_workspace_id,v_a.id,case when v_a.status='failed' then 'recovered' else 'started' end,v_uid);

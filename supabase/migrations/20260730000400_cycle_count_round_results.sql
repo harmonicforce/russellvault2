@@ -28,6 +28,48 @@ alter table public.cycle_count_round_results add constraint cycle_count_round_re
 alter table public.cycle_count_round_results add constraint cycle_count_round_results_one_item_evidence
   check (not (item_observation_id is not null and item_attestation_id is not null));
 
+-- An absence attestation is immutable evidence. Do not allow a later scan to
+-- create contradictory evidence for the same round and subject.
+create function app.reject_observation_after_item_attestation()
+returns trigger language plpgsql set search_path='' as $$
+begin
+  if exists (select 1 from public.cycle_count_round_item_attestations a
+    where a.round_id=new.round_id and a.item_id=new.item_id) then
+    raise exception 'item already has an absence attestation in this round'
+      using errcode='23514';
+  end if;
+  return new;
+end $$;
+create trigger cycle_count_item_observation_attestation_guard
+  before insert on public.cycle_count_item_observations for each row
+  execute function app.reject_observation_after_item_attestation();
+
+create function public.list_current_cycle_count_observations(p_workspace_id uuid,p_session_id uuid)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare v_uid uuid;v_round_id uuid;v_rows jsonb;
+begin
+ v_uid:=app.cycle_count_require_counter(p_workspace_id);
+ select current_round_id into v_round_id from public.cycle_count_sessions
+  where id=p_session_id and workspace_id=p_workspace_id and status='in_progress';
+ if v_round_id is null then return '[]'::jsonb; end if;
+ select coalesce(jsonb_agg(x order by x.recorded_at desc),'[]'::jsonb) into v_rows from (
+  select o.id,'item'::text subject_kind,i.public_id subject_public_id,
+    l.location_code detail,o.observed_at recorded_at
+  from public.cycle_count_item_observations o
+  join public.inventory_items i on i.id=o.item_id and i.workspace_id=p_workspace_id
+  join public.storage_locations l on l.id=o.observed_location_id and l.workspace_id=p_workspace_id
+  where o.round_id=v_round_id and o.voided_at is null
+  union all
+  select o.id,'lot',l.public_id,o.observed_quantity::text,o.observed_at
+  from public.cycle_count_lot_observations o
+  join public.inventory_lots l on l.id=o.lot_id and l.workspace_id=p_workspace_id
+  where o.round_id=v_round_id and o.voided_at is null
+ ) x;
+ return v_rows;
+end $$;
+revoke all on function public.list_current_cycle_count_observations(uuid,uuid) from public,anon;
+grant execute on function public.list_current_cycle_count_observations(uuid,uuid) to authenticated;
+
 create function public.attest_cycle_count_item_absence(
   p_workspace_id uuid,p_session_id uuid,p_item_public_id text,p_attestation text,
   p_reason text,p_idempotency_key uuid)
@@ -264,7 +306,10 @@ begin
   select p_workspace_id,p_session_id,v_round.id,'item',io.item_id,io.id,false,
     io.observed_location_id,'unexpected'
   from public.cycle_count_item_observations io
-  where io.round_id=v_round.id and io.voided_at is null and io.expected_item_id is null;
+  where v_round.round_type='initial' and io.round_id=v_round.id
+    and io.voided_at is null and io.expected_item_id is null
+    and not exists (select 1 from public.cycle_count_round_subjects rs
+      where rs.round_id=v_round.id and rs.item_id=io.item_id);
 
   if v_round.round_type='initial' then
     insert into public.cycle_count_discrepancies (

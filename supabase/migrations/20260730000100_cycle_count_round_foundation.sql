@@ -99,24 +99,43 @@ insert into public.cycle_count_rounds (
   created_by, created_at, started_by, started_at, submitted_by, submitted_at)
 select gen_random_uuid(), s.workspace_id, s.id,
        'RV-CCR-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 12)),
-       1, 'initial',
-       case s.status
+       legacy.round_number,
+       case when legacy.round_number=1 then 'initial' else 'recount' end::public.cycle_count_round_type,
+       case when legacy.round_number < legacy.latest_round then
+         case when s.status='completed' then 'closed' else 'submitted' end::public.cycle_count_round_status
+       else case s.status
          when 'in_progress' then 'counting'::public.cycle_count_round_status
          when 'review' then 'submitted'::public.cycle_count_round_status
          when 'completed' then 'closed'::public.cycle_count_round_status
          else 'cancelled'::public.cycle_count_round_status
-       end,
+       end end,
        s.created_by, s.created_at,
        coalesce(s.started_by, s.created_by), coalesce(s.started_at, s.created_at),
-       case when s.status in ('review','completed') then coalesce(s.submitted_by, s.created_by) end,
-       case when s.status in ('review','completed') then coalesce(s.submitted_at, s.updated_at) end
+       case when legacy.round_number < legacy.latest_round or s.status in ('review','completed')
+         then coalesce(s.submitted_by, s.started_by, s.created_by) end,
+       case when legacy.round_number < legacy.latest_round or s.status in ('review','completed')
+         then coalesce(s.submitted_at, s.updated_at, s.started_at, s.created_at) end
 from public.cycle_count_sessions s
+cross join lateral (
+  select n as round_number, greatest(1,coalesce((
+    select max(x.count_round) from (
+      select count_round from public.cycle_count_item_observations where session_id=s.id
+      union all select count_round from public.cycle_count_lot_observations where session_id=s.id
+    ) x),1)) as latest_round
+  from generate_series(1,greatest(1,coalesce((
+    select max(x.count_round) from (
+      select count_round from public.cycle_count_item_observations where session_id=s.id
+      union all select count_round from public.cycle_count_lot_observations where session_id=s.id
+    ) x),1))) n
+) legacy
 where s.status <> 'draft';
 
 update public.cycle_count_sessions s
 set current_round_id = r.id
 from public.cycle_count_rounds r
-where r.session_id = s.id and r.round_number = 1;
+where r.session_id = s.id and r.round_number = (
+  select max(latest.round_number) from public.cycle_count_rounds latest where latest.session_id=s.id
+);
 
 alter table public.cycle_count_sessions
   add constraint cycle_count_sessions_current_round_fk
