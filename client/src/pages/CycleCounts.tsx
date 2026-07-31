@@ -12,11 +12,11 @@ export default function CycleCounts(){
  const [rounds,setRounds]=useState<readonly CycleCountRoundHistory[]>([]),[attempts,setAttempts]=useState<readonly ResolutionAttempt[]>([]);
  const [identifier,setIdentifier]=useState(''),[location,setLocation]=useState(''),[lot,setLot]=useState(''),[qty,setQty]=useState('');
  const [chosen,setChosen]=useState<Set<string>>(new Set()),[reason,setReason]=useState(''),[message,setMessage]=useState('');
- const loadSessions=()=>api.list().then(rows=>{setSessions(rows);if(selected){const fresh=rows.find(x=>x.id===selected.id);if(fresh)setSelected(fresh)}}).catch(e=>setMessage((e as Error).message));
- const loadDetail=async()=>{if(!selected)return;setProgress(await api.progress(selected.id));const h=await api.history(selected.id);setRounds(h.rounds);if(selected.status==='review'&&workspace?.role==='owner'){setDiscrepancies(await api.discrepancies(selected.id));setAttempts(await api.attempts(selected.id))}else{setDiscrepancies([]);setAttempts([])}};
+ const loadSessions=async()=>{try{const rows=await api.list();setSessions(rows);return rows}catch(e){setMessage((e as Error).message);return [] as readonly CycleCountSession[]}};
+ const loadDetail=async(session=selected)=>{if(!session)return;setProgress(await api.progress(session.id));const h=await api.history(session.id);setRounds(h.rounds);if(session.status==='review'&&workspace?.role==='owner'){setDiscrepancies(await api.discrepancies(session.id));setAttempts(await api.attempts(session.id))}else{setDiscrepancies([]);setAttempts([])}};
  useEffect(()=>{if(workspace)void loadSessions()},[workspace?.id]);
  useEffect(()=>{void loadDetail().catch(e=>setMessage((e as Error).message))},[selected?.id,selected?.status]);
- const run=async(p:Promise<Record<string,unknown>>)=>{try{const r=await p;setMessage(String(r.outcome??'Done'));await loadSessions();await loadDetail();return r}catch(e){setMessage((e as Error).message)}};
+ const run=async(p:Promise<Record<string,unknown>>)=>{try{const r=await p;setMessage(String(r.outcome??'Done'));const rows=await loadSessions();const fresh=selected?rows.find(x=>x.id===selected.id)??selected:null;if(fresh!==selected)setSelected(fresh);await loadDetail(fresh);return r}catch(e){setMessage((e as Error).message)}};
  const toggle=(id:string)=>setChosen(old=>{const n=new Set(old);n.has(id)?n.delete(id):n.add(id);return n});
  const startRecount=async()=>{if(!selected||chosen.size===0)return;await run(api.selectRecount(selected.id,[...chosen],reason));await run(api.beginRecount(selected.id,reason));setChosen(new Set());setReason('')};
  return <div className="mx-auto max-w-6xl space-y-5 p-4 md:p-6">
