@@ -38,6 +38,16 @@ create or replace function pg_temp.get(k text) returns uuid language sql stable 
   select nullif(current_setting('pgtmp.' || k, true), '')::uuid
 $$;
 
+create or replace function pg_temp.resolve_current(p_workspace uuid,p_discrepancy uuid,
+  p_action text,p_reason text,p_destination text default null)
+returns jsonb language plpgsql as $$
+declare v_created jsonb;
+begin
+  v_created:=public.create_cycle_count_resolution_attempt(p_workspace,p_discrepancy,
+    p_action,p_reason,p_destination,gen_random_uuid());
+  return public.execute_cycle_count_resolution_attempt(p_workspace,(v_created->>'attempt_id')::uuid);
+end $$;
+
 insert into auth.users (id, email) values
   ('cc111111-1111-4111-8111-111111111111', 'owner-cc@test.local'),
   ('cc222222-2222-4222-8222-222222222222', 'owner-nb@test.local'),
@@ -157,7 +167,7 @@ select is(
 
 -- Observations are refused before the count starts.
 select throws_ok(
-  format($$select public.observe_cycle_count_item(%L, %L, 'CC-CERT-1', 'BIN-A')$$,
+  format($$select public.observe_cycle_count_item(%L, %L, 'CC-CERT-1', 'BIN-A', gen_random_uuid())$$,
     'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc')),
   '23514', null,
   'a draft count does not accept observations');
@@ -178,6 +188,9 @@ select is(
   4,
   'the resolved scope froze every active location under the aisle');
 
+-- Frozen expected answers have no authenticated table grant. Inspect fixture
+-- setup as the test owner, then return to the caller role for every operation.
+select pg_temp.logout();
 select is(
   (select count(*)::int from public.cycle_count_expected_items where session_id = pg_temp.get('cc')),
   2,
@@ -206,6 +219,7 @@ select is(
   (select count(*)::int from public.cycle_count_expected_lots where session_id = pg_temp.get('cc')),
   2,
   'exactly the two in-scope quantity lots are expected');
+select pg_temp.login('cc111111-1111-4111-8111-111111111111');
 
 select throws_ok(
   format($$select public.start_cycle_count(%L, %L)$$,
@@ -224,14 +238,16 @@ select is(
 -- Serialized counting ----------------------------------------------------------------
 select is(
   (public.observe_cycle_count_item(
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'CC-CERT-1', 'BIN-A'))->>'outcome',
-  'expected_found',
+    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'CC-CERT-1', 'BIN-A',
+    'ccaaaaaa-0001-4000-8000-000000000001'))->>'outcome',
+  'accepted',
   'scanning an expected unit where it belongs records it as found');
 
 select is(
   (public.observe_cycle_count_item(
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'CC-CERT-1', 'BIN-A'))->>'outcome',
-  'duplicate',
+    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'CC-CERT-1', 'BIN-A',
+    'ccaaaaaa-0001-4000-8000-000000000001'))->>'outcome',
+  'idempotent_replay',
   'scanning the same unit again is idempotent, not a second sighting');
 
 select is(
@@ -242,20 +258,22 @@ select is(
 
 select is(
   (public.observe_cycle_count_item(
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'NOT-A-REAL-ID', 'BIN-A'))->>'outcome',
-  'not_found',
+    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'NOT-A-REAL-ID', 'BIN-A',
+    'ccaaaaaa-0002-4000-8000-000000000001'))->>'outcome',
+  'unknown_subject',
   'an identifier that matches nothing is reported, not invented');
 
 select is(
   (public.observe_cycle_count_item(
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'CC-CERT-2', 'BIN-B'))->>'outcome',
-  'wrong_location',
+    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'CC-CERT-2', 'BIN-B',
+    'ccaaaaaa-0003-4000-8000-000000000001'))->>'outcome',
+  'accepted',
   'a unit found on the wrong shelf is recorded as wrong-location, not as found');
 
-select throws_ok(
-  format($$select public.observe_cycle_count_item(%L, %L, 'CC-CERT-1', 'OUTSIDE')$$,
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc')),
-  '23514', null,
+select is(
+  (public.observe_cycle_count_item('cc000000-0000-4000-8000-000000000001',
+    pg_temp.get('cc'),'CC-CERT-1','OUTSIDE','ccaaaaaa-0004-4000-8000-000000000001'))->>'outcome',
+  'out_of_scope',
   'an observation cannot be recorded against a location outside the frozen scope');
 
 -- Counting changes no inventory.
@@ -268,15 +286,17 @@ select is(
 -- Lot counting -------------------------------------------------------------------------
 select is(
   (public.observe_cycle_count_lot(
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'RV-C-0000005002', 8))->>'outcome',
-  'counted',
+    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'RV-C-0000005002', 8,
+    'ccbbbbbb-0001-4000-8000-000000000001'))->>'outcome',
+  'accepted',
   'a lot quantity is recorded');
 
 select is(
   ((public.observe_cycle_count_lot(
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'RV-C-0000005002', 8))
+    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), 'RV-C-0000005002', 8,
+    'ccbbbbbb-0001-4000-8000-000000000001'))
     ->>'outcome'),
-  'duplicate',
+  'idempotent_replay',
   'a repeated lot count in the same round is idempotent');
 
 select is(
@@ -299,7 +319,7 @@ select is(
 
 -- Submission -----------------------------------------------------------------------------
 select is(
-  (public.submit_cycle_count_for_review(
+  (public.submit_cycle_count_round(
     'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc')))->>'outcome',
   'confirmation_required',
   'submitting with uncounted records requires explicit confirmation');
@@ -310,7 +330,7 @@ select is(
   'and the unconfirmed submission did not change the status');
 
 select is(
-  (public.submit_cycle_count_for_review(
+  (public.submit_cycle_count_round(
     'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc'), true))->>'outcome',
   'submitted',
   'confirming uncounted records submits the count');
@@ -353,14 +373,13 @@ select pg_temp.put('d_wrong', (select id from public.cycle_count_discrepancies
 select pg_temp.put('d_unc', (select id from public.cycle_count_discrepancies
   where session_id = pg_temp.get('cc') and discrepancy_kind = 'lot_uncounted'));
 
-select throws_ok(
-  format($$select public.complete_cycle_count(%L, %L)$$,
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc')),
-  '23514', null,
+select is(
+  (public.complete_cycle_count_latest('cc000000-0000-4000-8000-000000000001',
+    pg_temp.get('cc'),false,null))->>'outcome','blocked',
   'a count cannot complete while discrepancies are still open');
 
 select lives_ok(
-  format($$select public.resolve_cycle_count_discrepancy(%L, %L, 'lot_quantity_adjusted', 'counted twice')$$,
+  format($$select pg_temp.resolve_current(%L, %L, 'lot_quantity_adjusted', 'counted twice')$$,
     'cc000000-0000-4000-8000-000000000001', pg_temp.get('d_short')),
   'the shortage is resolved through the governed quantity adjustment');
 
@@ -376,10 +395,9 @@ select is(
   'and the change went through the existing quantity-adjustment history');
 
 select is(
-  (public.resolve_cycle_count_discrepancy(
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('d_short'), 'lot_quantity_adjusted'))
-    ->>'outcome',
-  'already_resolved',
+  (public.create_cycle_count_resolution_attempt('cc000000-0000-4000-8000-000000000001',
+    pg_temp.get('d_short'),'lot_quantity_adjusted','counted twice',null,gen_random_uuid()))->>'outcome',
+  'conflict',
   'resolving the same discrepancy twice reports the existing resolution rather than applying it again');
 
 select is(
@@ -389,7 +407,7 @@ select is(
   'and no second adjustment was written');
 
 select lives_ok(
-  format($$select public.resolve_cycle_count_discrepancy(%L, %L, 'item_moved_to_counted_location', 'was on the wrong shelf')$$,
+  format($$select pg_temp.resolve_current(%L, %L, 'item_moved_to_counted_location', 'was on the wrong shelf')$$,
     'cc000000-0000-4000-8000-000000000001', pg_temp.get('d_wrong')),
   'the wrong-location unit is resolved by a governed move');
 
@@ -406,25 +424,23 @@ select ok(
   'and the move is in the immutable movement history');
 
 -- Completion --------------------------------------------------------------------------------
-select throws_ok(
-  format($$select public.complete_cycle_count(%L, %L)$$,
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc')),
-  '23514', null,
+select is(
+  (public.complete_cycle_count_latest('cc000000-0000-4000-8000-000000000001',
+    pg_temp.get('cc'),false,null))->>'outcome','blocked',
   'the still-open uncounted-lot discrepancy blocks completion');
 
 select lives_ok(
-  format($$select public.resolve_cycle_count_discrepancy(%L, %L, 'deferred', 'shelf inaccessible today')$$,
+  format($$select pg_temp.resolve_current(%L, %L, 'deferred', 'shelf inaccessible today')$$,
     'cc000000-0000-4000-8000-000000000001', pg_temp.get('d_unc')),
   'the uncounted lot is explicitly deferred with a reason');
 
-select throws_ok(
-  format($$select public.complete_cycle_count(%L, %L)$$,
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc')),
-  '23514', null,
+select is(
+  (public.complete_cycle_count_latest('cc000000-0000-4000-8000-000000000001',
+    pg_temp.get('cc'),false,null))->>'outcome','blocked',
   'a deferred discrepancy still blocks completion unless deferral is explicitly allowed');
 
 select lives_ok(
-  format($$select public.complete_cycle_count(%L, %L, true, 'closing with one deferral')$$,
+  format($$select public.complete_cycle_count_latest(%L, %L, true, 'closing with one deferral')$$,
     'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc')),
   'completion succeeds when the deferral is acknowledged with a reason');
 
@@ -433,15 +449,13 @@ select is(
   'completed'::public.cycle_count_status,
   'the count is completed');
 
-select is(
-  ((select completion_summary from public.cycle_count_sessions
-     where id = pg_temp.get('cc'))->>'deferred_discrepancies')::int,
-  1,
-  'the summary records the deferral rather than hiding it');
+select is((select status from public.cycle_count_discrepancies where id=pg_temp.get('d_unc')),
+  'deferred'::public.cycle_count_discrepancy_status,
+  'the durable discrepancy records the acknowledged deferral');
 
 -- Completed sessions are evidence.
 select throws_ok(
-  format($$select public.observe_cycle_count_item(%L, %L, 'CC-CERT-1', 'BIN-A')$$,
+  format($$select public.observe_cycle_count_item(%L, %L, 'CC-CERT-1', 'BIN-A', gen_random_uuid())$$,
     'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc')),
   '23514', null,
   'a completed count accepts no further observations');
@@ -459,6 +473,58 @@ select throws_ok(
   'a completed session cannot be reopened even by a privileged connection');
 select pg_temp.login('cc111111-1111-4111-8111-111111111111');
 
+-- Explicit multi-subject recount -----------------------------------------------------------
+select pg_temp.put('recount_cc',(public.create_cycle_count(
+  'cc000000-0000-4000-8000-000000000001','AISLE',true,null,null,true,'recount fixture')->>'id')::uuid);
+select public.start_cycle_count('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'));
+select public.observe_cycle_count_item('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),
+  'CC-CERT-1','BIN-A','ccaaaaaa-1001-4000-8000-000000000001');
+select public.observe_cycle_count_item('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),
+  'CC-CERT-2','BIN-A','ccaaaaaa-1002-4000-8000-000000000001');
+select public.observe_cycle_count_lot('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),
+  'RV-C-0000005002',6,'ccbbbbbb-1001-4000-8000-000000000001');
+select public.observe_cycle_count_lot('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),
+  'RV-C-0000005003',4,'ccbbbbbb-1002-4000-8000-000000000001');
+select is((public.submit_cycle_count_round('cc000000-0000-4000-8000-000000000001',
+  pg_temp.get('recount_cc'),false))->>'outcome','submitted','initial explicit round submits');
+select pg_temp.put('recount_wrong',(select id from public.cycle_count_discrepancies
+  where session_id=pg_temp.get('recount_cc') and discrepancy_kind='item_wrong_location'
+    and superseded_by_discrepancy_id is null));
+select pg_temp.put('recount_short',(select id from public.cycle_count_discrepancies
+  where session_id=pg_temp.get('recount_cc') and discrepancy_kind='lot_shortage'
+    and superseded_by_discrepancy_id is null));
+select is((public.mark_cycle_count_discrepancies_for_recount(
+  'cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),
+  array[pg_temp.get('recount_wrong'),pg_temp.get('recount_short')],'verify both'))->>'total_pending_count',
+  '2','two discrepancies are selected while review remains open');
+select is((public.begin_cycle_count_recount('cc000000-0000-4000-8000-000000000001',
+  pg_temp.get('recount_cc'),'verify both'))->>'subject_count','2','one recount freezes both selected subjects');
+select public.observe_cycle_count_item('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),
+  'CC-CERT-2','BIN-B','ccaaaaaa-2001-4000-8000-000000000001');
+select public.observe_cycle_count_lot('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),
+  'RV-C-0000005002',7,'ccbbbbbb-2001-4000-8000-000000000001');
+select is((public.submit_cycle_count_round('cc000000-0000-4000-8000-000000000001',
+  pg_temp.get('recount_cc'),false))->>'outcome','submitted','complete recount submits');
+select is((select count(*)::int from public.cycle_count_rounds where session_id=pg_temp.get('recount_cc')),
+  2,'initial and recount rounds both remain immutable evidence');
+select is((select recount_outcome from public.cycle_count_discrepancies where id=pg_temp.get('recount_wrong')),
+  'matched_after_recount'::public.cycle_count_round_result_classification,
+  'corrected item becomes matched after recount');
+select is((select observed_quantity from public.cycle_count_discrepancies
+  where session_id=pg_temp.get('recount_cc') and discrepancy_kind='lot_shortage'
+    and superseded_by_discrepancy_id is null),7,'changed shortage successor carries latest quantity');
+select pg_temp.put('recount_successor',(select id from public.cycle_count_discrepancies
+  where session_id=pg_temp.get('recount_cc') and discrepancy_kind='lot_shortage'
+    and superseded_by_discrepancy_id is null));
+select is((pg_temp.resolve_current('cc000000-0000-4000-8000-000000000001',
+  pg_temp.get('recount_successor'),'lot_quantity_adjusted','apply latest recount'))->>'outcome',
+  'succeeded','resolution applies the latest recount result');
+select is((select quantity from public.inventory_lots where id=pg_temp.get('qlot')),7,
+  'latest recount quantity, not first-round quantity, is applied');
+select is((public.complete_cycle_count_latest('cc000000-0000-4000-8000-000000000001',
+  pg_temp.get('recount_cc'),false,'recount complete'))->>'outcome','completed',
+  'session completes after current successor is resolved');
+
 -- Blind counts ---------------------------------------------------------------------------------
 select pg_temp.put('blind', (public.create_cycle_count(
   'cc000000-0000-4000-8000-000000000001', 'BIN-A', false, null, null, true)->>'id')::uuid);
@@ -466,9 +532,10 @@ select public.start_cycle_count('cc000000-0000-4000-8000-000000000001', pg_temp.
 
 select is(
   (public.observe_cycle_count_lot(
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('blind'), 'RV-C-0000005002', 3))
+    'cc000000-0000-4000-8000-000000000001', pg_temp.get('blind'), 'RV-C-0000005002', 3,
+    'ccbbbbbb-0002-4000-8000-000000000001'))
     ->'variance',
-  'null'::jsonb,
+  null::jsonb,
   'a blind count does not hand the variance back to the counter');
 
 select is(
@@ -504,11 +571,10 @@ select is(
   0,
   'a neighbour cannot read this workspace''s cycle counts');
 
-select is(
-  (select count(*)::int from public.cycle_count_expected_items
-    where workspace_id = 'cc000000-0000-4000-8000-000000000001'),
-  0,
-  'nor its frozen snapshot');
+select throws_ok(
+  $$select count(*) from public.cycle_count_expected_items$$,
+  '42501', null,
+  'nor directly read any frozen expected snapshot');
 
 select throws_ok(
   format($$select public.start_cycle_count(%L, %L)$$,
@@ -517,7 +583,7 @@ select throws_ok(
   'a neighbour cannot start this workspace''s count by passing its own workspace id');
 
 select throws_ok(
-  format($$select public.observe_cycle_count_item(%L, %L, 'CC-CERT-1', 'NB-BIN')$$,
+  format($$select public.observe_cycle_count_item(%L, %L, 'CC-CERT-1', 'NB-BIN', gen_random_uuid())$$,
     'cc000000-0000-4000-8000-000000000002', pg_temp.get('cc')),
   '23514', null,
   'nor record an observation against it');

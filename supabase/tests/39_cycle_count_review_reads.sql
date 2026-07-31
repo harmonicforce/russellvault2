@@ -1,0 +1,12 @@
+begin;create extension if not exists pgtap with schema public;select plan(10);
+select has_function('public','list_current_cycle_count_discrepancies',array['uuid','uuid'],'current discrepancy RPC exists');
+select has_function('public','list_cycle_count_history',array['uuid','uuid'],'round history RPC exists');
+select has_function('public','list_cycle_count_resolution_attempts',array['uuid','uuid'],'attempt history RPC exists');
+select function_privs_are('public','list_current_cycle_count_discrepancies',array['uuid','uuid'],'authenticated',array['EXECUTE'],'authenticated uses governed discrepancy read');
+select function_privs_are('public','list_cycle_count_history',array['uuid','uuid'],'authenticated',array['EXECUTE'],'authenticated uses governed history read');
+select function_privs_are('public','list_cycle_count_resolution_attempts',array['uuid','uuid'],'authenticated',array['EXECUTE'],'authenticated uses governed attempt read');
+select is((select prosecdef from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='list_current_cycle_count_discrepancies'),true,'discrepancy read is SECURITY DEFINER');
+select is((select proconfig @> array['search_path=""'] from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='list_current_cycle_count_discrepancies'),true,'discrepancy read pins search path');
+select is((select count(*)::int from information_schema.routine_privileges where grantee='anon' and routine_schema='public' and routine_name like 'list%cycle_count%'),0,'anon has no cycle-count review read');
+select is((select count(*)::int from information_schema.role_table_grants where grantee='authenticated' and table_name in ('cycle_count_round_results','cycle_count_resolution_attempts')),0,'review internals retain no direct grants');
+select * from finish();rollback;
