@@ -11,6 +11,7 @@ import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData } from '../lib/inventoryData';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
+import { createMediaTransport, type ReadinessSummary } from '../lib/mediaApi';
 import { createIntakeTransport, type IntakeSessionListItem } from '../lib/intakeApi';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
 
@@ -68,6 +69,25 @@ function QueueCard({
   );
 }
 
+/**
+ * The board used to be able to say only "has no photos". Readiness knows the
+ * difference between a record with nothing, one missing a required angle, and
+ * one whose photos need review, so say which.
+ */
+function photoExplanation(summary: ReadinessSummary | null): string {
+  if (!summary) return 'Inventory with no photos yet.';
+  const missing = (summary.counts.missing_required_angle ?? 0) + (summary.counts.missing_defect_photo ?? 0);
+  const review = summary.counts.media_review_needed ?? 0;
+  const unfinished = summary.counts.upload_incomplete ?? 0;
+  const parts: string[] = [];
+  if (missing > 0) parts.push(`${missing} missing a required photo`);
+  if (review > 0) parts.push(`${review} needing photo review`);
+  if (unfinished > 0) parts.push(`${unfinished} with an unfinished upload`);
+  return parts.length === 0
+    ? 'Every record has the photos its category asks for.'
+    : `${parts.join(', ')}.`;
+}
+
 export default function Workbench() {
   const { workspace, client } = useWorkspace();
   const navigate = useNavigate();
@@ -85,6 +105,11 @@ export default function Workbench() {
     return createIntakeTransport(tokenProviderFromClient(shadow));
   }, [config]);
 
+  const mediaTransport = useMemo(
+    () => createMediaTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
+    [client, workspace?.id]
+  );
+
   const [counts, setCounts] = useState({ needsLocation: 0, needsPhotos: 0, total: 0 });
   const [opsCounts, setOpsCounts] = useState({
     unclassified: 0, needsConditionDetails: 0, zeroQuantity: 0,
@@ -95,6 +120,7 @@ export default function Workbench() {
   const [needsLocation, setNeedsLocation] = useState<QueueRow[]>([]);
   const [needsPhotos, setNeedsPhotos] = useState<QueueRow[]>([]);
   const [openSessions, setOpenSessions] = useState<readonly IntakeSessionListItem[]>([]);
+  const [mediaSummary, setMediaSummary] = useState<ReadinessSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -112,6 +138,9 @@ export default function Workbench() {
         data.operationsQueueRows('needs_condition_details'),
       ]);
       setOpenCorrections(await data.openCorrectionCount().catch(() => 0));
+      // Photo readiness is a nice-to-have on this board: a failure here must not
+      // take out the queues the operator actually works from.
+      setMediaSummary(await mediaTransport.readinessSummary().catch(() => null));
       setCounts(c);
       setNeedsLocation(loc);
       setNeedsPhotos(photos);
@@ -139,7 +168,7 @@ export default function Workbench() {
     } finally {
       setLoading(false);
     }
-  }, [data, workspace, intake]);
+  }, [data, workspace, intake, mediaTransport]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -181,7 +210,7 @@ export default function Workbench() {
           icon={<Camera className="h-4 w-4 text-accent" />}
           title="Needs photos"
           count={counts.needsPhotos}
-          explanation="Inventory with no photos yet."
+          explanation={photoExplanation(mediaSummary)}
           rows={needsPhotos}
           actionLabel="Add photos"
           onOpen={open}

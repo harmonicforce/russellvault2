@@ -29,6 +29,7 @@ import ItemDetail from './pages/ItemDetail';
 import IntakeSessions from './pages/IntakeSessions';
 import Locations from './pages/Locations';
 import CycleCounts from './pages/CycleCounts';
+import MediaIssues from './pages/MediaIssues';
 import FirstRunSetup from './components/FirstRunSetup';
 import { isProvenanceUiEnabled } from './lib/provenanceConfig';
 import { useWorkspace } from './lib/workspaceContext';
@@ -52,6 +53,7 @@ const PRIMARY_NAV = [
   { to: '/intake-sessions', label: 'Intake Sessions', icon: ClipboardList, end: false },
   { to: '/locations', label: 'Locations', icon: MapPin, end: false },
   { to: '/cycle-counts', label: 'Cycle Counts', icon: ClipboardCheck, end: false },
+  { to: '/photo-issues', label: 'Photo Issues', icon: FileWarning, end: false },
   { to: '/corrections', label: 'Corrections', icon: FileWarning, end: false },
 ];
 
@@ -234,6 +236,7 @@ function RoutedContent() {
       {PROVENANCE_ENABLED && <Route path="/intake-sessions" element={<IntakeSessions />} />}
       {PROVENANCE_ENABLED && <Route path="/locations" element={<Locations />} />}
       {PROVENANCE_ENABLED && <Route path="/cycle-counts" element={<CycleCounts />} />}
+      {PROVENANCE_ENABLED && <Route path="/photo-issues" element={<MediaIssues />} />}
       {PROVENANCE_ENABLED && <Route path="/import-review" element={<ImportReview />} />}
       {PROVENANCE_ENABLED && <Route path="/acquisition-review" element={<AcquisitionReview />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory-identity" element={<InventoryIdentity />} />}
