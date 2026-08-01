@@ -8,11 +8,13 @@ import { createLocationsTransport, type StorageLocation } from '../lib/locations
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData, type LotOverviewRow, type MovementRow } from '../lib/inventoryData';
 import { labelForLot } from '../lib/labels';
-import { LabelPreview, MediaPanel, MoveDialog, MovementHistory } from '../components/InventoryPanels';
+import { LabelPreview, MoveDialog, MovementHistory } from '../components/InventoryPanels';
+import { MediaGallery } from '../components/MediaGallery';
+import { createMediaTransport } from '../lib/mediaApi';
+import { tokenProviderFromClient } from '../lib/tokenProvider';
 import {
   LotHistoryPanel, MergePanel, QuantityPanel, SplitPanel,
 } from '../components/LotQuantityPanels';
-import { CATEGORIES } from '../lib/intakeCategories';
 import { prefillFromLot } from '../lib/intakePrefill';
 import { subtypeLabel } from '../lib/inventoryQuery';
 import { CorrectionHistory, RequestCorrectionDialog } from '../components/CorrectionPanels';
@@ -35,18 +37,8 @@ function Row({ label, value }: { label: string; value: string | null }) {
   );
 }
 
-function slotsFor(vertical: string, format: string | null): readonly string[] {
-  if (vertical === 'tcg') {
-    return format
-      ? CATEGORIES.find((c) => c.key === 'sealed_tcg')!.photoSlots
-      : CATEGORIES.find((c) => c.key === 'raw_card')!.photoSlots;
-  }
-  if (vertical === 'footwear') return CATEGORIES.find((c) => c.key === 'footwear')!.photoSlots;
-  return CATEGORIES.find((c) => c.key === 'other_collectible')!.photoSlots;
-}
-
 export default function LotDetail() {
-  const { workspace, client, userId } = useWorkspace();
+  const { workspace, client } = useWorkspace();
   const { lotId } = useParams<{ lotId: string }>();
   const navigate = useNavigate();
 
@@ -56,6 +48,10 @@ export default function LotDetail() {
   );
   const locationsTransport = useMemo(
     () => createLocationsTransport(client as never, () => workspace?.id ?? null),
+    [client, workspace?.id]
+  );
+  const mediaTransport = useMemo(
+    () => createMediaTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
     [client, workspace?.id]
   );
 
@@ -198,12 +194,11 @@ export default function LotDetail() {
         </dl>
       </section>
 
-      <MediaPanel
-        data={data}
+      <MediaGallery
+        transport={mediaTransport}
         subjectKind="lot"
         subjectId={row.lot_id}
-        userId={userId}
-        slots={slotsFor(row.business_vertical, row.product_format)}
+        canEdit={workspace?.role === 'owner' || workspace?.role === 'operator'}
         onChanged={load}
       />
 

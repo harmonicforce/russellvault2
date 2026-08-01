@@ -736,67 +736,6 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
     },
 
     // ---- media ------------------------------------------------------------
-    async listMedia(subjectKind: 'item' | 'lot', subjectId: string): Promise<MediaRow[]> {
-      const { data, error } = await db
-        .from('inventory_media')
-        .select('*')
-        .eq('workspace_id', workspaceId)
-        .eq(subjectKind === 'item' ? 'item_id' : 'lot_id', subjectId)
-        .order('is_primary', { ascending: false })
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: true });
-      fail(error);
-      return (data ?? []) as MediaRow[];
-    },
-
-    /**
-     * Uploads the bytes into the workspace's private folder, then records the
-     * media row. Storage RLS validates the path shape and workspace on the
-     * object; table RLS re-validates that the subject is in the same
-     * workspace — so neither half can be pointed somewhere it should not be.
-     */
-    async uploadMedia(
-      subjectKind: 'item' | 'lot',
-      subjectId: string,
-      file: File,
-      slotLabel: string | null,
-      userId: string
-    ): Promise<void> {
-      const ext = extensionFor(file.type);
-      if (!ext) throw new Error('Only JPEG, PNG, WebP or HEIC images can be uploaded.');
-      if (file.size <= 0 || file.size > 20 * 1024 * 1024) {
-        throw new Error('Images must be larger than 0 bytes and no more than 20 MB.');
-      }
-      const name = `${safeFileStem()}.${ext}`;
-      const path = `${workspaceId}/${subjectId}/${name}`;
-      const { error: upErr } = await db.storage
-        .from(MEDIA_BUCKET)
-        .upload(path, file, { contentType: file.type, upsert: false });
-      fail(upErr);
-
-      const existing = await this.listMedia(subjectKind, subjectId);
-      const { error: rowErr } = await db.from('inventory_media').insert({
-        workspace_id: workspaceId,
-        subject_kind: subjectKind,
-        item_id: subjectKind === 'item' ? subjectId : null,
-        lot_id: subjectKind === 'lot' ? subjectId : null,
-        storage_path: path,
-        slot_label: slotLabel,
-        sort_order: existing.length,
-        // The first photo of a subject becomes its primary image.
-        is_primary: existing.length === 0,
-        content_type: file.type,
-        byte_size: file.size,
-        uploaded_by: userId,
-      });
-      if (rowErr) {
-        // The bytes landed but the row did not: remove the orphan so storage
-        // never accumulates objects no record points at.
-        await db.storage.from(MEDIA_BUCKET).remove([path]);
-        throw new Error(rowErr.message);
-      }
-    },
-
     /** Short-lived signed URL. The bucket is private; there is no public URL. */
     async signedUrl(storagePath: string, expiresInSeconds = 3600): Promise<string | null> {
       const { data, error } = await db.storage
@@ -804,29 +743,6 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
         .createSignedUrl(storagePath, expiresInSeconds);
       if (error) return null;
       return data?.signedUrl ?? null;
-    },
-
-    async deleteMedia(media: MediaRow): Promise<void> {
-      const { error } = await db.from('inventory_media').delete().eq('id', media.id);
-      fail(error);
-      await db.storage.from(MEDIA_BUCKET).remove([media.storage_path]);
-    },
-
-    async setPrimaryMedia(subjectKind: 'item' | 'lot', subjectId: string, mediaId: string): Promise<void> {
-      const column = subjectKind === 'item' ? 'item_id' : 'lot_id';
-      // Clear first: a partial unique index allows only one primary per subject.
-      const { error: clearErr } = await db
-        .from('inventory_media')
-        .update({ is_primary: false })
-        .eq('workspace_id', workspaceId)
-        .eq(column, subjectId)
-        .eq('is_primary', true);
-      fail(clearErr);
-      const { error } = await db
-        .from('inventory_media')
-        .update({ is_primary: true })
-        .eq('id', mediaId);
-      fail(error);
     },
 
     // ---- movement ---------------------------------------------------------
@@ -944,23 +860,3 @@ export function createInventoryData(client: AnyClient, workspaceId: string) {
 
 export type InventoryData = ReturnType<typeof createInventoryData>;
 
-function extensionFor(mime: string): string | null {
-  switch (mime) {
-    case 'image/jpeg': return 'jpg';
-    case 'image/png': return 'png';
-    case 'image/webp': return 'webp';
-    case 'image/heic': return 'heic';
-    case 'image/heif': return 'heif';
-    default: return null;
-  }
-}
-
-/** Storage RLS requires the filename to start alphanumeric and stay within a
- * safe character set; a UUID satisfies both without echoing user input. */
-function safeFileStem(): string {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return `${Date.now()}${Math.random().toString(36).slice(2, 10)}`;
-  }
-}

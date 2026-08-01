@@ -86,7 +86,13 @@ export interface Reservation {
   readonly upload: { readonly signedUrl: string | null; readonly token: string | null; readonly path: string } | null;
 }
 
+export interface ReadinessSummary {
+  readonly counts: Partial<Record<ReadinessStatus, number>>;
+  readonly open_issue_count: number;
+}
+
 export interface MediaTransport {
+  readinessSummary(): Promise<ReadinessSummary>;
   list(kind: SubjectKind, subjectId: string, includeDeleted?: boolean): Promise<readonly MediaRecord[]>;
   readiness(kind: SubjectKind, subjectId: string): Promise<MediaReadiness>;
   signedUrls(paths: readonly string[]): Promise<Record<string, string>>;
@@ -152,6 +158,7 @@ export function createMediaTransport(
   }
 
   return {
+    readinessSummary: () => request<ReadinessSummary>('GET', '/readiness-summary'),
     list: (kind, subjectId, includeDeleted = false) =>
       request<readonly MediaRecord[]>('GET', '', undefined, {
         subjectKind: kind, subjectId, includeDeleted: String(includeDeleted),

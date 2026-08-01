@@ -73,6 +73,10 @@ router.get('/readiness', requireMember, asyncRoute(async (req, res) => {
   });
 }));
 
+/** Bounded aggregate for the Workbench: counts by status, not a row per record. */
+router.get('/readiness-summary', requireMember, asyncRoute(async (req, res) =>
+  rpc(req, res, 'get_media_readiness_summary', {})));
+
 /**
  * Display URLs are minted in one batch so a gallery costs a single round trip
  * instead of one request per thumbnail.

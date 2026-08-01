@@ -20,8 +20,9 @@ import { prefillFromItem } from '../lib/intakePrefill';
 import { subtypeLabel } from '../lib/inventoryQuery';
 import { CorrectionHistory, RequestCorrectionDialog } from '../components/CorrectionPanels';
 import { labelForItem } from '../lib/labels';
-import { LabelPreview, MediaPanel, MoveDialog, MovementHistory } from '../components/InventoryPanels';
-import { CATEGORIES } from '../lib/intakeCategories';
+import { LabelPreview, MoveDialog, MovementHistory } from '../components/InventoryPanels';
+import { MediaGallery } from '../components/MediaGallery';
+import { createMediaTransport } from '../lib/mediaApi';
 
 function formatWhen(iso: string | null): string {
   if (!iso) return '—';
@@ -41,24 +42,12 @@ function Row({ label, value }: { label: string; value: string | null }) {
   );
 }
 
-/** Photo slots follow the item's vertical; a graded slab and a sneaker do not
- * want the same prompts. Guidance only — never fabricated evidence. */
-function slotsForVertical(vertical: string, gradingCompany: string | null): readonly string[] {
-  if (vertical === 'footwear') return CATEGORIES.find((c) => c.key === 'footwear')!.photoSlots;
-  if (vertical === 'tcg') {
-    return gradingCompany
-      ? CATEGORIES.find((c) => c.key === 'graded_card')!.photoSlots
-      : CATEGORIES.find((c) => c.key === 'raw_card')!.photoSlots;
-  }
-  return CATEGORIES.find((c) => c.key === 'other_collectible')!.photoSlots;
-}
-
 export default function ItemDetail() {
   const config = useMemo(
     () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
     []
   );
-  const { workspace, client, userId } = useWorkspace();
+  const { workspace, client } = useWorkspace();
   const { itemId } = useParams<{ itemId: string }>();
   const navigate = useNavigate();
 
@@ -73,6 +62,10 @@ export default function ItemDetail() {
   }, [config]);
   const locationsTransport = useMemo(
     () => createLocationsTransport(client as never, () => workspace?.id ?? null),
+    [client, workspace?.id]
+  );
+  const mediaTransport = useMemo(
+    () => createMediaTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
     [client, workspace?.id]
   );
 
@@ -231,12 +224,11 @@ export default function ItemDetail() {
         </dl>
       </section>
 
-      <MediaPanel
-        data={data}
+      <MediaGallery
+        transport={mediaTransport}
         subjectKind="item"
         subjectId={row.item_id}
-        userId={userId}
-        slots={slotsForVertical(row.business_vertical, row.grading_company)}
+        canEdit={workspace?.role === 'owner' || workspace?.role === 'operator'}
         onChanged={load}
       />
 
