@@ -384,27 +384,38 @@ select ok(
 );
 
 -- Phase 5 delivers the product / SKU / lot / item / location identity core
--- (asserted in 16_inventory_structure.sql). The tripwire now guards the Phase 6+
--- commerce boundary: no listing / sale / marketplace / COGS / cost-basis /
--- purchase table has leaked in yet. (product_* and inventory_* are legitimate
--- Phase 5 tables and are deliberately excluded from this pattern.)
+-- (asserted in 16_inventory_structure.sql). The tripwire guards the Phase 6+
+-- commerce boundary. (product_* and inventory_* are legitimate Phase 5 tables
+-- and are deliberately excluded from this pattern.)
+--
+-- Listing Prep is the one authorized crossing, and only for the operational
+-- layer BEFORE a listing exists: preparation records, their checklist, their
+-- history, and package presets. Those five tables are named individually so
+-- the tripwire still fires on an actual marketplace `listings` table, on a
+-- sale, on cost basis, or on anything else that would mean inventory exit had
+-- arrived without a work order. Listing Prep creates no such table: it records
+-- where the owner listed something as a text reference and moves no stock.
 select is(
   (select count(*)::int
    from information_schema.tables
    where table_schema = 'public'
-     and table_name ~ '(cost_basis|costbasis|cogs|listing|sale|marketplace|purchase)'),
+     and table_name ~ '(cost_basis|costbasis|cogs|listing|sale|marketplace|purchase)'
+     and table_name not in ('listing_prep', 'listing_prep_requirements',
+                            'listing_prep_checks', 'listing_prep_events',
+                            'listing_prep_readiness', 'listing_package_presets')),
   0,
-  'no COGS, cost-basis, listing, sale, marketplace, or purchase table exists yet (Phase 6+)'
+  'no COGS, cost-basis, marketplace listing, sale, or purchase table exists yet (Phase 6+)'
 );
 
 -- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) + Phase 5 (4) + Phase 6A (5)
 -- + the multi-category / media / movement / read-model additions (5)
 -- + the cycle-count layer (20260729 x4, 20260730 x5, 20260731 x1)
--- + the media hardening layer (20260801 x4) ---------------------------------
+-- + the media hardening layer (20260801 x4)
+-- + the listing prep layer (20260801 x4) ------------------------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  51,
-  'fifty-one migrations are recorded, including the media hardening layer'
+  55,
+  'fifty-five migrations are recorded, including the listing prep layer'
 );
 
 select results_eq(
@@ -460,8 +471,12 @@ select results_eq(
     ('20260801000100_media_hardening_schema'),
     ('20260801000200_media_hardening_functions'),
     ('20260801000300_media_readiness_and_issues'),
-    ('20260801000400_media_workbench_summary')$$,
-  'the earlier-phase migrations are unmodified and the media migrations follow them'
+    ('20260801000400_media_workbench_summary'),
+    ('20260801000500_listing_prep_schema'),
+    ('20260801000600_listing_prep_readiness'),
+    ('20260801000700_listing_prep_lifecycle'),
+    ('20260801000800_listing_prep_bulk_and_presets')$$,
+  'the earlier-phase migrations are unmodified and the listing prep migrations follow them'
 );
 
 select * from finish();
