@@ -227,11 +227,22 @@ declare
 begin
   v_uid := app.require_inventory_writer(p_workspace_id);
 
+  -- Read unlocked only to learn which subject to lock; every lock below is
+  -- then taken in one deterministic order so two concurrent callers can never
+  -- acquire the same rows in opposite orders and deadlock.
   select * into v_m from public.inventory_media
-   where id = p_media_id and workspace_id = p_workspace_id for update;
+   where id = p_media_id and workspace_id = p_workspace_id;
   if v_m.id is null then
     raise exception 'media not found in this workspace' using errcode = '23514';
   end if;
+
+  perform 1 from public.inventory_media
+   where workspace_id = p_workspace_id
+     and coalesce(item_id, lot_id) = coalesce(v_m.item_id, v_m.lot_id)
+   order by id
+   for update;
+
+  select * into v_m from public.inventory_media where id = p_media_id;
   if v_m.lifecycle = 'active' then
     return jsonb_build_object('outcome', 'replay', 'media_id', v_m.id,
       'sort_order', v_m.sort_order, 'is_primary', v_m.is_primary);
@@ -239,13 +250,6 @@ begin
   if v_m.lifecycle <> 'reserved' then
     raise exception 'this media is no longer awaiting upload' using errcode = '23514';
   end if;
-
-  -- Serialize position assignment against concurrent commits for the subject.
-  perform 1 from public.inventory_media
-   where workspace_id = p_workspace_id
-     and coalesce(item_id, lot_id) = coalesce(v_m.item_id, v_m.lot_id)
-     and lifecycle = 'active'
-   for update;
 
   select coalesce(max(sort_order) + 1, 0) into v_next
     from public.inventory_media
@@ -429,21 +433,25 @@ declare
 begin
   v_uid := app.require_inventory_writer(p_workspace_id);
 
+  -- Read unlocked only to learn the subject; the locks themselves are taken in
+  -- one deterministic order, so two devices choosing different primaries at the
+  -- same moment serialize instead of deadlocking.
   select * into v_m from public.inventory_media
-   where id = p_media_id and workspace_id = p_workspace_id for update;
+   where id = p_media_id and workspace_id = p_workspace_id;
   if v_m.id is null then
     raise exception 'media not found in this workspace' using errcode = '23514';
-  end if;
-  if v_m.lifecycle <> 'active' then
-    raise exception 'only a live photo can be the primary image' using errcode = '23514';
   end if;
 
   perform 1 from public.inventory_media
    where workspace_id = p_workspace_id
      and coalesce(item_id, lot_id) = coalesce(v_m.item_id, v_m.lot_id)
-     and lifecycle = 'active'
    order by id
    for update;
+
+  select * into v_m from public.inventory_media where id = p_media_id;
+  if v_m.lifecycle <> 'active' then
+    raise exception 'only a live photo can be the primary image' using errcode = '23514';
+  end if;
 
   select id into v_previous from public.inventory_media
    where coalesce(item_id, lot_id) = coalesce(v_m.item_id, v_m.lot_id)
@@ -546,21 +554,24 @@ begin
   v_uid := app.require_inventory_writer(p_workspace_id);
 
   select * into v_m from public.inventory_media
-   where id = p_media_id and workspace_id = p_workspace_id for update;
+   where id = p_media_id and workspace_id = p_workspace_id;
   if v_m.id is null then
     raise exception 'media not found in this workspace' using errcode = '23514';
-  end if;
-  if v_m.lifecycle = 'deleted' then
-    return jsonb_build_object('outcome', 'already_deleted', 'media_id', v_m.id);
   end if;
 
   v_subject := coalesce(v_m.item_id, v_m.lot_id);
 
+  -- One deterministic lock order for the whole subject, so concurrent deletes
+  -- of different photos serialize rather than deadlock.
   perform 1 from public.inventory_media
    where workspace_id = p_workspace_id and coalesce(item_id, lot_id) = v_subject
-     and lifecycle = 'active'
    order by id
    for update;
+
+  select * into v_m from public.inventory_media where id = p_media_id;
+  if v_m.lifecycle = 'deleted' then
+    return jsonb_build_object('outcome', 'already_deleted', 'media_id', v_m.id);
+  end if;
 
   update public.inventory_media
      set lifecycle = 'deleted', is_primary = false, deleted_at = now(), deleted_by = v_uid,
@@ -633,10 +644,18 @@ begin
   v_uid := app.require_inventory_writer(p_workspace_id);
 
   select * into v_m from public.inventory_media
-   where id = p_media_id and workspace_id = p_workspace_id for update;
+   where id = p_media_id and workspace_id = p_workspace_id;
   if v_m.id is null then
     raise exception 'media not found in this workspace' using errcode = '23514';
   end if;
+
+  perform 1 from public.inventory_media
+   where workspace_id = p_workspace_id
+     and coalesce(item_id, lot_id) = coalesce(v_m.item_id, v_m.lot_id)
+   order by id
+   for update;
+
+  select * into v_m from public.inventory_media where id = p_media_id;
   if v_m.lifecycle <> 'deleted' then
     return jsonb_build_object('outcome', 'not_deleted', 'media_id', v_m.id);
   end if;
@@ -646,13 +665,6 @@ begin
   if v_m.purge_after is not null and now() > v_m.purge_after then
     return jsonb_build_object('outcome', 'conflict', 'code', 'RECOVERY_WINDOW_EXPIRED');
   end if;
-
-  perform 1 from public.inventory_media
-   where workspace_id = p_workspace_id
-     and coalesce(item_id, lot_id) = coalesce(v_m.item_id, v_m.lot_id)
-     and lifecycle = 'active'
-   order by id
-   for update;
 
   select coalesce(max(sort_order) + 1, 0) into v_next
     from public.inventory_media
