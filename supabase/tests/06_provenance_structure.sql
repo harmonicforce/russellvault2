@@ -399,11 +399,12 @@ select is(
 
 -- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) + Phase 5 (4) + Phase 6A (5)
 -- + the multi-category / media / movement / read-model additions (5)
--- + the cycle-count layer (20260729 x4, 20260730 x5, 20260731 x1) ------------
+-- + the cycle-count layer (20260729 x4, 20260730 x5, 20260731 x1)
+-- + the media hardening layer (20260801 x3) ---------------------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  47,
-  'forty-seven migrations are recorded, including the full cycle-count layer'
+  50,
+  'fifty migrations are recorded, including the media hardening layer'
 );
 
 select results_eq(
@@ -455,8 +456,11 @@ select results_eq(
     ('20260730000300_cycle_count_atomic_observations'),
     ('20260730000400_cycle_count_round_results'),
     ('20260730000500_cycle_count_resolution_governance'),
-    ('20260731000100_cycle_count_review_reads')$$,
-  'the earlier-phase migrations are unmodified and the cycle-count migrations follow them'
+    ('20260731000100_cycle_count_review_reads'),
+    ('20260801000100_media_hardening_schema'),
+    ('20260801000200_media_hardening_functions'),
+    ('20260801000300_media_readiness_and_issues')$$,
+  'the earlier-phase migrations are unmodified and the media migrations follow them'
 );
 
 select * from finish();
