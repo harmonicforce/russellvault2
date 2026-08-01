@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Package, ShoppingBag, Link2, Tag, DollarSign, ArrowRight,
-  Boxes, ClipboardList, MapPin, PackagePlus, ScanLine,
+  Boxes, ClipboardList, MapPin, PackagePlus, AlertTriangle, Clock, RefreshCw,
 } from 'lucide-react';
 import { get } from '../lib/api';
 import { StatTile } from '../components/StatTile';
@@ -11,9 +12,9 @@ import { money, num, shortDate } from '../lib/format';
 import { StatusBadge } from '../components/StatusBadge';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
-import { createInventoryIdentityTransport, type WorkspaceSummaryStats } from '../lib/inventoryIdentityApi';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
 import { useWorkspace } from '../lib/workspaceContext';
+import { createOperationsDashboardTransport } from '../lib/operationsDashboardApi';
 
 /** The Supabase-workspace-scoped section: current-system counts and quick
  * actions. Kept separate from the legacy panel below (clearly labeled) so
@@ -22,46 +23,42 @@ import { useWorkspace } from '../lib/workspaceContext';
 function WorkspaceSummarySection() {
   const { workspace } = useWorkspace();
   const navigate = useNavigate();
-  const transport = useMemo(() => {
-    const client = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
-    return createInventoryIdentityTransport(tokenProviderFromClient(client));
-  }, []);
-  const [stats, setStats] = useState<WorkspaceSummaryStats | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!workspace) return;
-    transport
-      .summary(workspace.id)
-      .then(setStats)
-      .catch((e: unknown) => setError((e as Error).message));
-  }, [transport, workspace]);
+  const operations = useMemo(() => createOperationsDashboardTransport(tokenProviderFromClient(
+    createShadowClient(import.meta.env as unknown as Record<string, string | undefined>)
+  )), []);
+  const enabled = Boolean(workspace);
+  const health = useQuery({ queryKey: ['operations-dashboard', workspace?.id, 'health'], queryFn: () => operations.health(workspace!.id), enabled });
+  const work = useQuery({ queryKey: ['operations-dashboard', workspace?.id, 'work'], queryFn: () => operations.work(workspace!.id), enabled });
+  const workflows = useQuery({ queryKey: ['operations-dashboard', workspace?.id, 'workflows'], queryFn: () => operations.workflows(workspace!.id), enabled });
+  const activity = useQuery({ queryKey: ['operations-dashboard', workspace?.id, 'activity'], queryFn: () => operations.activity(workspace!.id), enabled });
 
   if (!workspace) return null;
 
   return (
-    <div className="rounded-xl border border-hairline bg-surface-1 p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold">Current Inventory — {workspace.name}</h2>
-        <span className="rounded bg-accent/12 px-2 py-0.5 text-xs font-medium text-accent-strong">
-          New inventory system
-        </span>
+    <div className="space-y-4" aria-label={`Operational dashboard for ${workspace.name}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div><h2 className="text-lg font-semibold">Today’s Work — {workspace.name}</h2><p className="text-xs text-ink-muted">Deterministic priorities from recorded operational facts.</p></div>
+        <button onClick={() => { void health.refetch(); void work.refetch(); void workflows.refetch(); void activity.refetch(); }} className="flex items-center gap-1 rounded-lg border border-hairline px-3 py-1.5 text-sm"><RefreshCw className="h-4 w-4"/> Refresh</button>
       </div>
-      {error && <p className="mb-2 text-xs text-danger">{error}</p>}
-      {stats && (
-        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-          <StatTile label="Inventory lots" value={num(stats.totalLots)} icon={<Package className="h-4 w-4" />} />
-          <StatTile label="Serialized items" value={num(stats.serializedItems)} icon={<Boxes className="h-4 w-4" />} />
-          <StatTile label="Added last 7 days" value={num(stats.itemsAddedLast7Days)} icon={<ScanLine className="h-4 w-4" />} />
-          <StatTile label="Open intake sessions" value={num(stats.openIntakeSessions)} icon={<ClipboardList className="h-4 w-4" />} />
-          <StatTile
-            label="Without a location"
-            value={num(stats.itemsWithoutActiveLocation)}
-            icon={<MapPin className="h-4 w-4" />}
-            tone={stats.itemsWithoutActiveLocation > 0 ? 'warning' : 'good'}
-          />
-        </div>
-      )}
+      <PanelState query={work} label="Today’s Work">
+        {work.data && <div className="rounded-xl border border-hairline bg-surface-1 divide-y divide-hairline">
+          {work.data.tasks.slice(0, 8).map(task => <Link key={`${task.taskType}-${task.subjectId}`} to={task.destination} className="flex items-start justify-between gap-3 p-3 hover:bg-surface-2">
+            <div><div className="font-medium text-sm">{task.displayName} <span className="text-ink-muted">{task.publicId}</span></div><div className="text-xs text-ink-secondary">{task.reason} Recommended: open the filtered queue and resolve the recorded exception.</div><div className="mt-1 text-xs text-ink-muted">Why ranked: {task.scoreExplanation}</div></div>
+            <span className="shrink-0 text-xs font-medium"><Clock className="inline h-3 w-3"/> {task.ageDays}d · {task.severity}</span>
+          </Link>)}
+          {!work.data.tasks.length && <p className="p-4 text-sm text-ink-muted">No work matched the current governed rules as of {shortDate(work.data.asOf)}.</p>}
+        </div>}
+      </PanelState>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <PanelState query={health} label="Inventory Health">
+          {health.data && <section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Inventory Health</h3><p className="text-xs text-ink-muted mb-3">As of {new Date(health.data.asOf).toLocaleString()}</p><div className="grid grid-cols-2 gap-2">
+            <StatTile label="Serialized units" value={num(health.data.serializedUnits)} icon={<Boxes className="h-4 w-4"/>}/><StatTile label="Lot-managed units" value={num(health.data.lotManagedUnits)} sub={`${num(health.data.lotManagedRecords)} active records`} icon={<Package className="h-4 w-4"/>}/>
+            <Link to="/inventory/current?needsLocation=true" className="col-span-2"><StatTile label="Records without location" value={num(health.data.withoutLocation)} icon={<MapPin className="h-4 w-4"/>} tone={health.data.withoutLocation ? 'warning' : 'good'}/></Link>
+          </div></section>}
+        </PanelState>
+        <PanelState query={workflows} label="Workflow Backlogs"><section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Workflow Backlogs</h3><p className="mt-2 text-sm text-ink-secondary">Media readiness and Listing Prep are aggregated on the server. Open the Workbench for the governed queues.</p><Link to="/workbench" className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-accent-strong">Open Daily Workbench <ArrowRight className="h-4 w-4"/></Link></section></PanelState>
+      </div>
+      <PanelState query={activity} label="Recent Activity">{activity.data && <section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Recent Activity</h3><p className="text-xs text-ink-muted">Source: {activity.data.source} · as of {new Date(activity.data.asOf).toLocaleString()}</p><div className="mt-2 divide-y divide-hairline">{activity.data.events.slice(0, 6).map(event => <Link key={event.id} to={event.destination} className="flex justify-between py-2 text-sm hover:underline"><span>Inventory moved · {event.public_id}</span><span>{shortDate(event.moved_at)}</span></Link>)}{!activity.data.events.length && <p className="py-3 text-sm text-ink-muted">No governed movement events yet.</p>}</div></section>}</PanelState>
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() => navigate('/quick-add')}
@@ -90,6 +87,12 @@ function WorkspaceSummarySection() {
       </div>
     </div>
   );
+}
+
+function PanelState({ query, label, children }: { query: { isLoading: boolean; error: Error | null }; label: string; children: ReactNode }) {
+  if (query.isLoading) return <div className="rounded-xl border border-hairline p-4 text-sm text-ink-muted">Loading {label}…</div>;
+  if (query.error) return <div role="alert" className="rounded-xl border border-danger/40 bg-danger/5 p-4"><div className="flex items-center gap-2 font-semibold text-danger"><AlertTriangle className="h-4 w-4"/>{label} unavailable</div><p className="mt-1 text-sm">{query.error.message}</p><p className="mt-1 text-xs text-ink-muted">No zero has been substituted. Other dashboard panels remain available.</p></div>;
+  return <>{children}</>;
 }
 
 interface DashboardData {

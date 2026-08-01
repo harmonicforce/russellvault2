@@ -3,59 +3,46 @@
 ## Surrender state
 
 - Repository/canonical branch: `harmonicforce/russellvault2`, `main`
-- Base SHA: `2365b2dcdcb15923b0e58e800e8b80c14b5cc94b`
-- Base provenance limitation: this checkout had no `origin` remote and no local `main` ref; the base is the clean checked-out merge commit described by the repository as canonical main. `git fetch origin main` could not run.
-- Implementation branch: `fix/permanent-label-location`
-- Final branch SHA: head of `fix/permanent-label-location`
-- Pull request: focused draft metadata prepared after commit; not merged
-- Migrations/database/server changes: none
+- Base SHA: `fba3ed1c2849412a5af2389e66d059c3ef1188e3`
+- Base provenance limitation: the supplied checkout had no remote. An `origin` remote was added from repository metadata, but `git fetch origin main` was blocked by the environment HTTP CONNECT proxy (403). The clean checked-out merge commit was therefore used as the best available current-main evidence.
+- Implementation branch: `codex/operational-dashboard-inventory-intelligence`
+- Final branch SHA: recorded by the final report after commit
+- Pull request: draft requested; recorded by the final report
+- Migrations: none
 - Live Supabase: not checked and unchanged
 - Railway/deployment/`/api/version`: not authorized, not checked, and unchanged
-- Hosted acceptance: not run because deployment was not authorized
+- Hosted acceptance: not run; deployment was not authorized
 - Production data touched: none
 - `docs/ai/CURRENT_STATE.md`: not edited
 
-## Implemented owner-visible change
+## Implemented vertical slice
 
-Permanent item and lot labels no longer accept or render location names or codes. This applies to the shared label model and renderer used by Current Inventory, Item Detail, Lot Detail, Batch Intake, and Bulk Move. Compact (50 × 25 mm), standard/address (89 × 36 mm), and full-page test-sheet formats all use that renderer, so preview and browser print output have identical durable-only content.
+The workspace Dashboard now leads with an independently loaded owner operations console. Today’s Work ranks existing missing-location and missing-media facts with a documented deterministic rule (explicit rule weight plus one point per day since intake, capped at 30). Each task carries its record identifier, reason, age, severity, score explanation, recommended action, and filtered destination.
 
-The metadata row now contains only the stable item public ID or the lot quantity and closes to a single right-aligned line. Barcode values, barcode dimensions, printed identifiers, label-size selection, physical dimensions, printer margins, and page-break behavior are unchanged. Inventory location fields, operational location UI, movements, quantity, and cycle-count behavior are unchanged.
-
-Before examples:
-
-- Lot: `Russell Vault / Evolving Skies Booster Box / SHELF A (S-A) / Qty 6 / [barcode] / RV-C-0000001234`
-- Item: `Russell Vault / Blastoise Base Set 2 / BIN 2 (BIN-2) / RV-ITEM-ABC123 / [barcode] / RV-7K3F9Q2`
-
-After examples:
-
-- Lot: `Russell Vault / Evolving Skies Booster Box / Qty 6 / [barcode] / RV-C-0000001234`
-- Item: `Russell Vault / Blastoise Base Set 2 / RV-ITEM-ABC123 / [barcode] / RV-7K3F9Q2`
+Inventory Health distinguishes serialized units, lot-managed records, and quantity across lot-managed records. It links the missing-location result to Current Inventory. Workflow Backlogs consumes the governed server aggregates for Media and Listing Prep. Recent Activity reads the immutable inventory movement event source and links each event to its item or lot. Every panel has its own request, visible as-of time, bounded server query, refresh behavior, and explicit error state; a failed panel never becomes zero and does not block sibling panels.
 
 ## Files changed
 
-- `client/src/lib/labels.ts`: removed location from permanent label contracts and generated label views.
-- `client/src/components/InventoryPanels.tsx`: removed location output and collapsed the metadata row without a blank placeholder.
-- `client/src/pages/BatchIntake.tsx`: stopped passing mutable locations into label generation.
-- `client/src/lib/intakeCategories.test.ts`: proves item/lot label data excludes supplied location text while preserving stable identifiers and lot quantity.
-- `client/src/components/InventoryPanels.test.tsx`: rendered coverage for item and lot labels across compact, standard, and sheet formats, including barcode SVGs and prohibited location text.
-- `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`: this surrender record.
+- `server/src/routes/operationsDashboard.ts`: caller-token, workspace-scoped, bounded health/work/workflow/activity panel routes and deterministic priority scoring.
+- `server/src/routes/operationsDashboard.test.ts`: priority formula boundary and explanation coverage.
+- `server/src/index.ts`: mounts the governed dashboard route before the legacy write guard.
+- `client/src/lib/operationsDashboardApi.ts`: authenticated per-panel transport.
+- `client/src/lib/operationsDashboardApi.test.ts`: workspace/token propagation and failure-not-zero coverage.
+- `client/src/pages/Dashboard.tsx`: responsive operational console, drill-down links, as-of labels, refresh, and isolated failure UI.
+- `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`: this record.
 
-## Verification evidence
+## Validation evidence
 
-Commands run locally with checked exit codes:
+- `npm run lint`: exit 0 with seven pre-existing warnings.
+- `npm run typecheck`: client and server passed, exit 0.
+- `npm run build:ci`: client and server passed, exit 0; Vite emitted its existing chunk-size advisory.
+- `npm run test`: server 27 files/394 tests, client 27 files/369 tests, audit/guard 23 tests; all passed, exit 0.
+- `git diff --check`: passed as the final command in the chained validation, exit 0.
 
-- `npm test --prefix client -- --run src/lib/intakeCategories.test.ts src/components/InventoryPanels.test.tsx`: 2 files, 37 tests passed, exit 0.
-- `npm test --prefix client`: 26 files, 367 tests passed, exit 0.
-- `npm run typecheck --prefix client`: passed, exit 0.
-- `npm run lint --prefix client`: exit 0 with seven pre-existing warnings in unrelated files.
-- `npm run build --prefix client`: passed, exit 0; Vite reported the existing large-chunk advisory.
-- `git diff --check`: passed, exit 0.
+Database reset, pgTAP, PostgreSQL shim, real Supabase CI tier, dependency audits, browser automation, screenshot capture, and exact-head GitHub CI were not run in this environment. No database migration was introduced.
 
-Server tests were not run because no server-side label code changed. There is no Playwright/browser dependency or installed browser in this checkout, so no screenshot or browser automation was captured; rendered jsdom coverage exercises the shared preview/print DOM for every supported size.
+## Limitations and exact next decision
 
-## Limitations and next decision
+This checkpoint does not yet implement saved operational views, configurable owner priority weights/audit history, cost/value queues, category/location composition, full aging bands, corrections/cycle-count/intake activity union, or every requested drill-down. The activity panel intentionally includes only immutable movement events rather than misrepresenting mutable timestamps. Serialized-unit and lot-managed totals use distinct grains; lifecycle exclusions beyond the current governed read models require a subsequent additive database read model.
 
-- CI run IDs/conclusions: not available from this checkout because no Git remote is configured.
-- Live schema parity: not checked; no schema changes exist.
-- Rollback: revert the single implementation commit on `fix/permanent-label-location`.
-- Exact next owner decision: review the focused draft PR and, after external CI is green on its exact head, decide whether to merge it to `main`.
+Rollback is a revert of the implementation commit. The exact next owner decision is whether to continue this draft branch with the remaining database-backed dashboard phases (saved views, configurable rules, broader governed metrics/activity, pgTAP and browser acceptance) before considering merge. Do not merge or deploy this checkpoint as completion of the full work order.
