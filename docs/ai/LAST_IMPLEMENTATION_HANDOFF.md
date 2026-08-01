@@ -5,7 +5,10 @@
 - Canonical branch: `main`
 - Base SHA this work started from: `0ec684244e6667df47f786aee52b40b49559db6d`
 - Implementation branch: `claude/listing-prep-command-center`
-- Pull request: **draft, not merged**
+- Pull request: **#28, "Listing Prep Command Center" — DRAFT, not merged**
+- Final branch SHA: head of `claude/listing-prep-command-center`
+- CI on that head: all four required jobs green — `build-and-verify`,
+  `shadow-db-postgres-shim`, `shadow-db-supabase-stack`, `dev-advisory-report`
 - Repository migration count: 55 (was 51; four `20260801000500`–`000800` migrations added)
 - Live Supabase: **unchanged.** No migration was applied to the live project.
 - Railway: **unchanged.** No deployment, restart, or configuration change.
@@ -149,9 +152,9 @@ code changed.
 
 - **Supabase-stack pgTAP was not run locally.** The Docker daemon is not
   running in this environment at all (`Cannot connect to the Docker daemon`),
-  so the authoritative `shadow-db-supabase-stack` job is confirmed by CI on the
-  PR head, not locally. It passed there on run 30699699952, which is the only
-  evidence for that tier and is worth re-checking on the final head.
+  so the authoritative `shadow-db-supabase-stack` job is confirmed by CI, not
+  locally. It passed on the final head `d1c947f`, and that CI result is the
+  only evidence for that tier.
 - **No hosted acceptance.** Nothing was deployed, so no owner workflow was
   exercised against Railway.
 - **No browser workflow coverage.** This repository still has no Playwright
