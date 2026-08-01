@@ -3,51 +3,101 @@
 ## Surrender state
 
 - Canonical branch: `main`
-- Last reviewed merge: `2f7a73ad4380c091da65db78a6f83a52f553d93c`
-- Merged PR: #25, “Fix red CI (client + cycle-count pgTAP), refresh deployment docs, add hygiene files”
-- Repository migration count: 47
-- Exact PR-head CI run: `30675105213`, conclusion `success`
-- Required jobs: all four green
-- Railway deployment: success
-- Hosted Cycle Count acceptance steps 1–8: owner-reported green
-- Working tree state at handoff: repository state represented by merged `main`; no implementation branch is designated as active
+- Base SHA this work started from: `2ef44b710ebffad8215375e9a39fdaa5a2b77722`
+- Implementation branch: `claude/media-photography-hardening`
+- Final branch SHA: `b68f2d54d10f602b20551bd9a37f66b0feaf6472`
+- Pull request: **#27, "Media and Photography Hardening" — DRAFT, not merged**
+- Repository migration count: 51 (was 47; four `20260801*` media migrations added)
+- Live Supabase: **unchanged.** No migration was applied to the live project.
+- Railway: **unchanged.** No deployment, restart, or configuration change.
+- Working tree at handoff: clean, branch pushed
 
-## What is shipped
+This work order authorized branch work and a draft PR only. Merge, live
+migration, and deployment were not performed and remain owner decisions.
 
-The owner-facing application includes authentication, workspaces, setup, locations, multi-category intake, inventory browsing, media foundations, movement, quantity governance, corrections, Daily Workbench, and the governed Cycle Count workflow.
+## What this slice added
 
-Cycle Count includes explicit immutable rounds, blind counting and recounts, atomic keyed observations, round-aware results, discrepancy review, governed resolutions and approvals, durable loss/failure evidence, completion summaries, owner UI, audit UI, and Workbench queues.
+The media foundation stored photographs correctly but could not describe what
+happens to them: the interrupted upload, the retry after a lost response, the
+photo deleted by accident, the object orphaned when a row insert failed.
 
-PR #25 repaired the integrated validation layer:
+Database (`20260801000100`–`000400`, all additive):
 
-- fixed the `Counting` component `progress` prop build failure;
-- enabled jsdom and cleanup for rendered Cycle Count tests;
-- updated the migration ledger from 41 to 47;
-- corrected composite-FK and trigger assertions;
-- bound tests to the granted atomic UUID-keyed observation functions;
-- exercised the real create → approve → execute resolution flow;
-- refreshed deployment documentation and repository hygiene.
+- photograph lifecycle (`reserved` → `active` → `deleted`), retry key, content
+  hash, non-destructive `rotation_degrees`, soft-delete and purge columns;
+- governed functions for reserve/commit/abandon, reorder, primary selection,
+  rotation, soft delete, restore, purge, listing, readiness and reconciliation;
+- append-only `inventory_media_events`;
+- `inventory_media_requirements` — the category photo matrix;
+- `inventory_media_issues` — the orphan/mismatch queue;
+- `inventory_media_readiness` view and a bounded Workbench summary.
 
-No migrations or governed production functions were changed by PR #25.
+Application:
+
+- `/api/media` routes (member reads, operator mutations, owner-only purge)
+  calling those functions on the caller's own token;
+- an upload manager with bounded concurrency, per-file progress, per-file
+  retry, cancellation, validation and duplicate reporting;
+- gallery, mobile capture sheet, photo checklist, recently-deleted/restore, and
+  the Photo Issues page.
+
+## Defects this fixed
+
+- primary switching was two unguarded browser `UPDATE`s, leaving a real window
+  with zero primary and split-brain on failure;
+- `sort_order` came from a read-then-write and could duplicate positions;
+- no idempotency key, so a retry after a lost response created a second photo;
+- deletion removed the row first and **ignored the storage error**, orphaning
+  objects with no way to recover the photograph;
+- a lock-order deadlock found by the new concurrency suite (target row locked
+  before the subject's set) — now one deterministic lock order.
+
+The ungoverned `MediaPanel` / `uploadMedia` / `deleteMedia` / `setPrimaryMedia`
+path was removed rather than left as a second way into governed data.
 
 ## Verification evidence
 
-- Client tests: 297 reported passing on the accepted PR head
-- Server tests: 355 reported passing on the accepted PR head
-- Client/server lint, typecheck, build, and production audits: green in CI
-- PostgreSQL-shim pgTAP: green
-- Supabase-stack pgTAP: green
-- Development advisory report: green
-- Railway deployment status: success
-- Hosted Cycle Count smoke path: owner reports all eight acceptance steps green
+Run locally with verified exit codes on the final SHA:
 
-## Live-state caution
+- client lint, typecheck, build: exit 0; **318** client tests pass
+- server typecheck, build: exit 0; **368** server tests pass
+- plain-PostgreSQL shim pgTAP: **45 files, exit 0** (41 pre-existing + 4 new)
+- production audits (root, client gate, server): exit 0
+- `scripts/db/guard.test.mjs`, `scripts/ci/client-audit-gate.test.mjs`: pass
 
-The repository contains 47 migrations. This handoff does not independently record the live Supabase migration ledger. Any next migration-bearing release must check live parity before applying new migrations and must report the result explicitly.
+New test files: `41_media_structure.sql` (24), `42_media_workflow.sql` (35),
+`43_media_readiness_and_issues.sql` (15), `44_media_concurrency.sql` (8),
+plus `media.test.ts` (13 routes), `uploadManager.test.ts` (10),
+`MediaGallery.test.tsx` (11).
+
+## Not verified, and why
+
+- **Supabase-stack pgTAP was not run locally.** Docker runs in this
+  environment but the container registry is blocked through its proxy
+  (503/403 on image pull), so the authoritative `shadow-db-supabase-stack`
+  job is confirmed by CI on the PR head, not locally.
+- **No hosted acceptance.** Nothing was deployed, so no owner workflow was
+  exercised against Railway.
+- **No browser workflow coverage.** This repository has no Playwright harness;
+  none was added, and none is claimed.
+- `15_acquisition_digest_parity.sql` again showed the documented intermittent
+  local in-suite slowdown (one run had to be cleared and restarted). It passes
+  in the completed suite run and is unrelated to this work.
+
+## Deployment prerequisite for whoever releases this
+
+`/api/media` is gated on the same server-side flags as the existing
+`/api/intake`, `/api/provenance` and `/api/acquisition` surfaces
+(`SHADOW_IMPORT`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`). If those are set for
+the shipped surfaces they are set for media; if they are ever unset, the photo
+UI will render and every operation will 404. `locationsApi.ts` documents this
+exact failure happening once before.
+
+The four media migrations must be applied to the live project before the hosted
+photo workflow can work. Check live migration parity first.
 
 ## Open product work
 
-- Media and Photography Hardening
 - Acquisition Receiving and Landed Cost
 - inventory cost-basis read models
 - Listing Prep Command Center
@@ -57,11 +107,21 @@ The repository contains 47 migrations. This handoff does not independently recor
 
 ## Known technical follow-ups
 
-- media retry/progress, reorder, rotation, primary switching, recovery, and orphan handling;
+- purge is exposed as a governed owner-only operation but has no scheduled
+  cleanup job; expired photos stay until someone purges them;
+- reconciliation walks at most 500 subject folders and 1000 files per folder,
+  and reports truncation rather than paginating;
+- readiness treats a record with no photographs as `missing_required_angle`
+  even where the category defines no required angle, which is deliberate but
+  worth revisiting if a category should be exempt;
 - intermittent local in-suite slowdown in `15_acquisition_digest_parity.sql`;
-- verify generated database types remain aligned when future schema work lands;
+- verify generated database types remain aligned now that schema has changed;
 - preserve exact-head CI and live-migration verification for every release.
 
 ## Next-agent instruction
 
-Read `AGENTS.md` and the required files listed in `CLAUDE.md`. Start from current `main`, inspect the exact feature area, create a short-lived branch and draft PR, and stop at a green exact PR head unless the work order explicitly authorizes merge, live migration, and deployment.
+Read `AGENTS.md` and the files listed in `CLAUDE.md`. PR #27 is a draft against
+`main` and has not been merged; do not assume its schema exists anywhere but
+the branch. If the owner authorizes release, confirm the exact green PR head,
+check live Supabase migration parity before applying the four media
+migrations, then verify `/api/version` and the hosted photo workflow.
