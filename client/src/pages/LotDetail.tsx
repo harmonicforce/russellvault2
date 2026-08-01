@@ -10,6 +10,8 @@ import { createInventoryData, type LotOverviewRow, type MovementRow } from '../l
 import { labelForLot } from '../lib/labels';
 import { LabelPreview, MoveDialog, MovementHistory } from '../components/InventoryPanels';
 import { MediaGallery } from '../components/MediaGallery';
+import { ListingPrepEntry } from '../components/ListingPrepEntry';
+import { createListingPrepTransport } from '../lib/listingPrepApi';
 import { createMediaTransport } from '../lib/mediaApi';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
 import {
@@ -52,6 +54,10 @@ export default function LotDetail() {
   );
   const mediaTransport = useMemo(
     () => createMediaTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
+    [client, workspace?.id]
+  );
+  const listingPrepTransport = useMemo(
+    () => createListingPrepTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
     [client, workspace?.id]
   );
 
@@ -200,6 +206,13 @@ export default function LotDetail() {
         subjectId={row.lot_id}
         canEdit={workspace?.role === 'owner' || workspace?.role === 'operator'}
         onChanged={load}
+      />
+
+      <ListingPrepEntry
+        transport={listingPrepTransport}
+        subjectKind="lot"
+        subjectId={row.lot_id}
+        canEdit={workspace?.role === 'owner' || workspace?.role === 'operator'}
       />
 
       {/* Quantity operations belong to quantity-managed lots only. A serialized

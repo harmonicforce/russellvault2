@@ -22,6 +22,8 @@ import { CorrectionHistory, RequestCorrectionDialog } from '../components/Correc
 import { labelForItem } from '../lib/labels';
 import { LabelPreview, MoveDialog, MovementHistory } from '../components/InventoryPanels';
 import { MediaGallery } from '../components/MediaGallery';
+import { ListingPrepEntry } from '../components/ListingPrepEntry';
+import { createListingPrepTransport } from '../lib/listingPrepApi';
 import { createMediaTransport } from '../lib/mediaApi';
 
 function formatWhen(iso: string | null): string {
@@ -66,6 +68,10 @@ export default function ItemDetail() {
   );
   const mediaTransport = useMemo(
     () => createMediaTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
+    [client, workspace?.id]
+  );
+  const listingPrepTransport = useMemo(
+    () => createListingPrepTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
     [client, workspace?.id]
   );
 
@@ -230,6 +236,13 @@ export default function ItemDetail() {
         subjectId={row.item_id}
         canEdit={workspace?.role === 'owner' || workspace?.role === 'operator'}
         onChanged={load}
+      />
+
+      <ListingPrepEntry
+        transport={listingPrepTransport}
+        subjectKind="item"
+        subjectId={row.item_id}
+        canEdit={workspace?.role === 'owner' || workspace?.role === 'operator'}
       />
 
       <section className="rounded-lg border border-hairline bg-surface-1 p-4">

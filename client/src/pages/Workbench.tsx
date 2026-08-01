@@ -6,12 +6,15 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Camera, ClipboardList, FileWarning, HelpCircle, ListChecks, MapPin, PackagePlus } from 'lucide-react';
+import { Camera, ClipboardList, FileWarning, HelpCircle, ListChecks, MapPin, PackagePlus, Tags } from 'lucide-react';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData } from '../lib/inventoryData';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
 import { createMediaTransport, type ReadinessSummary } from '../lib/mediaApi';
+import {
+  READINESS_LABELS, createListingPrepTransport, type PrepSummary,
+} from '../lib/listingPrepApi';
 import { createIntakeTransport, type IntakeSessionListItem } from '../lib/intakeApi';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
 
@@ -109,6 +112,10 @@ export default function Workbench() {
     () => createMediaTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
     [client, workspace?.id]
   );
+  const listingPrepTransport = useMemo(
+    () => createListingPrepTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
+    [client, workspace?.id]
+  );
 
   const [counts, setCounts] = useState({ needsLocation: 0, needsPhotos: 0, total: 0 });
   const [opsCounts, setOpsCounts] = useState({
@@ -121,6 +128,7 @@ export default function Workbench() {
   const [needsPhotos, setNeedsPhotos] = useState<QueueRow[]>([]);
   const [openSessions, setOpenSessions] = useState<readonly IntakeSessionListItem[]>([]);
   const [mediaSummary, setMediaSummary] = useState<ReadinessSummary | null>(null);
+  const [prepSummary, setPrepSummary] = useState<PrepSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -141,6 +149,9 @@ export default function Workbench() {
       // Photo readiness is a nice-to-have on this board: a failure here must not
       // take out the queues the operator actually works from.
       setMediaSummary(await mediaTransport.readinessSummary().catch(() => null));
+      // Same rule as photo readiness: this board is a summary, and a failure
+      // here must not take out the queues the operator works from.
+      setPrepSummary(await listingPrepTransport.summary().catch(() => null));
       setCounts(c);
       setNeedsLocation(loc);
       setNeedsPhotos(photos);
@@ -168,7 +179,7 @@ export default function Workbench() {
     } finally {
       setLoading(false);
     }
-  }, [data, workspace, intake, mediaTransport]);
+  }, [data, workspace, intake, mediaTransport, listingPrepTransport]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -247,6 +258,8 @@ export default function Workbench() {
           onViewAll={() => navigate('/corrections')}
         />
 
+        <ListingPrepCard summary={prepSummary} onOpen={(query) => navigate(`/listing-prep${query}`)} />
+
         <section className="rounded-lg border border-hairline bg-surface-1 p-4">
           <div className="mb-1 flex items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 text-sm font-semibold">
@@ -307,5 +320,57 @@ export default function Workbench() {
         </section>
       </div>
     </div>
+  );
+}
+
+/**
+ * Listing preparation, as counts with a link into the feature. The Workbench
+ * points at work; it does not reproduce the queue, so nothing here paginates
+ * or filters — that is what /listing-prep is for.
+ */
+function ListingPrepCard({
+  summary, onOpen,
+}: {
+  summary: PrepSummary | null;
+  onOpen: (query: string) => void;
+}) {
+  const ready = summary?.by_readiness.ready ?? 0;
+  const rows: Array<[string, number, string]> = summary
+    ? [
+        ['Ready to list', summary.by_status.ready_to_list ?? 0, '?tab=ready'],
+        ['Waiting on your review', summary.by_readiness.needs_owner_review ?? 0, '?readiness=needs_owner_review'],
+        [READINESS_LABELS.needs_photos, summary.by_readiness.needs_photos ?? 0, '?readiness=needs_photos'],
+        [READINESS_LABELS.blocked, summary.by_readiness.blocked ?? 0, '?readiness=blocked'],
+        ['Not started', summary.never_started, '?tab=queue'],
+      ]
+    : [];
+
+  return (
+    <section className="rounded-lg border border-hairline bg-surface-1 p-4">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 text-sm font-semibold">
+          <Tags className="h-4 w-4 text-accent" /> Listing preparation
+        </h2>
+        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold">{ready}</span>
+      </div>
+      {!summary ? (
+        <p className="text-sm text-ink-muted">Listing preparation could not be read just now.</p>
+      ) : (
+        <ul className="space-y-1">
+          {rows.map(([label, count, query]) => (
+            <li key={label}>
+              <button
+                type="button"
+                onClick={() => onOpen(query)}
+                className="flex w-full items-center justify-between rounded px-1 py-0.5 text-left text-sm hover:bg-surface-2"
+              >
+                <span>{label}</span>
+                <span className="font-semibold">{count}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
