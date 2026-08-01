@@ -21,6 +21,7 @@ import inventoryIdentityRouter from './routes/inventoryIdentity.js';
 import intakeRouter from './routes/intake.js';
 import locationsRouter from './routes/locations.js';
 import cycleCountsRouter from './routes/cycleCounts.js';
+import mediaRouter from './routes/media.js';
 
 seedIfEmpty();
 migrateProductType();
@@ -68,6 +69,10 @@ app.use('/api/intake', intakeRouter);
 // governed SECURITY DEFINER Postgres function under the caller's own JWT.
 app.use('/api/locations', locationsRouter);
 app.use('/api/cycle-counts', cycleCountsRouter);
+// Inventory photographs. Same gates: 404 by default, caller-token authority,
+// and governed functions for every mutation. Image bytes go browser-to-storage
+// under a short-lived signed URL and never pass through this process.
+app.use('/api/media', mediaRouter);
 
 app.use('/api', legacyWriteGuard);
 
