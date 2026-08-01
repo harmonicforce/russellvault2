@@ -1,81 +1,67 @@
-# Last implementation handoff
+# Last Implementation Handoff
 
-## Final Cycle Count implementation checkpoint
+## Surrender state
 
-Corrective migrations remain unapplied to live Supabase. This checkpoint closes
-the locally implementable client contract; environmental and publication proofs
-listed below are still mandatory before acceptance.
+- Canonical branch: `main`
+- Last reviewed merge: `2f7a73ad4380c091da65db78a6f83a52f553d93c`
+- Merged PR: #25, “Fix red CI (client + cycle-count pgTAP), refresh deployment docs, add hygiene files”
+- Repository migration count: 47
+- Exact PR-head CI run: `30675105213`, conclusion `success`
+- Required jobs: all four green
+- Railway deployment: success
+- Hosted Cycle Count acceptance steps 1–8: owner-reported green
+- Working tree state at handoff: repository state represented by merged `main`; no implementation branch is designated as active
 
-## Final evidence report
+## What is shipped
 
-1. **Working branch:** `work`.
-2. **Final remote SHA:** unavailable; the configured repository proxy at
-   `127.0.0.1:41729` refused the connection.
-3. **Draft PR:** metadata was recorded with the required PR tool, but no GitHub PR
-   number or URL is available without a reachable remote.
-4. **Checkpoint commits:** `e30b0b7`, `feb6054`, `4a8e9ae`, `42c0007`,
-   `9a48cdc`, `5d15050`, `20a7943`, `f16a057`, plus the current final
-   checkpoint.
-5. **Migrations:** additive migrations `20260730000100` through
-   `20260730000500` and `20260731000100`; no historical migration changed.
-6. **Rounds:** sessions point to persisted workspace-scoped initial/recount
-   rounds with unique per-session numbers and append-only lifecycle evidence.
-7. **Blindness:** direct expected-item/lot reads are revoked; governed reads
-   distinguish counters from owner/reviewers and recount progress hides answers.
-8. **Recount:** owner selection remains in review; one atomic begin freezes the
-   entire selected set into one blind round.
-9. **Results/discrepancies:** immutable per-round results retain predecessors;
-   latest accepted results drive active successor discrepancies and recount
-   classifications while historical discrepancies remain evidence.
-10. **Lifecycle locks:** observe, void, submit, recount start, cancel, complete,
-    and resolution paths lock the governed session/round before validation.
-11. **Idempotency:** canonical winner rows and append-only attempts distinguish
-    accepted, replay, subject conflict, key conflict, rejected, and closed
-    outcomes. The scanner UI now reuses its client key after an indeterminate
-    failure and rotates it only after a structured success.
-12. **Resolution matrix:** discrepancy/action rules govern role, reason,
-    destination, quantity, approval, downstream function, and completion state.
-13. **Failed attempts:** create and execute are separate commits; sanitized
-    failure events are durable and successful execution is once-only.
-14. **Loss:** append-only loss events validate item/session/discrepancy/attempt
-    provenance; loss is separate from duplicate or invalid-record voiding.
-15. **Summaries:** completed UI consumes the latest-result server summary and
-    displays historical rounds separately, preventing lot totals across rounds
-    from being added together.
-16. **Database assertions:** Cycle Count tests 34–40 declare 125 fixed assertions;
-    test 33 is fixture-driven `no_plan()`. None executed here.
-17. **Concurrency:** test 40 declares 22 bounded overlapping-session assertions;
-    none executed here because `psql` is unavailable.
-18. **Server/client totals:** two dependency-free Node suites passed 23/23.
-    Vitest server/client totals are unavailable because dependencies could not be
-    installed.
-19. **Rendered tests:** seven Cycle Count rendered cases are present; unexecuted.
-20. **Playwright:** six required real browser flows remain unavailable and are
-    not fabricated; the environment returned HTTP 403 for Playwright packages.
-21. **CI:** no run IDs or outcomes; remote publication is unavailable.
-22. **Live Supabase:** untouched; no migrations applied.
-23. **Railway:** untouched.
-24. **Incomplete:** PostgreSQL/pgTAP/concurrency execution, Playwright source and
-    execution, generated types, full lint/typecheck/test/build/audits, remote SHA,
-    PR number/URL, and CI results.
-25. **Owner-only actions:** review expected data, select/begin recount, create and
-    execute resolutions, complete, and cancel remain owner-gated.
-26. **Exact next step:** restore the repository remote and use a runner with npm,
-    PostgreSQL/pgTAP, Docker, and browsers; execute the complete matrix, correct
-    every failure, push without force, and update the draft PR evidence.
+The owner-facing application includes authentication, workspaces, setup, locations, multi-category intake, inventory browsing, media foundations, movement, quantity governance, corrections, Daily Workbench, and the governed Cycle Count workflow.
 
-## Validation performed
+Cycle Count includes explicit immutable rounds, blind counting and recounts, atomic keyed observations, round-aware results, discrepancy review, governed resolutions and approvals, durable loss/failure evidence, completion summaries, owner UI, audit UI, and Workbench queues.
 
-- `git diff --check`: exit 0.
-- `node --test scripts/db/guard.test.mjs scripts/ci/client-audit-gate.test.mjs`:
-  exit 0, 23 passed, 0 failed.
-- `node scripts/db/test.mjs`: exit 1; `psql` failed to start with `ENOENT`.
-- Client `npm ci --ignore-scripts`: interrupted with exit 130 after a bounded
-  wait without progress.
-- Playwright package lookup/install: exit 1, HTTP 403 from the environment proxy.
-- PostgreSQL package installation: exit 100, HTTP 403 from the apt proxy.
-- `git fetch origin main --prune`: exit 128, connection refused by the local
-  repository proxy.
+PR #25 repaired the integrated validation layer:
 
-Do not ship. No merge, deployment, live migration, Railway operation,
-branch-protection change, or production configuration change was performed.
+- fixed the `Counting` component `progress` prop build failure;
+- enabled jsdom and cleanup for rendered Cycle Count tests;
+- updated the migration ledger from 41 to 47;
+- corrected composite-FK and trigger assertions;
+- bound tests to the granted atomic UUID-keyed observation functions;
+- exercised the real create → approve → execute resolution flow;
+- refreshed deployment documentation and repository hygiene.
+
+No migrations or governed production functions were changed by PR #25.
+
+## Verification evidence
+
+- Client tests: 297 reported passing on the accepted PR head
+- Server tests: 355 reported passing on the accepted PR head
+- Client/server lint, typecheck, build, and production audits: green in CI
+- PostgreSQL-shim pgTAP: green
+- Supabase-stack pgTAP: green
+- Development advisory report: green
+- Railway deployment status: success
+- Hosted Cycle Count smoke path: owner reports all eight acceptance steps green
+
+## Live-state caution
+
+The repository contains 47 migrations. This handoff does not independently record the live Supabase migration ledger. Any next migration-bearing release must check live parity before applying new migrations and must report the result explicitly.
+
+## Open product work
+
+- Media and Photography Hardening
+- Acquisition Receiving and Landed Cost
+- inventory cost-basis read models
+- Listing Prep Command Center
+- Sales, Fulfillment, Returns, and Inventory Exit
+- Operational Dashboard and Inventory Intelligence
+- broader browser acceptance and release normalization
+
+## Known technical follow-ups
+
+- media retry/progress, reorder, rotation, primary switching, recovery, and orphan handling;
+- intermittent local in-suite slowdown in `15_acquisition_digest_parity.sql`;
+- verify generated database types remain aligned when future schema work lands;
+- preserve exact-head CI and live-migration verification for every release.
+
+## Next-agent instruction
+
+Read `AGENTS.md` and the required files listed in `CLAUDE.md`. Start from current `main`, inspect the exact feature area, create a short-lived branch and draft PR, and stop at a green exact PR head unless the work order explicitly authorizes merge, live migration, and deployment.
