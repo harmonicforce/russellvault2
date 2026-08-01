@@ -57,6 +57,13 @@ function makeFakeClient(token: string) {
     if (table === 'intake_entries' || table === 'intake_candidate_links') {
       return [];
     }
+    if (table === 'intake_sessions') {
+      const sessions = [
+        { id: SID, public_id: 'RV-ISESS-OPEN', label: 'Open', state: 'open', updated_at: '2026-07-26T00:00:00Z' },
+        { id: '55555555-5555-5555-5555-555555555555', public_id: 'RV-ISESS-CLOSED', label: 'Closed', state: 'abandoned', updated_at: '2026-07-27T00:00:00Z' },
+      ];
+      return filters.state ? sessions.filter((session) => session.state === filters.state) : sessions;
+    }
     return [];
   }
   return {
@@ -68,14 +75,19 @@ function makeFakeClient(token: string) {
     },
     from(table: string) {
       const filters: Record<string, string> = {};
-      const result = () => ({ data: rowsFor(table, filters), error: null, count: 0 });
+      const result = () => {
+        const rows = rowsFor(table, filters);
+        return { data: rows, error: null, count: rows.length };
+      };
       const q: Record<string, unknown> = {
         select: () => q,
         eq: (c: string, v: string) => {
           filters[c] = v;
           return q;
         },
-        order: async () => result(),
+        in: () => q,
+        order: () => q,
+        range: async () => result(),
         limit: async () => result(),
         maybeSingle: async () => ({ data: (rowsFor(table, filters)[0] ?? null), error: null }),
         then: (resolve: (v: unknown) => unknown) => Promise.resolve(resolve(result())),
@@ -273,6 +285,20 @@ describe('success for the appropriate member', () => {
     const g = await call('POST', '/api/intake/groups', { token: 'operator-token', body: GROUP_BODY });
     expect(g.status).toBe(200);
     expect((await g.json()).group.state).toBe('draft');
+  });
+
+  it('filters session state before pagination and returns the filtered total', async () => {
+    const res = await call('GET', `/api/intake/sessions?workspaceId=${WS_A}&state=open&limit=1&offset=0`, { token: 'viewer-token' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.total).toBe(1);
+    expect(json.sessions).toHaveLength(1);
+    expect(json.sessions[0].state).toBe('open');
+  });
+
+  it('rejects an unknown session-state filter', async () => {
+    const res = await call('GET', `/api/intake/sessions?workspaceId=${WS_A}&state=closed`, { token: 'viewer-token' });
+    expect(res.status).toBe(400);
   });
 
   it('an operator commit returns a structured committed result with an opaque lot id', async () => {

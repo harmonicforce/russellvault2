@@ -130,6 +130,13 @@ it('listGroups GETs /sessions/:id/groups with the workspace in the query', async
   expect(calls[0].url).toBe(`/api/intake/sessions/sess-1/groups?workspaceId=${WS}`);
 });
 
+it('listSessions can ask the server to filter before pagination', async () => {
+  const { fetchImpl, calls } = recordingFetch({ total: 12, limit: 10, offset: 0, sessions: [] });
+  const t = createIntakeTransport(token, fetchImpl);
+  await t.listSessions(WS, 10, 0, 'open');
+  expect(calls[0].url).toBe(`/api/intake/sessions?workspaceId=${WS}&limit=10&offset=0&state=open`);
+});
+
 it('getGroupSnapshot GETs /groups/:id/snapshot and returns the full snapshot', async () => {
   const snap = {
     group: { id: 'g-1', state: 'draft', version: 2, sku_attrs: {}, product_attrs: {}, source_evidence: {} },

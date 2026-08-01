@@ -153,13 +153,19 @@ router.get(
     const { workspaceId, client } = caller(req);
     const limit = readSessionLimit(req.query.limit);
     const offset = readSessionOffset(req.query.offset);
+    const state = req.query.state;
+    if (state !== undefined && state !== 'open' && state !== 'abandoned') {
+      throw new SourceReadError('state must be open or abandoned', 400);
+    }
     const sessionColumns: string =
       'id, public_id, label, state, opened_by, opened_at, abandoned_by, abandoned_at, ' +
       'abandon_reason, created_at, updated_at';
-    const { data: sessions, error, count } = (await client
+    let sessionsQuery = client
       .from('intake_sessions')
       .select(sessionColumns, { count: 'exact' })
-      .eq('workspace_id', workspaceId)
+      .eq('workspace_id', workspaceId);
+    if (state) sessionsQuery = sessionsQuery.eq('state', state);
+    const { data: sessions, error, count } = (await sessionsQuery
       .order('updated_at', { ascending: false })
       .range(offset, offset + limit - 1)) as unknown as {
       data: Record<string, unknown>[] | null;
