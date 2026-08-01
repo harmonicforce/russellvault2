@@ -2,119 +2,110 @@
 
 ## Purpose
 
-This protocol keeps future work orders compact. Repository-wide context belongs in `CLAUDE.md` and `docs/ai/*`, not repeated in every prompt.
+Repository-wide context belongs in `AGENTS.md`, `CLAUDE.md`, and `docs/ai/*`. A work order should stay focused on the requested vertical slice.
 
-## How to begin a work order
+## Before editing
 
-Before editing:
+1. Read the required files listed in `CLAUDE.md`.
+2. Fetch current `main` and confirm the exact base SHA.
+3. Confirm the working tree is clean.
+4. Inspect the existing implementation, migrations, routes, read models, and tests relevant to the task.
+5. Inspect current CI and deployment status when hosted behavior is affected.
+6. Create a short-lived branch and draft PR unless the work order explicitly directs otherwise.
 
-1. Read `CLAUDE.md`.
-2. Read all files listed there.
-3. Confirm the current branch and commit.
-4. Inspect the existing implementation relevant to the task.
-5. Inspect current CI and deployment status when the task affects hosted behavior.
-6. List the exact files, migrations, routes, and tests likely to change.
-
-Do not produce a fresh architecture review unless the work order explicitly requests one.
+Do not produce a fresh architecture review unless requested.
 
 ## Execution style
 
-A work order should be implemented as one coherent vertical slice.
+Complete one coherent vertical slice:
 
-For each capability, complete the chain:
+`schema/function → server/data client → owner UI → recovery/error states → tests → release evidence`
 
-`schema/function → server or data client → owner UI → recovery/error states → tests → live migration → Railway verification`
-
-Do not report a capability complete when only one layer exists.
+A capability is not complete when only one layer exists.
 
 ## Scope control
 
-The task-specific work order is authoritative for scope.
-
-While implementing:
-
-- fix directly blocking defects discovered in touched code;
-- do not wander into unrelated domains;
-- do not reopen settled architecture without evidence that it prevents the requested result;
-- record newly discovered non-blocking work in the final report rather than silently expanding the task;
-- preserve working behavior outside the work order.
+- Fix defects that directly block the requested slice.
+- Do not wander into unrelated domains.
+- Do not reopen settled architecture without evidence that it prevents the requested result.
+- Record non-blocking discoveries in the final handoff.
+- Preserve behavior outside the work order.
 
 ## Context-window discipline
 
-Do not load the entire repository or giant historical PR diff when unnecessary.
-
-Use this sequence:
+Read targeted context in this order:
 
 1. repository context documents;
 2. task-specific routes and modules;
 3. relevant migrations and tests;
-4. current read models/functions;
-5. only then inspect historical material if a conflict remains.
+4. current read models and functions;
+5. historical material only when a conflict remains.
 
-Prefer targeted file reads and searches.
-
-Do not ask the operator to repaste repository rules already present in these documents.
+When a task exceeds one session, create a phased execution plan and checkpoint commits. Do not substitute a complaint about context size for a plan.
 
 ## Database workflow
 
-When adding or changing database behavior:
+When database behavior changes:
 
-1. inspect the latest migrations and existing function contracts;
-2. create an additive migration;
-3. update the plain PostgreSQL shim only when the migration uses a Supabase-managed surface absent from the shim;
-4. add or update pgTAP coverage;
-5. reset and test from an empty database;
-6. test against the local Supabase stack;
-7. apply the migration to the live Supabase project;
-8. verify the hosted app against the live schema.
+1. inspect the latest migrations and contracts;
+2. create additive migrations;
+3. update the shim only for Supabase-managed surfaces absent from plain PostgreSQL;
+4. add pgTAP coverage;
+5. reset and test from empty on the shim;
+6. test on the local Supabase CI tier;
+7. stop at a green draft PR unless release is explicitly authorized;
+8. when release is authorized, verify live migration parity before applying migrations;
+9. verify the hosted workflow after deployment.
 
 ## UI workflow
 
-Owner-facing work must include:
+Owner-facing work includes understandable labels, active workspace context, loading/empty/error states, refresh recovery, iPad and desktop layouts, governed public identifiers, and direct links to the next action.
 
-- understandable labels;
-- active workspace context;
-- loading and empty states;
-- actionable errors;
-- refresh/navigation recovery where data entry is involved;
-- iPad and desktop layouts;
-- no internal identifiers except governed public or scan IDs;
-- direct links to the next logical action.
+## Default completion gate
 
-## Completion gate
+Unless the work order explicitly grants release authority:
 
-Before claiming completion:
+1. run all required checks with verified exit codes;
+2. push the feature branch;
+3. obtain green required CI on the exact PR head;
+4. update `LAST_IMPLEMENTATION_HANDOFF.md`;
+5. stop before merge, live migration, Railway deployment, or production configuration changes.
 
-1. run all required repository checks;
-2. confirm required CI is green;
-3. push to the canonical branch required by the work order;
-4. confirm Railway deployment success when network access permits;
-5. verify `/api/version` returns the final SHA when network access permits;
-6. run the task-specific hosted acceptance path when network access permits;
-7. produce the implementation evidence report defined below.
+## Release gate
 
-Claude must not update `docs/ai/CURRENT_STATE.md`. That file is maintained independently by ChatGPT after reviewing the implementation report, repository diff, migrations, and available CI or deployment evidence.
+Only when explicitly authorized:
 
-## Implementation evidence report
+1. confirm the exact green PR head;
+2. merge through GitHub without force-pushing `main`;
+3. verify live Supabase parity and apply required migrations;
+4. confirm Railway deployment success;
+5. confirm `/api/version` returns the final merge SHA;
+6. run task-specific hosted acceptance;
+7. report rollback information and any incomplete proof.
 
-At the end of every work order, report:
+## State ownership
 
-1. final commit SHA and branch;
-2. files and migrations changed;
-3. owner workflows completed;
-4. tests run and exact results;
-5. CI job results;
-6. live Supabase migration status;
-7. Railway deployment and `/api/version` verification status;
-8. hosted acceptance result;
-9. incomplete requirements and exact technical reasons;
-10. reversions, false starts, latent defects, flaky tests, blocked egress, and any command whose exit code was not actually checked;
-11. newly discovered follow-up work.
+- Implementation agents update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`.
+- Implementation agents must not edit `docs/ai/CURRENT_STATE.md` unless explicitly authorized.
+- ChatGPT updates `CURRENT_STATE.md` after independent review.
 
-Do not describe a timed-out, cancelled, hanging, skipped, or unchecked command as passing.
+## Evidence report
 
-Do not treat a per-file timeout wrapper as proof that the underlying test succeeded unless the wrapper's exit code and every child exit code were checked.
+Every surrender report must include:
 
-## Final response format
+1. branch, base SHA, and final SHA;
+2. PR number and state;
+3. files and migrations changed;
+4. owner workflows completed;
+5. exact tests and results;
+6. CI run IDs and conclusions;
+7. live Supabase status;
+8. Railway and `/api/version` status;
+9. hosted acceptance result;
+10. incomplete requirements and exact reasons;
+11. reversions, false starts, flaky tests, blocked egress, and unchecked commands;
+12. newly discovered follow-up work;
+13. rollback path;
+14. exact owner decision required next.
 
-Unless a work order specifies otherwise, keep the evidence report concise and factual. Do not include a long narrative of routine implementation steps.
+Do not describe timed-out, cancelled, hanging, skipped, or unchecked commands as passing.
