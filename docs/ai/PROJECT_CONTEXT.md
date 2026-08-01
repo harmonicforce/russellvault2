@@ -4,14 +4,7 @@
 
 Russell Vault is a private owner-operated inventory and resale operations application for a mixed collectibles business.
 
-Primary inventory includes:
-
-- Pokémon and other TCG cards, graded and raw
-- sealed TCG products
-- footwear
-- apparel
-- electronics
-- other collectibles
+Primary inventory includes Pokémon and other TCG cards, sealed TCG products, footwear, apparel, electronics, and other collectibles.
 
 The application must work for an ordinary operator using an iPad or desktop browser, barcode scanner, mobile camera, and browser-based label printing.
 
@@ -28,11 +21,9 @@ The application must work for an ordinary operator using an iPad or desktop brow
 
 ## Owner-facing operating loop
 
-The intended long-term loop is:
-
 `acquire → receive → identify → store → photograph → label → prepare listing → list → move/sell/adjust → audit`
 
-A feature is not finished merely because its database objects exist. The owner must be able to complete the corresponding workflow through the hosted application.
+A feature is not finished merely because database objects exist. The owner must be able to complete the workflow through the hosted application.
 
 ## Inventory model
 
@@ -48,11 +39,9 @@ Tracking modes:
 - **serialized**: one Item per physical unit, each with its own scan SKU
 - **lot-managed**: quantity held on the Lot
 
-Do not flatten this model into a single generic inventory table. Do not create a second inventory truth.
+Do not flatten this model into one generic inventory table or create a second inventory truth.
 
 ## Inventory categories
-
-Owner-facing categories:
 
 - graded_card
 - raw_card
@@ -62,81 +51,51 @@ Owner-facing categories:
 - electronics
 - other_collectible
 
-The database may use broader business verticals internally, but the exact owner-facing subtype should be retained whenever possible. Do not infer a subtype when stored facts do not support it.
+The database may use broader verticals internally, but the owner-facing subtype should be retained whenever supported. Do not infer a subtype from missing evidence.
 
 ## Immutable versus mutable facts
 
-Identity-defining facts are immutable after commit unless corrected through a governed supersession or correction workflow.
+Identity facts are immutable after commit except through governed correction or supersession. Examples include product/SKU identity, certificate, serial, public identifiers, and scan SKU.
 
-Examples:
-
-- product identity
-- SKU identity
-- certificate number
-- serial number
-- public identifiers
-- scan SKU
-
-Operational facts may change only through governed actions that preserve history.
-
-Examples:
-
-- location through movement events
-- lot quantity through adjustment events
-- primary image through an authorized media function
-- operational status through explicit workflow transitions
+Operational facts change only through governed actions preserving history. Examples include location movements, lot adjustments, media-primary changes, workflow transitions, loss, and cycle-count resolutions.
 
 ## Evidence rule
 
-Never invent or silently strengthen:
+Never invent or silently strengthen condition, grade, edition, language, packaging condition, authenticity, identifiers, source, cost, purchase details, listing claims, weights, fees, or market values.
 
-- condition
-- grade
-- edition or printing
-- language
-- packaging condition
-- authenticity
-- serial or certificate number
-- source
-- cost
-- purchase details
-- listing claims
-
-Use explicit values such as `Unassessed`, `Unknown`, or a review queue when uncertainty is real.
+Use explicit `Unknown`, `Unassessed`, or review states when evidence is incomplete.
 
 ## Existing product surfaces
 
-The application currently includes or has foundations for:
+The application includes or has foundations for:
 
-- authentication
-- workspaces
-- first-run setup
-- locations
-- multi-category single intake
-- batch intake
-- intake sessions and draft recovery
-- Current Inventory for items and lots
-- item and lot details
-- private media
-- printable labels
-- scan/find
-- governed movement
-- Daily Workbench
-- legacy SQLite operations surfaces
-- provenance and acquisition foundations
+- authentication, workspaces, and first-run setup;
+- locations;
+- multi-category single and batch intake;
+- intake sessions and recovery;
+- Product → SKU → Lot → Item inventory;
+- Current Inventory, item details, and lot details;
+- private media and printable labels;
+- scan/find and governed movement;
+- lot quantity adjustment, recount, split, and merge;
+- governed corrections and supersession;
+- governed Cycle Count with blind rounds, recounts, resolutions, and audit;
+- Daily Workbench;
+- provenance and acquisition foundations;
+- legacy SQLite operational surfaces retained during transition.
 
-Consult `CURRENT_STATE.md` for what is confirmed complete and what remains open.
+Consult `CURRENT_STATE.md` for reviewed shipped state and `PROJECT_ROADMAP.md` for next-stage options.
 
-## Out-of-scope unless a work order explicitly adds it
+## Out of scope unless explicitly added
 
-- public storefront
-- customer accounts
-- billing
-- tax advice or tax filing
-- automated marketplace publishing
-- AI identification of inventory
-- fabricated price recommendations
-- destructive deletion of committed inventory
-- unrestricted arbitrary-field/EAV architecture
-- replacement authentication system
-- rewrite of the governed inventory hierarchy
+- public storefront;
+- customer accounts;
+- billing;
+- tax advice or filing;
+- automated marketplace publishing;
+- AI identification of inventory;
+- fabricated price recommendations;
+- destructive deletion of committed inventory;
+- unrestricted arbitrary-field/EAV architecture;
+- replacement authentication system;
+- rewrite of the governed inventory hierarchy.
