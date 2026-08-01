@@ -114,23 +114,44 @@ Run locally with verified exit codes on the final SHA:
 
 - client lint, typecheck, build: exit 0; **364** client tests pass (was 318)
 - server typecheck, build: exit 0; **393** server tests pass (was 368)
-- plain-PostgreSQL shim pgTAP: **49 files, 1527 assertions, exit 0**
+- plain-PostgreSQL shim pgTAP: **49 files, 1528 assertions, exit 0**
 - production audits (root, server, client gate): exit 0
 - `scripts/db/guard.test.mjs`, `scripts/ci/client-audit-gate.test.mjs`: pass
 - `git diff --check`: exit 0
 
 New test files: `45_listing_prep_structure.sql` (30),
 `46_listing_prep_lifecycle.sql` (39), `47_listing_prep_readiness.sql` (30),
-`48_listing_prep_concurrency.sql` (9), plus `listingPrep.test.ts` (25 routes),
+`48_listing_prep_concurrency.sql` (10), plus `listingPrep.test.ts` (25 routes),
 `listingPrepApi.test.ts` (15), `ListingPrep.test.tsx` (14),
 `ListingPrepDetail.test.tsx` (17).
+
+### One test was wrong, and CI is what caught it
+
+The first push was **red on `shadow-db-postgres-shim`** — and the same commit
+passed on the Supabase tier and failed on the shim, which is the signature of a
+test encoding one scheduling outcome rather than an invariant.
+
+Assertion 4 of `48_listing_prep_concurrency.sql` demanded that exactly one of
+two racing transitions reach the history. Two outcomes are correct: the loser
+reads `not_started` before the winner commits and the state machine refuses
+`not_started → needs_review` (one transition recorded), or the winner has
+already committed and released the lock so `blocked → needs_review` is legal
+(two recorded). It now asserts what was actually meant — no two transitions
+applied from the same starting status, and the single unconsumed head of the
+event chain is the status the record holds.
+
+Verified on both schedules: five live race runs on fresh databases, all green,
+every one landing the two-transition schedule; the one-transition schedule was
+reconstructed deterministically and both assertions hold there too. No product
+code changed.
 
 ## Not verified, and why
 
 - **Supabase-stack pgTAP was not run locally.** The Docker daemon is not
   running in this environment at all (`Cannot connect to the Docker daemon`),
   so the authoritative `shadow-db-supabase-stack` job is confirmed by CI on the
-  PR head, not locally.
+  PR head, not locally. It passed there on run 30699699952, which is the only
+  evidence for that tier and is worth re-checking on the final head.
 - **No hosted acceptance.** Nothing was deployed, so no owner workflow was
   exercised against Railway.
 - **No browser workflow coverage.** This repository still has no Playwright
