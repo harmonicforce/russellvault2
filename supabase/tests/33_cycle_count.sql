@@ -53,28 +53,45 @@ create or replace function pg_temp.get(k text) returns uuid language sql stable 
   select nullif(current_setting('pgtmp.' || k, true), '')::uuid
 $$;
 
+-- The governed resolution flow is create -> distinct-owner approve -> execute
+-- (approval_required actions like lot_quantity_adjusted no-op on execute without
+-- a distinct approval; see 20260730000500). This helper runs that whole flow:
+-- it creates as the current actor, approves as the second owner cc444444, then
+-- restores the caller and executes. Approving leaves status 'pending', so the
+-- extra approval is harmless for actions that do not require it.
 create or replace function pg_temp.resolve_current(p_workspace uuid,p_discrepancy uuid,
   p_action text,p_reason text,p_destination text default null)
 returns jsonb language plpgsql as $$
-declare v_created jsonb;
+declare v_created jsonb; v_caller text; v_attempt uuid;
 begin
+  v_caller:=current_setting('request.jwt.claims', true);
   v_created:=public.create_cycle_count_resolution_attempt(p_workspace,p_discrepancy,
     p_action,p_reason,p_destination,gen_random_uuid());
-  return public.execute_cycle_count_resolution_attempt(p_workspace,(v_created->>'attempt_id')::uuid);
+  v_attempt:=(v_created->>'attempt_id')::uuid;
+  perform set_config('request.jwt.claims',
+    json_build_object('sub','cc444444-4444-4444-8444-444444444444','role','authenticated')::text,true);
+  perform public.approve_cycle_count_resolution_attempt(p_workspace,v_attempt);
+  perform set_config('request.jwt.claims',v_caller,true);
+  return public.execute_cycle_count_resolution_attempt(p_workspace,v_attempt);
 end $$;
 
 insert into auth.users (id, email) values
   ('cc111111-1111-4111-8111-111111111111', 'owner-cc@test.local'),
   ('cc222222-2222-4222-8222-222222222222', 'owner-nb@test.local'),
-  ('cc333333-3333-4333-8333-333333333333', 'viewer-cc@test.local')
+  ('cc333333-3333-4333-8333-333333333333', 'viewer-cc@test.local'),
+  ('cc444444-4444-4444-8444-444444444444', 'approver-cc@test.local')
 on conflict do nothing;
 
 insert into public.workspaces (id, name, created_by) values
   ('cc000000-0000-4000-8000-000000000001', 'CC WS', 'cc111111-1111-4111-8111-111111111111'),
   ('cc000000-0000-4000-8000-000000000002', 'CC Neighbour', 'cc222222-2222-4222-8222-222222222222');
 
+-- cc444444 is a second owner: governed resolutions now require a distinct-actor
+-- approval (see 20260730000500), so the counter (cc111111) creates and this
+-- second owner approves before execution.
 insert into public.workspace_members (workspace_id, user_id, role) values
-  ('cc000000-0000-4000-8000-000000000001', 'cc333333-3333-4333-8333-333333333333', 'viewer')
+  ('cc000000-0000-4000-8000-000000000001', 'cc333333-3333-4333-8333-333333333333', 'viewer'),
+  ('cc000000-0000-4000-8000-000000000001', 'cc444444-4444-4444-8444-444444444444', 'owner')
 on conflict do nothing;
 
 -- Structure ---------------------------------------------------------------------
@@ -468,11 +485,12 @@ select is((select status from pg_temp.r_disc() where id=pg_temp.get('d_unc')),
   'deferred'::public.cycle_count_discrepancy_status,
   'the durable discrepancy records the acknowledged deferral');
 
--- Completed sessions are evidence.
-select throws_ok(
-  format($$select public.observe_cycle_count_item(%L, %L, 'CC-CERT-1', 'BIN-A', gen_random_uuid())$$,
-    'cc000000-0000-4000-8000-000000000001', pg_temp.get('cc')),
-  '23514', null,
+-- Completed sessions are evidence. The atomic observation function reports a
+-- structured closed_round outcome (no row recorded) rather than raising.
+select is(
+  (public.observe_cycle_count_item('cc000000-0000-4000-8000-000000000001',
+    pg_temp.get('cc'), 'CC-CERT-1', 'BIN-A', gen_random_uuid()))->>'outcome',
+  'closed_round',
   'a completed count accepts no further observations');
 
 select throws_ok(

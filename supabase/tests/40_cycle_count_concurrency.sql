@@ -27,8 +27,13 @@ returns text[] language plpgsql as $$declare cs text[]:=array[p_name||'_1',p_nam
  perform pg_temp.await_all(cs,20);select result into a from dblink_get_result(cs[1]) t(result text);select result into b from dblink_get_result(cs[2]) t(result text);
  perform pg_temp.disconnect_workers(cs);return array[a,b];exception when others then perform pg_temp.disconnect_workers(cs);raise;end $$;
 
-insert into auth.users(id,email) values('ee111111-1111-4111-8111-111111111111','cc-concurrency@test.local');
+insert into auth.users(id,email) values
+ ('ee111111-1111-4111-8111-111111111111','cc-concurrency@test.local'),
+ ('ee222222-2222-4222-8222-222222222222','cc-approver@test.local');
 insert into public.workspaces(id,name,created_by) values('eeee0000-0000-4000-8000-000000000001','CC concurrency','ee111111-1111-4111-8111-111111111111');
+-- Second owner so governed resolutions can get their required distinct-actor approval.
+insert into public.workspace_members(workspace_id,user_id,role)
+ values('eeee0000-0000-4000-8000-000000000001','ee222222-2222-4222-8222-222222222222','owner') on conflict do nothing;
 select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);set role authenticated;
 select public.register_storage_location('eeee0000-0000-4000-8000-000000000001','ROOT',null,'Root');
 select public.register_storage_location('eeee0000-0000-4000-8000-000000000001','I','ROOT','Item bin');
@@ -113,7 +118,9 @@ select is((select count(*)::int from public.inventory_movements where item_id=(s
 set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);select public.move_inventory_item('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='item'),'I','reset');
 insert into cc_ids values('complete_race',pg_temp.new_count('L'));select public.observe_cycle_count_lot('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_race'),'RV-C-9000000002',8,'eebbbbbb-0005-4000-8000-000000000001'::uuid);select public.submit_cycle_count_round('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_race'),false);
 reset role;insert into cc_ids values('complete_d',(select id from public.cycle_count_discrepancies where session_id=(select v from cc_ids where k='complete_race') and status='open'));set role authenticated;select set_config('request.jwt.claims',json_build_object('sub','ee111111-1111-4111-8111-111111111111','role','authenticated')::text,false);
-insert into cc_ids values('complete_a',(public.create_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_d'),'lot_quantity_adjusted','race',null,'eecccccc-0002-4000-8000-000000000001'::uuid)->>'attempt_id')::uuid);reset role;commit;
+insert into cc_ids values('complete_a',(public.create_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_d'),'lot_quantity_adjusted','race',null,'eecccccc-0002-4000-8000-000000000001'::uuid)->>'attempt_id')::uuid);
+-- lot_quantity_adjusted requires a distinct-actor approval; the second owner approves before the race.
+select set_config('request.jwt.claims',json_build_object('sub','ee222222-2222-4222-8222-222222222222','role','authenticated')::text,false);select public.approve_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='complete_a'));reset role;commit;
 select pg_temp.race('complete_resolution',format($$public.execute_cycle_count_resolution_attempt('eeee0000-0000-4000-8000-000000000001',%L)$$,(select v from cc_ids where k='complete_a')),
  format($$public.complete_cycle_count_latest('eeee0000-0000-4000-8000-000000000001',%L,false,'race')$$,(select v from cc_ids where k='complete_race')));
 select is((select status from public.cycle_count_resolution_attempts where id=(select v from cc_ids where k='complete_a')),'succeeded','resolution wins or follows completion check exactly once');
