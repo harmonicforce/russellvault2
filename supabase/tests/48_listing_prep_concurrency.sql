@@ -3,12 +3,18 @@
 -- Two operators really do open the same item at the same moment, and a bulk
 -- action really does overlap with somebody working one record by hand. The
 -- claims here cannot be proved by calling the functions in sequence: that a
--- record never ends up with two live preparations, that a lifecycle change
--- applies once rather than twice, and that overlapping batches queue rather
--- than deadlock. Every wait is bounded and all workers are disconnected.
+-- record never ends up with two live preparations, that racing lifecycle
+-- changes serialize instead of overwriting each other, and that overlapping
+-- batches queue rather than deadlock. Every wait is bounded and all workers
+-- are disconnected.
+--
+-- The assertions are written to be independent of WHICH racer wins and of how
+-- the two transactions interleave. A concurrency test that encodes one
+-- scheduling outcome passes on one machine and fails on another, which teaches
+-- everybody to ignore it.
 create extension if not exists pgtap;
 create extension if not exists dblink;
-select plan(9);
+select plan(10);
 
 create or replace function pg_temp.await_all(p_conns text[], p_seconds numeric default 20)
 returns void language plpgsql as $$
@@ -143,15 +149,36 @@ select ok(
     in ('blocked', 'needs_review'),
   'a racing pair of transitions lands on one of the two, never on something else');
 
--- The lifecycle gate ran for real in both attempts: the loser was rejected
--- against the status the winner had already committed, so it did not silently
--- overwrite it.
+-- Both attempts may legally land. If the loser reads the row before the winner
+-- commits, the state machine rejects it and one transition is recorded; if the
+-- winner has already committed and released the lock, `blocked -> needs_review`
+-- is a legal move and two are recorded as a chain. Both are the lock working.
+--
+-- What must NEVER happen is two transitions recorded from the SAME starting
+-- status. That is the signature of a lost update: each racer read the row
+-- before the other wrote, and both applied over the top of it.
 select is(
-  (select count(*)::int from public.listing_prep_events
-    where prep_id = (select v from lp_ids where k = 'prep')
-      and to_status in ('blocked', 'needs_review')),
-  1,
-  'and only the transition that actually happened is in the history');
+  (select count(*)::int from (
+     select e.from_status from public.listing_prep_events e
+      where e.prep_id = (select v from lp_ids where k = 'prep')
+        and e.from_status is not null
+      group by e.from_status having count(*) > 1) d),
+  0,
+  'no two transitions were applied from the same starting status');
+
+-- And the recorded transitions form one gapless chain rather than two
+-- competing branches: exactly one to_status is never consumed as another
+-- event's from_status, and that head is the status the record actually holds.
+select is(
+  (select e.to_status::text from public.listing_prep_events e
+    where e.prep_id = (select v from lp_ids where k = 'prep')
+      and e.to_status is not null
+      and not exists (
+        select 1 from public.listing_prep_events e2
+         where e2.prep_id = e.prep_id and e2.from_status = e.to_status)),
+  (select status::text from public.listing_prep
+    where id = (select v from lp_ids where k = 'prep')),
+  'and the record holds exactly the status its last recorded transition set');
 
 select ok(
   (select status <> 'blocked' or blocked_reason is not null
