@@ -1,161 +1,107 @@
 # Russell Vault Current State
 
-Last reviewer update: 2026-07-29
+Last reviewer update: 2026-08-01
 
-This is a maintained operational ledger, not a complete project history. The project reviewer updates it after independently reviewing substantial work orders. Implementation agents must not edit it.
+This is the canonical operational ledger. Implementation agents must not edit it unless a work order explicitly grants a one-time exception.
 
-## Deployment
+## Deployment and verification
 
 - Repository: `harmonicforce/russellvault2`
-- Canonical branch: `main`
+- Canonical and GitHub default branch: `main`
+- Railway source branch: `main`
 - Live app: `https://russellvault2-production.up.railway.app`
 - Supabase project: `ykdyqnvmwpxhowbwhzqz`
-- Last reviewed commit: `d703174f1b96103f6ca55c5e4bdab6d1d20d82f9`
-- Live Supabase schema reported at 37 migrations
+- Last reviewed merge: `2f7a73ad4380c091da65db78a6f83a52f553d93c` (PR #25)
+- Repository migration count: 47
+- Exact PR-head CI run `30675105213`: success
+- Required jobs green: build-and-verify, shadow-db-postgres-shim, shadow-db-supabase-stack, dev-advisory-report
+- Railway deployment status on the reviewed merge: success
+- Hosted Cycle Count acceptance steps 1–8: reported green by the owner
 
-The context-document commit is not evidence that hosted product behavior changed.
+The repository documents do not independently prove the live Supabase migration ledger. Each migration-bearing release must verify live parity before acceptance.
 
-## Confirmed implemented foundation
+## Confirmed owner-facing foundation
 
-- Supabase authentication and workspace selection
-- first-run workspace/location setup
+- Supabase authentication, workspace selection, and first-run workspace/location setup
 - workspace-scoped locations
-- multi-category Intake Hub
-- graded card, raw card, sealed TCG, footwear, apparel, electronics, and other-collectible intake forms
-- governed preview and idempotent commit flow
-- single-item draft recovery
-- Batch Intake with independent row outcomes and draft recovery
+- multi-category single and batch intake with draft recovery
 - Product → SKU → Lot → Item identity hierarchy
 - serialized and lot-managed inventory
-- Current Inventory combining individual Items and quantity Lots
+- Current Inventory with server-side paging, sorting, filtering, and URL-held state
 - private inventory media and signed display URLs
 - item and lot detail routes
-- browser-printable inventory labels
-- scan/find workflow
-- item movement and whole-lot movement with immutable history
+- printable inventory labels
+- scan/find and governed movement
+- lot adjustments, recount, split, and merge with immutable history
+- correction requests, review, supersession, and duplicate voiding
 - Daily Workbench foundation
-- plain PostgreSQL and local Supabase database test jobs
-- governed inventory subtype, persisted at commit and frozen thereafter
-- server-backed pagination, sorting, filtering, and URL-held query state
-- expanded identity and location search with exact identifier ranking
-- real bulk movement with per-record results and failure-only retry
-- governed lot adjustments, recount, split, and merge with append-only history and lineage
-- governed correction requests, review, supersession, and duplicate voiding without deleting or rewriting committed identity
-- bounded database-test execution with explicit timeout failure reporting
-- deterministic concurrent-intake harness that collects whichever worker completes first while preserving the real locking race
+- deterministic database test runner and concurrency harness
 
-## Recently corrected
+## Shipped: governed Cycle Count
 
-- database CI and storage shim compatibility
-- unified Current Inventory instead of serialized-card-only inventory
-- single-item draft persistence and reconciliation
-- safer batch session recovery
-- prevention of copying unique identifiers into “Add another like this”
-- graded-card quantity removal
-- server-side unique-unit identifier reinforcement
-- Workbench Needs Location filter alignment
-- correction and supersession workflow for immutable identity
-- false-positive certificate search fixture caused by use of the grading-company argument
-- intermittent self-deadlock in `26_intake_concurrency.sql`
-- database runner treating a hung file as an anonymous or incomplete run instead of an explicit failure
+Cycle Count is implemented, merged, CI-green, deployed, and owner-smoke-tested.
 
-## Known incomplete or weak areas
+Confirmed capabilities include:
 
-These are not automatically in scope for every task.
+- location-scoped count creation and frozen snapshots;
+- blind initial and recount rounds;
+- immutable round evidence and latest-round results;
+- atomic keyed item and lot observations with replay/conflict outcomes;
+- lifecycle locking across observe, submit, recount, resolution, completion, and cancellation;
+- discrepancy review and multi-subject recount selection;
+- governed resolution matrix with approval-required actions;
+- durable failed-attempt and item-loss evidence;
+- latest-result summaries that do not double-count historical rounds;
+- owner-facing list, counting, review, completion, and audit surfaces;
+- Workbench integration;
+- rendered client tests, server tests, pgTAP, and genuine overlapping-session concurrency tests.
 
-### Inventory browsing
+The CI-repair PR corrected stale test bindings and assertions without changing the governed Cycle Count schema or functions.
 
-- work-status filters remain undefined because no work-status concept exists yet
-- “needs source review” and “ready for listing prep” await acquisition and listing-prep features
-
-### Corrections and quantity control
-
-- cycle counts are not implemented
-- resolving an approved correction is a two-step operator flow; there is no guided correction wizard
+## Current known incomplete or weak areas
 
 ### Media
 
-- photo reorder and rotation are not confirmed
-- atomic primary-media switching should be verified
-- deletion recovery and orphan cleanup should be reinforced
-- per-file upload retry/progress may be incomplete
+- multi-file progress and per-file retry need production hardening;
+- reorder and rotation are not fully confirmed;
+- atomic primary switching, deletion recovery, and orphan reconciliation need reinforcement;
+- category-aware required-photo workflows remain incomplete.
 
-### Acquisition, cost, and listing
+### Acquisition and cost
 
-- owner-facing acquisition-to-inventory receiving is incomplete
-- landed-cost allocation is incomplete
-- inventory cost-basis read models are incomplete
-- Listing Prep is incomplete
-- marketplace publishing remains out of scope unless explicitly requested
+- owner-facing acquisition-to-inventory receiving remains incomplete;
+- landed-cost allocation and inventory cost-basis read models remain incomplete;
+- source and cost review queues need owner-facing completion.
 
-### Repository and verification
+### Listing and sales operations
 
-- hosted Railway acceptance remains unverified from the implementation environment because outbound access is gateway-blocked
-- release tags are blocked by the git proxy returning 403
-- hosted Playwright coverage should be added or verified
-- local Supabase-stack repetition was not available for the concurrency work because Docker was unavailable; the stack CI job passed
-- `15_acquisition_digest_parity.sql` can intermittently exceed the new per-file timeout in a full local suite while remaining fast standalone and in CI; the observed function is CPU-active with no lock wait, and the cause is unresolved
+- Listing Prep and readiness workflows are incomplete;
+- marketplace publishing remains out of scope unless explicitly authorized;
+- sales, fulfillment, returns, and governed inventory exit are incomplete.
 
-## Shipped: operations and corrections slice
+### Dashboard and acceptance infrastructure
 
-Migrations added and reported live:
+- Dashboard and Workbench intelligence remain limited;
+- saved views, explainable priority rules, aging, and cross-workflow activity are incomplete;
+- broad Playwright coverage and release normalization remain future work;
+- `15_acquisition_digest_parity.sql` has shown an intermittent local in-suite slowdown while passing standalone and CI.
 
-- `20260728000800_inventory_subtype`
-- `20260728000900_inventory_read_model_operations`
-- `20260728001000_lot_quantity_governance`
-- `20260728001100_read_model_lot_state`
-- `20260728001200_inventory_corrections`
-- `20260728001300_read_model_record_state`
+## Recommended next-stage options
 
-New governed functions include `adjust_lot_quantity`, `recount_lot_quantity`, `split_inventory_lot`, `merge_inventory_lots`, and `lot_merge_compatibility`. `move_inventory_lot` refuses empty and absorbed lots.
+Choose one coherent vertical slice:
 
-`inventory_record_overview` is a SECURITY INVOKER union over both inventory grains. Serialized parent lots and absorbed lots are excluded from current stock totals but remain available through lot detail views.
+1. Listing Prep Command Center
+2. Media and Photography Hardening
+3. Acquisition Receiving and Landed Cost
+4. Sales, Fulfillment, and Inventory Exit
+5. Operational Dashboard and Inventory Intelligence
 
-Corrections use a claim, review, and separate resolution model. Approval does not mutate or resolve the named record. Superseded records retain their identifiers, photos, and history; duplicates are voided and linked to the survivor without transferring quantity.
+Recommended commercial sequence:
 
-Reported verification for the slice: 281 client tests, clean typecheck and build, three pre-existing lint warnings, full ordered pgTAP success, and live schema/security checks. Hosted acceptance was blocked.
+`acquisition/cost → listing prep → media hardening → sales/fulfillment → dashboard intelligence`
 
-## Shipped: concurrency harness reliability
+Media may be moved ahead of Listing Prep when photography is the immediate operational bottleneck.
 
-Reviewed commit: `d703174f1b96103f6ca55c5e4bdab6d1d20d82f9`.
+## Stewardship note
 
-No production code or migrations changed. Four files changed:
-
-- `supabase/tests/26_intake_concurrency.sql`
-- `scripts/db/test.mjs`
-- `.github/workflows/ci.yml`
-- `scripts/db/concurrency-deadline-proof.mjs`
-
-Root cause: each proof launched two overlapping workers but collected results in fixed connection order. Exactly one worker is expected to wait on the other. Collecting the loser first blocked forever because the winner could not commit while the harness waited on the blocked loser.
-
-The harness now waits for whichever connection becomes ready first, collects and commits that winner, then waits for the second. Deadlines raise SQLSTATE `55P03` with live activity diagnostics. Poll loops clear the PostgreSQL statistics snapshot so state changes are visible.
-
-Failure cleanup terminates captured worker PIDs and re-raises the original error. This is intentionally stronger than `dblink_cancel_query` or disconnect alone, which did not reliably stop a blocked backend in testing.
-
-The database runner now announces each file before execution, applies finite file and suite timeouts, checks exit codes and signals, reports timeouts as failures, and sweeps abandoned backends before aborting. Both database CI steps have outer time limits and strict shell handling.
-
-Verification reviewed:
-
-- focused shim test: 20/20 twice, 17 assertions each, no orphaned workers, roughly 2.6 seconds per run
-- intentional deadline proof: bounded nonzero failure with diagnostics and cleanup
-- timeout proof: forced file timeout reported as failure, not success
-- full local suite: 3/5 due to the separate intermittent test-15 issue
-- local Supabase repetition: unavailable because Docker was unavailable
-- GitHub Actions run `30479965417`: all four required jobs reported green, including the Supabase-stack job that previously hung
-
-The duplicate-prevention race and original assertions remain intact; only safe result-ordering and harness failure behavior changed.
-
-## Next-work guidance
-
-Choose one coherent vertical slice.
-
-Recommended order:
-
-1. cycle-count workflow
-2. media hardening
-3. acquisition receiving and landed-cost allocation
-4. inventory cost-basis read models
-5. Listing Prep and Workbench queues
-6. hosted Playwright acceptance and release normalization
-
-Treat the intermittent `15_acquisition_digest_parity.sql` slowdown as a separate focused reliability task if it begins affecting CI or blocks repeated validation of another slice.
+Implementation evidence belongs in `LAST_IMPLEMENTATION_HANDOFF.md`. This file is updated only after independent review of repository state, CI, deployment evidence, live migration status when relevant, and hosted acceptance.
