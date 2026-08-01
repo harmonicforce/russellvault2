@@ -4,13 +4,16 @@ Read this file first before changing the repository.
 
 ## Required reading order
 
-1. `docs/ai/PROJECT_CONTEXT.md`
-2. `docs/ai/ENGINEERING_RULES.md`
-3. `docs/ai/CURRENT_STATE.md`
-4. `docs/ai/WORK_ORDER_PROTOCOL.md`
-5. The specific work order supplied for the current task
+1. `AGENTS.md`
+2. `docs/ai/PROJECT_CONTEXT.md`
+3. `docs/ai/ENGINEERING_RULES.md`
+4. `docs/ai/CURRENT_STATE.md`
+5. `docs/ai/PROJECT_ROADMAP.md`
+6. `docs/ai/HANDOFF_PROTOCOL.md`
+7. `docs/ai/WORK_ORDER_PROTOCOL.md`
+8. The specific work order supplied for the current task
 
-Do not ask the operator to paste these documents into the chat. Read them from the repository.
+Do not ask the operator to paste these documents into chat. Read them from the repository.
 
 ## Core instruction
 
@@ -25,43 +28,27 @@ Implement owner-usable vertical slices in the hosted Russell Vault application. 
 - Enforce authenticated workspace isolation on every read and mutation.
 - Prefer additive migrations and focused changes over rewrites.
 - Do not fabricate inventory facts, condition, identity, source, cost, or marketplace data.
-- Do not call work complete until it is visible and usable on Railway.
-- Do not deploy with red required CI or database tests.
+- Do not call work complete until the owner-facing workflow is visible and usable on Railway.
+- Do not merge or deploy with red required CI or database tests.
 - Do not modify `harmonicforce/the-russellops`.
 
-## Current-state stewardship
+## State stewardship
 
-`docs/ai/CURRENT_STATE.md` is maintained by ChatGPT as the independent project-state steward, not by the implementation agent.
+`docs/ai/CURRENT_STATE.md` is maintained by ChatGPT as the independent project-state steward. Implementation agents must not edit it unless a work order explicitly grants a one-time exception.
 
-Claude must not edit, append to, or rewrite `docs/ai/CURRENT_STATE.md` unless a work order explicitly grants a one-time exception.
-
-At the end of each work order, Claude must instead provide a concise evidence report containing:
-
-- final commit SHA and branch;
-- files and migrations changed;
-- workflows completed;
-- tests and CI results, including failures, cancellations, hangs, and commands whose exit codes were not verified;
-- live migration and Railway verification status;
-- known limitations, reversions, and newly discovered defects.
-
-ChatGPT will inspect the repository and available CI evidence, reconcile that report against the prior state, and update `CURRENT_STATE.md` separately. Claude's report is implementation evidence, not the canonical state record.
+Implementation agents update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md` and provide the evidence required by `docs/ai/HANDOFF_PROTOCOL.md`.
 
 ## Current deployment
 
 - Repository: `harmonicforce/russellvault2`
-- Stable branch and GitHub default: `main` (the empty `Beginner` branch has been deleted)
-- Intended deployment branch: `main`. The former deploy branch `claude/ui-better-spreadsheet-cjhwjb` is merged into `main` and now behind it — verify the Railway service source is `main` (via `GET /api/version`) before deleting that branch.
+- Canonical and GitHub default branch: `main`
+- Railway source branch: `main`
 - Live app: `https://russellvault2-production.up.railway.app`
 - Supabase project: `ykdyqnvmwpxhowbwhzqz`
+- Railway exposes `/api/health` and `/api/version` for deployment verification.
 
 ## Work-order rule
 
-A work order should reference these files instead of repeating repository-wide rules. The work order should contain only:
+A work order should reference repository context instead of repeating repository-wide rules. It should contain only the objective, exact scope, acceptance criteria, task-specific constraints, and final report format.
 
-- objective
-- exact scope
-- acceptance criteria
-- task-specific constraints
-- final report format
-
-When a work order conflicts with these documents, follow the newer explicit work order only if it clearly states that it intentionally overrides a named rule.
+When a work order conflicts with these documents, follow the newer explicit work order only when it clearly names and intentionally overrides the conflicting rule.
