@@ -31,7 +31,6 @@ export interface LabelView {
   /** The value encoded in the barcode AND printed beneath it. */
   readonly code: string;
   readonly codeLabel: string;
-  readonly locationLine: string | null;
   readonly quantityLine: string | null;
 }
 
@@ -43,35 +42,24 @@ function shorten(name: string, max = 38): string {
   return `${trimmed.slice(0, max - 1)}…`;
 }
 
-function locationLine(code: string | null, display: string | null): string | null {
-  if (!code && !display) return null;
-  return display && code ? `${display} (${code})` : (display ?? code);
-}
-
 export interface RecordLabelSource {
   readonly record_kind: 'item' | 'lot';
   readonly record_public_id: string;
   readonly scan_identifier: string;
   readonly product_display_name: string;
   readonly quantity: number;
-  readonly location_code: string | null;
-  readonly location_display_name: string | null;
 }
 
 export interface ItemLabelSource {
   readonly product_display_name: string;
   readonly scan_sku: string;
   readonly item_public_id: string;
-  readonly location_code: string | null;
-  readonly location_display_name: string | null;
 }
 
 export interface LotLabelSource {
   readonly product_display_name: string;
   readonly lot_public_id: string;
   readonly quantity: number;
-  readonly location_code: string | null;
-  readonly location_display_name: string | null;
 }
 
 /** A serialized unit is identified by its opaque scan SKU. */
@@ -82,7 +70,6 @@ export function labelForItem(row: ItemLabelSource): LabelView {
     subtitle: row.item_public_id,
     code: row.scan_sku,
     codeLabel: 'Scan SKU',
-    locationLine: locationLine(row.location_code, row.location_display_name),
     quantityLine: null,
   };
 }
@@ -95,7 +82,6 @@ export function labelForLot(row: LotLabelSource): LabelView {
     subtitle: null,
     code: row.lot_public_id,
     codeLabel: 'Lot ID',
-    locationLine: locationLine(row.location_code, row.location_display_name),
     quantityLine: `Qty ${row.quantity}`,
   };
 }
@@ -116,7 +102,6 @@ export function labelForRecord(row: RecordLabelSource): LabelView {
     subtitle: isItem ? row.record_public_id : null,
     code: row.scan_identifier,
     codeLabel: isItem ? 'Scan SKU' : 'Lot ID',
-    locationLine: locationLine(row.location_code, row.location_display_name),
     quantityLine: isItem ? null : `Qty ${row.quantity}`,
   };
 }

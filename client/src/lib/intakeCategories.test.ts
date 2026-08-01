@@ -192,20 +192,24 @@ describe('labels', () => {
     const label = labelForItem(item);
     expect(label.code).toBe('RV-7K3F9Q2');
     expect(label.codeLabel).toBe('Scan SKU');
-    expect(label.locationLine).toBe('Bin 2 (BIN-2)');
+    expect(label).not.toHaveProperty('locationLine');
+    expect(JSON.stringify(label)).not.toMatch(/Bin 2|BIN-2/);
+    expect(label.subtitle).toBe('RV-ITEM-ABC123');
   });
 
   it('a lot label encodes the lot public id and shows quantity', () => {
-    const label = labelForLot({
+    const lot = {
       product_display_name: 'Evolving Skies Booster Box',
       lot_public_id: 'RV-C-0000001234',
       quantity: 6,
       location_code: 'SHELF-A',
       location_display_name: null,
-    });
+    };
+    const label = labelForLot(lot);
     expect(label.code).toBe('RV-C-0000001234');
     expect(label.quantityLine).toBe('Qty 6');
-    expect(label.locationLine).toBe('SHELF-A');
+    expect(label).not.toHaveProperty('locationLine');
+    expect(JSON.stringify(label)).not.toContain('SHELF-A');
   });
 
   it('truncates a long name rather than overflowing the label', () => {
