@@ -230,10 +230,7 @@ export function LabelPreview({
             >
               <div className="text-[9px] font-semibold uppercase tracking-wide">{label.brand}</div>
               <div className="truncate text-[11px] font-bold leading-tight">{label.title}</div>
-              <div className="flex items-baseline justify-between text-[8px]">
-                <span>{label.locationLine ?? ''}</span>
-                <span>{label.quantityLine ?? label.subtitle ?? ''}</span>
-              </div>
+              <div className="text-right text-[8px]">{label.quantityLine ?? label.subtitle}</div>
               <Barcode value={label.code} heightPx={34} />
               <div className="text-center font-mono text-[9px] tracking-wide">{label.code}</div>
             </div>

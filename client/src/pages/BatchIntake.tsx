@@ -460,7 +460,6 @@ export default function BatchIntake() {
   const printCommittedLabels = () => {
     if (!def) return;
     const labels: LabelView[] = [];
-    const locationRow = locations.find((l) => l.location_code === sharedLocation) ?? null;
     for (const row of rows) {
       if (row.status !== 'committed' || !row.result) continue;
       const name = buildGroupPayload(def, row.values).displayName;
@@ -469,16 +468,12 @@ export default function BatchIntake() {
           product_display_name: name,
           scan_sku: row.result.scanSku,
           item_public_id: row.result.itemPublicId,
-          location_code: sharedLocation || null,
-          location_display_name: locationRow?.display_name ?? null,
         }));
       } else if (row.result.lotPublicId) {
         labels.push(labelForLot({
           product_display_name: name,
           lot_public_id: row.result.lotPublicId,
           quantity: row.result.unitsCreated,
-          location_code: sharedLocation || null,
-          location_display_name: locationRow?.display_name ?? null,
         }));
       }
     }
