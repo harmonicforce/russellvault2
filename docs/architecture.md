@@ -70,16 +70,15 @@ no secret in client code: the client only ever learns the current state from
 
 | Fact | Value |
 |---|---|
-| GitHub default branch | `Beginner` — contains only `README.md`, **not** the application |
-| `Beginner` head | `dc6993e4d71956e79f81ff068ebb90a3d46f5b7a` |
-| Application branch | `claude/ui-better-spreadsheet-cjhwjb` |
-| Application head (verified this baseline) | `630f4c29837bab85127824309a5330dbc3b07c9f` |
-| Ahead of `Beginner` | 12 commits |
-| Earlier audited SHA | `df914af260435d555742a490d9bb063c61c98570` (3 commits behind current head) |
-| Phase 0 baseline branch | `claude/p0-repository-baseline` (from the application head above) |
+| GitHub default branch | `main` (the empty `Beginner` branch has been deleted) |
+| Stable / intended deployment branch | `main` |
+| Former deployment branch | `claude/ui-better-spreadsheet-cjhwjb` — merged into `main` and now behind it; delete only after the Railway source is confirmed to be `main` |
+| Phase 0 baseline branch (historical) | `claude/p0-repository-baseline`, application head `630f4c29837bab85127824309a5330dbc3b07c9f`, earlier audited SHA `df914af260435d555742a490d9bb063c61c98570` |
 
-The default branch is wrong (it has no app). Correcting the default/deployed
-branch is a **deployment-affecting action**. **Gate G0A is READY** — the owner
+The default branch is now `main`. Confirming the **Railway deploy source** is
+`main` remains a **deployment-affecting action** the owner must verify (via
+`GET /api/version`), because the former deploy branch is now behind `main`.
+**Gate G0A is READY** — the owner
 collected and verified the Railway backup evidence (see the Railway preflight
 runbook and manifest) before the Phase 0 merge; this Claude session has no
 Railway access and did not independently verify that evidence, and this

@@ -1,5 +1,6 @@
-import {beforeEach,describe,expect,it,vi} from 'vitest';
-import {fireEvent,render,screen,waitFor} from '@testing-library/react';
+// @vitest-environment jsdom
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import CycleCounts from './CycleCounts';
 
 const api={list:vi.fn(),progress:vi.fn(),history:vi.fn(),discrepancies:vi.fn(),attempts:vi.fn(),
@@ -10,6 +11,7 @@ vi.mock('../lib/cycleCountApi',async(importOriginal)=>{const actual=await import
 const review={id:'s',public_id:'RV-CC-REVIEW',status:'review',blind_count:true,created_at:'2026-01-01',current_round_id:'r'};
 const counting={...review,public_id:'RV-CC-COUNT',status:'in_progress'};
 const progress={round_id:'r',round_number:2,round_type:'recount',round_status:'counting',current_round_expected_subject_count:null,current_round_observed_item_count:1,current_round_observed_lot_count:1,current_round_remaining_count:null,historical_round_count:2,total_historical_observations:4,blind:true};
+afterEach(()=>cleanup());
 beforeEach(()=>{vi.clearAllMocks();role='owner';api.progress.mockResolvedValue(progress);api.history.mockResolvedValue({status:'review',completion_summary:null,rounds:[{id:'r',public_id:'RV-CCR-2',round_number:2,round_type:'recount',status:'submitted',reason:'verify',subject_count:2,item_observation_count:1,lot_observation_count:1,result_count:2}]});api.attempts.mockResolvedValue([]);api.observations.mockResolvedValue([]);api.discrepancies.mockResolvedValue([])});
 describe('Cycle Counts rendered states',()=>{
  it('keeps active blind recount entry free of stale resolution controls',async()=>{role='operator';api.list.mockResolvedValue([counting]);render(<CycleCounts/>);fireEvent.click(await screen.findByText('RV-CC-COUNT'));expect(await screen.findByText('Blind counting')).toBeTruthy();expect(screen.getByText('recount round 2')).toBeTruthy();expect(screen.getByLabelText('Item identifier')).toBeTruthy();expect(screen.queryByText('Current discrepancies')).toBeNull();expect(screen.getByText('Hidden')).toBeTruthy()});

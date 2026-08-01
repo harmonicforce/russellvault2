@@ -10,10 +10,10 @@ select has_column('public', 'cycle_count_sessions', 'current_round_id', 'session
 select has_column('public', 'cycle_count_item_observations', 'round_id', 'item evidence belongs to an explicit round');
 select has_column('public', 'cycle_count_lot_observations', 'round_id', 'lot evidence belongs to an explicit round');
 select has_column('public', 'cycle_count_discrepancies', 'round_result_id', 'discrepancies identify their source result');
-select col_is_fk('public', 'cycle_count_sessions', 'current_round_id', 'active round is referentially governed');
-select col_is_fk('public', 'cycle_count_item_observations', 'round_id', 'item round is referentially governed');
-select col_is_fk('public', 'cycle_count_lot_observations', 'round_id', 'lot round is referentially governed');
-select col_is_fk('public', 'cycle_count_discrepancies', 'round_result_id', 'discrepancy result is referentially governed');
+select col_is_fk('public', 'cycle_count_sessions', ARRAY['current_round_id','workspace_id'], 'active round is referentially governed');
+select col_is_fk('public', 'cycle_count_item_observations', ARRAY['round_id','workspace_id'], 'item round is referentially governed');
+select col_is_fk('public', 'cycle_count_lot_observations', ARRAY['round_id','workspace_id'], 'lot round is referentially governed');
+select col_is_fk('public', 'cycle_count_discrepancies', ARRAY['round_result_id','workspace_id'], 'discrepancy result is referentially governed');
 select has_index('public', 'cycle_count_rounds', 'cycle_count_rounds_session_id_round_number_key',
   'a session cannot reuse a round number');
 select has_index('public', 'cycle_count_item_observations', 'cycle_count_item_obs_once_per_explicit_round',

@@ -49,8 +49,8 @@ ChatGPT will inspect the repository and available CI evidence, reconcile that re
 ## Current deployment
 
 - Repository: `harmonicforce/russellvault2`
-- Stable branch: `main`
-- Deployment branch until Railway is confirmed switched: `claude/ui-better-spreadsheet-cjhwjb`
+- Stable branch and GitHub default: `main` (the empty `Beginner` branch has been deleted)
+- Intended deployment branch: `main`. The former deploy branch `claude/ui-better-spreadsheet-cjhwjb` is merged into `main` and now behind it — verify the Railway service source is `main` (via `GET /api/version`) before deleting that branch.
 - Live app: `https://russellvault2-production.up.railway.app`
 - Supabase project: `ykdyqnvmwpxhowbwhzqz`
 

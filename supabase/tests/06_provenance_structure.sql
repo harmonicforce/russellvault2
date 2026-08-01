@@ -398,11 +398,12 @@ select is(
 );
 
 -- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) + Phase 5 (4) + Phase 6A (5)
--- + the multi-category / media / movement / read-model additions (5) ---------
+-- + the multi-category / media / movement / read-model additions (5)
+-- + the cycle-count layer (20260729 x4, 20260730 x5, 20260731 x1) ------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  41,
-  'forty-one migrations are recorded, including the four additive 20260729 cycle-count migrations'
+  47,
+  'forty-seven migrations are recorded, including the full cycle-count layer'
 );
 
 select results_eq(
@@ -448,8 +449,14 @@ select results_eq(
     ('20260729000100_inventory_item_lost_state'),
     ('20260729000200_cycle_count_core'),
     ('20260729000300_cycle_count_observations'),
-    ('20260729000400_cycle_count_resolution')$$,
-  'the earlier-phase migrations are unmodified and the additive 20260728 migrations follow them'
+    ('20260729000400_cycle_count_resolution'),
+    ('20260730000100_cycle_count_round_foundation'),
+    ('20260730000200_cycle_count_round_lifecycle'),
+    ('20260730000300_cycle_count_atomic_observations'),
+    ('20260730000400_cycle_count_round_results'),
+    ('20260730000500_cycle_count_resolution_governance'),
+    ('20260731000100_cycle_count_review_reads')$$,
+  'the earlier-phase migrations are unmodified and the cycle-count migrations follow them'
 );
 
 select * from finish();

@@ -16,8 +16,8 @@ select is((select proconfig @> array['search_path=""'] from pg_proc p join pg_na
 select is((select proconfig @> array['search_path=""'] from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='observe_cycle_count_lot' and p.pronargs=6),true,'lot observation pins search path');
 select has_index('public','cycle_count_item_observations','cycle_count_item_observation_idempotency','item keys are unique');
 select has_index('public','cycle_count_lot_observations','cycle_count_lot_observation_idempotency','lot keys are unique');
-select trigger_is('public','cycle_count_observation_attempts','cycle_count_observation_attempts_append_only','app.forbid_update_delete()','attempts are append-only');
-select trigger_is('public','cycle_count_observation_idempotency','cycle_count_observation_idempotency_append_only','app.forbid_update_delete()','canonical keys are immutable');
+select trigger_is('public','cycle_count_observation_attempts','cycle_count_observation_attempts_append_only','app','forbid_update_delete','attempts are append-only');
+select trigger_is('public','cycle_count_observation_idempotency','cycle_count_observation_idempotency_append_only','app','forbid_update_delete','canonical keys are immutable');
 select is((select count(*)::int from information_schema.routine_privileges where grantee='anon' and routine_schema='public' and routine_name in ('observe_cycle_count_item','observe_cycle_count_lot','void_cycle_count_observation')),0,'anon cannot execute observation mutations');
 select * from finish();
 rollback;
