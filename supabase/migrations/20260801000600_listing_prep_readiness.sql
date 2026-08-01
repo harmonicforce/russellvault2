@@ -18,9 +18,11 @@
 
 create or replace view public.listing_prep_readiness
 with (security_invoker = true) as
--- The inventory facts come from the existing unified record read model rather
--- than being re-derived here. Listing Prep must not become a second opinion
--- about what an item is or whether it still exists.
+-- Category and lifecycle come from the inventory tables themselves, NOT from
+-- inventory_record_overview. That read model deliberately hides voided, lost
+-- and superseded records because they are history rather than stock — which is
+-- exactly the case Listing Prep has to be able to name. Reading it here would
+-- turn "this item was reported lost" into "this record could not be read".
 with prep as (
   select
     p.id,
@@ -37,28 +39,41 @@ with prep as (
     p.package_length_mm,
     p.package_width_mm,
     p.package_height_mm,
-    o.inventory_subtype as subtype,
-    o.record_state as subject_state,
-    o.open_correction_count
+    case p.subject_kind
+      when 'item' then (select sk.inventory_subtype from public.inventory_items i
+                          join public.sellable_skus sk on sk.id = i.sku_id
+                         where i.id = p.item_id and i.workspace_id = p.workspace_id)
+      else (select sk.inventory_subtype from public.inventory_lots l
+              join public.sellable_skus sk on sk.id = l.sku_id
+             where l.id = p.lot_id and l.workspace_id = p.workspace_id)
+    end as subtype,
+    case p.subject_kind
+      when 'item' then (select i.item_state::text from public.inventory_items i
+                         where i.id = p.item_id and i.workspace_id = p.workspace_id)
+      else (select l.lot_state::text from public.inventory_lots l
+             where l.id = p.lot_id and l.workspace_id = p.workspace_id)
+    end as subject_state,
+    -- An approved-but-unapplied correction is still outstanding, which is the
+    -- same set the inventory read model counts.
+    (select count(*) from public.inventory_correction_requests c
+      where c.workspace_id = p.workspace_id
+        and c.state in ('open', 'approved')
+        and coalesce(c.item_id, c.lot_id) = coalesce(p.item_id, p.lot_id)
+    ) as open_correction_count
   from public.listing_prep p
-  left join public.inventory_record_overview o
-    on o.workspace_id = p.workspace_id
-   and o.record_kind = p.subject_kind
-   and o.record_id = coalesce(p.item_id, p.lot_id)
 ),
--- Whether this category expects package details or a stated quantity at all.
--- Asking for a box size on a category whose matrix never mentions one would be
--- inventing policy, so the content requirements follow the same matrix as the
--- confirmations.
+-- Whether this category expects package details at all. Asking for a box size
+-- on a category whose matrix never mentions one would be inventing policy, so
+-- that content requirement follows the same matrix as the confirmations.
+--
+-- A price is NOT category-specific. Nothing can be listed without one, whatever
+-- it is, so that blocker is unconditional below.
 expectations as (
   select
     p.id,
     exists (select 1 from public.listing_prep_requirements r
              where r.subtype = p.subtype and r.is_required
-               and r.requirement_kind = 'package') as expects_package,
-    exists (select 1 from public.listing_prep_requirements r
-             where r.subtype = p.subtype and r.is_required
-               and r.requirement_kind = 'price') as expects_price
+               and r.requirement_kind = 'package') as expects_package
   from prep p
 ),
 blockers as (
@@ -74,8 +89,9 @@ blockers as (
      where p.subject_state in ('void', 'lost', 'superseded', 'absorbed')
 
     union all
-    -- The inventory record behind this preparation is no longer visible. Never
-    -- silently treated as "nothing left to do".
+    -- The inventory record behind this preparation cannot be read at all. That
+    -- should be impossible, and it is a blocker rather than silence precisely
+    -- because "no rows" must never be mistaken for "nothing left to do".
     select 1, 'subject_unavailable', 'lifecycle',
            'The inventory record for this preparation could not be read'
      where p.subject_state is null
@@ -153,8 +169,7 @@ blockers as (
     union all
     -- 7. Price ---------------------------------------------------------------
     select 8, 'missing_asking_price', 'price', 'An asking price is required'
-     where e.expects_price
-       and (p.asking_price_minor is null or p.currency is null)
+     where p.asking_price_minor is null or p.currency is null
 
     union all
     -- 8. The words that will appear in the listing ---------------------------
@@ -392,6 +407,10 @@ begin
   -- Owner-facing identity, taken from the shared inventory read model. Public
   -- ids and human labels only: no raw UUID ever has to be read or typed by the
   -- person doing the work.
+  --
+  -- That read model hides retired stock, so a preparation whose item was voided
+  -- or lost gets the minimal identity below instead of an empty panel. The
+  -- record still has to be openable — that is how the owner finds out why.
   select jsonb_build_object(
            'public_id', o.record_public_id,
            'display_name', o.product_display_name,
@@ -413,6 +432,18 @@ begin
    where o.workspace_id = p_workspace_id
      and o.record_kind = v_prep.subject_kind
      and o.record_id = coalesce(v_prep.item_id, v_prep.lot_id);
+
+  if v_identity is null then
+    select jsonb_build_object(
+             'public_id', coalesce(
+               (select i.public_id from public.inventory_items i where i.id = v_prep.item_id),
+               (select l.public_id from public.inventory_lots l where l.id = v_prep.lot_id)),
+             'display_name', null,
+             'record_state', v_readiness.subject_state,
+             'is_available', false,
+             'subtype', v_readiness.subtype)
+      into v_identity;
+  end if;
 
   return jsonb_build_object(
     'id', v_prep.id,
@@ -536,7 +567,13 @@ begin
            p.asking_price_minor, p.currency,
            r.readiness_status, r.blockers, r.blocker_count, r.subtype, r.subject_state,
            coalesce(p.item_id, p.lot_id) as subject_id,
-           o.record_public_id as subject_public_id,
+           -- The overview hides retired stock, so a preparation whose goods
+           -- were voided or lost keeps its public id and stays in the queue,
+           -- where the owner can see the blocker and close it out.
+           coalesce(o.record_public_id,
+             (select i.public_id from public.inventory_items i where i.id = p.item_id),
+             (select l.public_id from public.inventory_lots l where l.id = p.lot_id)
+           ) as subject_public_id,
            o.product_display_name as display_name,
            o.detail_line,
            o.search_text
