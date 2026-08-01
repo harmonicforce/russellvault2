@@ -34,6 +34,9 @@ export default function ListingPrepDetail() {
   const { prepId = '' } = useParams();
   const { workspace, client } = useWorkspace();
   const navigate = useNavigate();
+  // Depend on the workspace id, never on the workspace object: an identity
+  // that changes on every render would put these effects into a loop.
+  const workspaceId = workspace?.id ?? null;
   const canEdit = workspace?.role === 'owner' || workspace?.role === 'operator';
   const isOwner = workspace?.role === 'owner';
 
@@ -55,7 +58,7 @@ export default function ListingPrepDetail() {
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
-    if (!workspace || !prepId) return;
+    if (!workspaceId || !prepId) return;
     setLoading(true);
     try {
       setPrep(await transport.get(prepId));
@@ -66,13 +69,13 @@ export default function ListingPrepDetail() {
     } finally {
       setLoading(false);
     }
-  }, [transport, workspace, prepId]);
+  }, [transport, workspaceId, prepId]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    if (!workspace) return;
+    if (!workspaceId) return;
     transport.presets().then(setPresets).catch(() => setPresets([]));
-  }, [transport, workspace]);
+  }, [transport, workspaceId]);
 
   const act = useCallback(async (fn: () => Promise<PrepRecord | unknown>, message?: string) => {
     setSaving(true);

@@ -46,6 +46,9 @@ function readinessTone(status: PrepReadiness): string {
 export default function ListingPrep() {
   const { workspace, userId } = useWorkspace();
   const navigate = useNavigate();
+  // The id, not the object: an identity that changes on every render would put
+  // the load effect into a loop.
+  const workspaceId = workspace?.id ?? null;
   const [params, setParams] = useSearchParams();
   const canEdit = workspace?.role === 'owner' || workspace?.role === 'operator';
   const isOwner = workspace?.role === 'owner';
@@ -82,7 +85,7 @@ export default function ListingPrep() {
   }, [params, setParams]);
 
   const load = useCallback(async () => {
-    if (!workspace) return;
+    if (!workspaceId) return;
     setLoading(true);
     try {
       const statuses = TABS.find((t) => t.key === tab)!.statuses;
@@ -102,7 +105,7 @@ export default function ListingPrep() {
     } finally {
       setLoading(false);
     }
-  }, [transport, workspace, userId, tab, readinessFilter, mine, search, page]);
+  }, [transport, workspaceId, userId, tab, readinessFilter, mine, search, page]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setSelected(new Set()); }, [tab, readinessFilter, search, page, mine]);
