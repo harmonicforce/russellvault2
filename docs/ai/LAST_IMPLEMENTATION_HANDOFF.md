@@ -3,7 +3,7 @@
 ## Surrender state
 
 - Repository/canonical branch: `harmonicforce/russellvault2`, `main`
-- Available base SHA: `cfef378` (`Draft: Add operational dashboard console`); its parent is `fba3ed1`, the local PR #29 merge. The task checkout did not contain remote refs. Both the public GitHub URL (proxy 403) and repository-metadata proxy (not running) were unavailable, so PR #30 merge state, later remote fixes, commit `ad3ed0e4c12eb0ebcf5e78658d940b600990e856`, and open PRs could not be independently queried.
+- Available base SHA: `a0f47470778cce7cd9a48ff872174871e78bb69d` (`Draft: Correct operational dashboard contracts`); its parent is `fba3ed1`, the local PR #29 merge. On the 2026-08-02 recheck the task checkout still contained no remote refs or PR #31 objects. The configured repository integration was unavailable, so updated remote `main`, PR #30/#31 state, later fixes, and commit `ad3ed0e4c12eb0ebcf5e78658d940b600990e856` could not be independently compared. No Workbench-owned files were modified or reconstructed.
 - Implementation branch: `codex/correct-operational-dashboard-contracts`
 - Final branch SHA: see the draft PR head/final report (this handoff is committed with the implementation).
 - Pull request: draft metadata created after commit; no merge authorized.
@@ -31,6 +31,7 @@
 
 - `npm run typecheck`: passed, server and client.
 - Focused tests: server 3 passed; client transport 2 passed.
+- Rendered Dashboard regression tests: 3 passed, covering legacy pending/failure resilience, governed workflow values, canonical task/activity links, and four-panel refresh.
 - `npm run test`: server 27 files/396 tests, client 27 files/369 tests, guard/audit 23 tests; passed.
 - `npm run lint`: exit 0 with seven pre-existing warnings.
 - `npm run build:ci`: passed; existing Vite large-chunk advisory remains.
