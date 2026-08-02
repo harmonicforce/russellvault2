@@ -473,7 +473,11 @@ export default function CurrentInventory() {
       ) : (
         <>
           {/* Table for desktop, cards below the iPad breakpoint. */}
-          <div className="hidden overflow-x-auto rounded-lg border border-hairline md:block">
+          {/* lg, not md. The md breakpoint is 768px — exactly iPad portrait
+              width — so the full desktop table was rendered into roughly 528px
+              beside a docked sidebar and clipped. The card list below carries
+              the same actions. */}
+          <div className="hidden overflow-x-auto rounded-lg border border-hairline lg:block">
             <table className="w-full text-sm">
               <thead className="bg-surface-1 text-left text-xs uppercase tracking-wide text-ink-muted">
                 <tr>
@@ -540,14 +544,27 @@ export default function CurrentInventory() {
             </table>
           </div>
 
-          <div className="space-y-2 md:hidden">
+          <div className="space-y-2 lg:hidden">
             {rows.map((r) => (
-              <button
+              // Selection lives on the card too. Without it, moving the table
+              // to `lg` would have cost the iPad bulk selection, and with it
+              // label printing and movement, which both act on the selection.
+              <div
                 key={r.record_id}
-                type="button"
-                onClick={() => navigate(detailPath(r))}
                 className="flex w-full items-start gap-3 rounded-lg border border-hairline bg-surface-1 p-3 text-left"
               >
+                <input
+                  type="checkbox"
+                  className="mt-1 h-5 w-5 shrink-0"
+                  checked={selected.has(r.record_id)}
+                  onChange={() => toggle(r.record_id)}
+                  aria-label={`Select ${r.product_display_name}`}
+                />
+                <button
+                  type="button"
+                  onClick={() => navigate(detailPath(r))}
+                  className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                >
                 <Thumb
                   path={r.primary_media_path}
                   signedUrl={r.primary_media_path ? thumbs[r.primary_media_path] ?? null : null}
@@ -564,7 +581,8 @@ export default function CurrentInventory() {
                   </div>
                   <div className="mt-0.5 font-mono text-xs text-ink-muted">{r.scan_identifier}</div>
                 </div>
-              </button>
+                </button>
+              </div>
             ))}
           </div>
 
