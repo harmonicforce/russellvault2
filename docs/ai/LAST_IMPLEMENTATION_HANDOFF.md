@@ -264,8 +264,9 @@ real iPad — or a browser harness this repository does not have — settles it.
 
 ## Rollback
 
-Revert the six commits after `ac0441c` — `eda1a88`, `a2e6960`, `0f54c6c`,
-`0acdfee`, `89ce4e0`, `e77f4af` — or reset `main` to `ac0441c`. The four
+Revert every commit after `ac0441c` on this branch — `eda1a88`, `a2e6960`,
+`0f54c6c`, `0acdfee`, `89ce4e0`, `e77f4af` and the documentation commit that
+follows them — or reset `main` to `ac0441c`. The four
 migrations are additive; if any has already been applied to a database, the views
 and functions they replace are restored by re-applying the prior migration files,
 and the one added column (`cycle_count_sessions.idempotency_key`) plus its
