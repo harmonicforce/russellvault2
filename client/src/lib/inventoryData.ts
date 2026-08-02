@@ -48,6 +48,9 @@ export interface ItemOverviewRow {
   size_system: string | null;
   size_label: string | null;
   media_count: number;
+  /** Live photographs only; media_count above counts every lifecycle. */
+  active_media_count: number;
+  needs_photos: boolean;
   primary_media_path: string | null;
 }
 
@@ -80,6 +83,9 @@ export interface LotOverviewRow {
   shoe_size: string | null;
   serialized_child_count: number;
   media_count: number;
+  /** Live photographs only; media_count above counts every lifecycle. */
+  active_media_count: number;
+  needs_photos: boolean;
   primary_media_path: string | null;
 }
 
@@ -110,6 +116,9 @@ export interface RecordOverviewRow {
   created_at: string;
   last_moved_at: string | null;
   media_count: number;
+  /** Live photographs only; media_count above counts every lifecycle. */
+  active_media_count: number;
+  needs_photos: boolean;
   primary_media_path: string | null;
   detail_line: string | null;
 }
@@ -315,8 +324,12 @@ function applyShared(q: Query, filters: InventoryFilters, view: ReadModel): Quer
   if (filters.subtype) q = q.eq('inventory_subtype', filters.subtype);
   if (filters.condition) q = q.eq(condition, filters.condition);
   if (filters.trackingMode) q = q.eq('tracking_mode', filters.trackingMode);
-  if (filters.hasPhotos) q = q.gt('media_count', 0);
-  if (filters.needsPhotos) q = q.eq('media_count', 0);
+  // needs_photos, not media_count: media_count counts every lifecycle, so a
+  // record whose only photograph was reserved-and-abandoned or deleted looked
+  // photographed here while the dashboard's work queue correctly said it was
+  // not. Both surfaces now read the same authoritative column.
+  if (filters.hasPhotos) q = q.eq('needs_photos', false);
+  if (filters.needsPhotos) q = q.eq('needs_photos', true);
   if (filters.needsLocation) q = q.eq('needs_location', true);
   if (filters.needsConditionDetails) q = q.eq('needs_condition_details', true);
   if (filters.recentlyAdded) q = q.gte(created, recentCutoffIso());

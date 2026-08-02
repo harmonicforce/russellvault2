@@ -415,8 +415,8 @@ select is(
 -- + the operations dashboard contracts (20260801 x1) -----------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  56,
-  'fifty-six migrations are recorded, including the operations dashboard contracts'
+  57,
+  'fifty-seven migrations are recorded, including the active-media repair'
 );
 
 select results_eq(
@@ -477,7 +477,8 @@ select results_eq(
     ('20260801000600_listing_prep_readiness'),
     ('20260801000700_listing_prep_lifecycle'),
     ('20260801000800_listing_prep_bulk_and_presets'),
-    ('20260801000900_operations_dashboard_contracts')$$,
+    ('20260801000900_operations_dashboard_contracts'),
+    ('20260802000100_active_media_semantics')$$,
   'the earlier-phase migrations are unmodified and the dashboard contracts follow them'
 );
 
