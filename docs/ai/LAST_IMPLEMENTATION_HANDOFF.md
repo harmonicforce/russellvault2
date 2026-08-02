@@ -29,6 +29,7 @@
 
 ## Validation evidence
 
+- PR #32 CI repair: `supabase/tests/49_operations_dashboard.sql` now uses the repository-established pgTAP `matches(text, pattern, description)` assertion instead of the unavailable shim overload `like(text, unknown, unknown)`. Production SQL was not changed.
 - `npm run typecheck`: passed, server and client.
 - Focused tests: server 3 passed; client transport 2 passed.
 - Rendered Dashboard regression tests: 3 passed, covering legacy pending/failure resilience, governed workflow values, canonical task/activity links, and four-panel refresh.
@@ -37,6 +38,7 @@
 - `npm run build:ci`: passed; existing Vite large-chunk advisory remains.
 - `npm run db:reset && npm run db:test`: blocked before reset because `psql` is absent (`spawnSync psql ENOENT`). The new migration therefore lacks local pgTAP execution evidence in this container.
 - Exact-head GitHub CI and screenshot/browser validation: not available in this task environment.
+- 2026-08-02 database reproduction limitation: both isolated harness runs were attempted from the exact supplied PR head, but this container has neither `psql` nor Docker. Installing PostgreSQL/pgTAP was blocked by the environment package proxy (HTTP 403). Therefore isolated test-49 runtime, full-suite timing, slowest-query evidence, and Supabase-stack plans must be obtained from PR CI; the 12-minute workflow timeout was deliberately left unchanged pending successful timing evidence.
 
 ## Limitations and next decision
 
