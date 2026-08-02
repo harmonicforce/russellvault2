@@ -273,7 +273,9 @@ export interface IntakeSessionPage {
 export interface IntakeTransport {
   createSession(workspaceId: string, label?: string | null): Promise<IntakeSession>;
   resumeSession(workspaceId: string, sessionId: string): Promise<IntakeSession>;
-  listSessions(workspaceId: string, limit?: number, offset?: number): Promise<IntakeSessionPage>;
+  listSessions(
+    workspaceId: string, limit?: number, offset?: number, state?: IntakeSession['state'],
+  ): Promise<IntakeSessionPage>;
   abandonSession(workspaceId: string, sessionId: string, reason?: string | null): Promise<IntakeSession>;
   listGroups(workspaceId: string, sessionId: string): Promise<readonly IntakeGroupSummary[]>;
   getGroupSnapshot(workspaceId: string, groupId: string): Promise<IntakeGroupSnapshot>;
@@ -406,9 +408,10 @@ export function createIntakeTransport(
       );
       return body.session;
     },
-    async listSessions(workspaceId, limit = 25, offset = 0) {
+    async listSessions(workspaceId, limit = 25, offset = 0, state) {
+      const stateQuery = state ? `&state=${encodeURIComponent(state)}` : '';
       return request<IntakeSessionPage>(
-        'GET', `/sessions?${ws(workspaceId)}&limit=${limit}&offset=${offset}`,
+        'GET', `/sessions?${ws(workspaceId)}&limit=${limit}&offset=${offset}${stateQuery}`,
       );
     },
     async abandonSession(workspaceId, sessionId, reason = null) {

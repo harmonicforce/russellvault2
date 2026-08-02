@@ -4,14 +4,13 @@
 // records, open intake sessions), never from a guess about what the operator
 // probably meant to do.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Camera, ClipboardList, FileWarning, HelpCircle, ListChecks, MapPin, PackagePlus, Tags } from 'lucide-react';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createInventoryData } from '../lib/inventoryData';
 import { getProvenanceUiConfig } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
-import { createMediaTransport, type ReadinessSummary } from '../lib/mediaApi';
 import {
   READINESS_LABELS, createListingPrepTransport, type PrepSummary,
 } from '../lib/listingPrepApi';
@@ -31,7 +30,7 @@ function QueueCard({
 }: {
   icon: React.ReactNode;
   title: string;
-  count: number;
+  count: number | null;
   explanation: string;
   rows: readonly QueueRow[];
   actionLabel: string;
@@ -42,11 +41,13 @@ function QueueCard({
     <section className="rounded-lg border border-hairline bg-surface-1 p-4">
       <div className="mb-1 flex items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-sm font-semibold">{icon} {title}</h2>
-        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold">{count}</span>
+        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold">{count ?? '—'}</span>
       </div>
       <p className="mb-3 text-xs text-ink-muted">{explanation}</p>
-      {rows.length === 0 ? (
+      {rows.length === 0 && count === 0 ? (
         <p className="text-sm text-ink-muted">Nothing waiting here.</p>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-ink-muted">Use the link below to review this queue.</p>
       ) : (
         <ul className="space-y-1">
           {rows.map((r) => (
@@ -63,7 +64,7 @@ function QueueCard({
           ))}
         </ul>
       )}
-      {onViewAll && count > 0 && (
+      {onViewAll && count !== null && count > 0 && (
         <button type="button" onClick={onViewAll} className="mt-2 text-xs text-accent-strong underline">
           {count > rows.length ? `View all ${count} in inventory` : 'View in inventory'}
         </button>
@@ -72,35 +73,17 @@ function QueueCard({
   );
 }
 
-/**
- * The board used to be able to say only "has no photos". Readiness knows the
- * difference between a record with nothing, one missing a required angle, and
- * one whose photos need review, so say which.
- */
-function photoExplanation(summary: ReadinessSummary | null): string {
-  if (!summary) return 'Inventory with no photos yet.';
-  const missing = (summary.counts.missing_required_angle ?? 0) + (summary.counts.missing_defect_photo ?? 0);
-  const review = summary.counts.media_review_needed ?? 0;
-  const unfinished = summary.counts.upload_incomplete ?? 0;
-  const parts: string[] = [];
-  if (missing > 0) parts.push(`${missing} missing a required photo`);
-  if (review > 0) parts.push(`${review} needing photo review`);
-  if (unfinished > 0) parts.push(`${unfinished} with an unfinished upload`);
-  return parts.length === 0
-    ? 'Every record has the photos its category asks for.'
-    : `${parts.join(', ')}.`;
-}
-
 export default function Workbench() {
   const { workspace, client } = useWorkspace();
+  const workspaceId = workspace?.id ?? null;
   const navigate = useNavigate();
   const config = useMemo(
     () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
     []
   );
   const data = useMemo(
-    () => (workspace ? createInventoryData(client as never, workspace.id) : null),
-    [client, workspace]
+    () => (workspaceId ? createInventoryData(client as never, workspaceId) : null),
+    [client, workspaceId]
   );
   const intake = useMemo(() => {
     if (!config) return null;
@@ -108,13 +91,9 @@ export default function Workbench() {
     return createIntakeTransport(tokenProviderFromClient(shadow));
   }, [config]);
 
-  const mediaTransport = useMemo(
-    () => createMediaTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
-    [client, workspace?.id]
-  );
   const listingPrepTransport = useMemo(
-    () => createListingPrepTransport(tokenProviderFromClient(client), () => workspace?.id ?? null),
-    [client, workspace?.id]
+    () => createListingPrepTransport(tokenProviderFromClient(client), () => workspaceId),
+    [client, workspaceId]
   );
 
   const [counts, setCounts] = useState({ needsLocation: 0, needsPhotos: 0, total: 0 });
@@ -123,19 +102,31 @@ export default function Workbench() {
   });
   const [unclassified, setUnclassified] = useState<QueueRow[]>([]);
   const [needsCondition, setNeedsCondition] = useState<QueueRow[]>([]);
-  const [openCorrections, setOpenCorrections] = useState(0);
+  const [openCorrections, setOpenCorrections] = useState<number | null>(null);
   const [needsLocation, setNeedsLocation] = useState<QueueRow[]>([]);
   const [needsPhotos, setNeedsPhotos] = useState<QueueRow[]>([]);
   const [openSessions, setOpenSessions] = useState<readonly IntakeSessionListItem[]>([]);
-  const [mediaSummary, setMediaSummary] = useState<ReadinessSummary | null>(null);
+  const [openSessionCount, setOpenSessionCount] = useState(0);
   const [prepSummary, setPrepSummary] = useState<PrepSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [correctionError, setCorrectionError] = useState(false);
+  const [intakeError, setIntakeError] = useState(false);
+  const requestId = useRef(0);
 
   const load = useCallback(async () => {
-    if (!data || !workspace) return;
+    if (!data || !workspaceId) return;
+    const activeRequest = ++requestId.current;
     setLoading(true);
     setError(null);
+    setCorrectionError(false);
+    // A disabled/unconfigured intake transport is an unavailable data source,
+    // not evidence that the workspace has zero open sessions.
+    setIntakeError(!intake);
+    setCounts({ needsLocation: 0, needsPhotos: 0, total: 0 });
+    setOpsCounts({ unclassified: 0, needsConditionDetails: 0, zeroQuantity: 0 });
+    setNeedsLocation([]); setNeedsPhotos([]); setUnclassified([]); setNeedsCondition([]);
+    setOpenCorrections(null); setOpenSessions([]); setOpenSessionCount(0); setPrepSummary(null);
     try {
       const [c, loc, photos, ops, unclassifiedRows, conditionRows] = await Promise.all([
         data.workQueueCounts(),
@@ -145,13 +136,7 @@ export default function Workbench() {
         data.operationsQueueRows('unclassified'),
         data.operationsQueueRows('needs_condition_details'),
       ]);
-      setOpenCorrections(await data.openCorrectionCount().catch(() => 0));
-      // Photo readiness is a nice-to-have on this board: a failure here must not
-      // take out the queues the operator actually works from.
-      setMediaSummary(await mediaTransport.readinessSummary().catch(() => null));
-      // Same rule as photo readiness: this board is a summary, and a failure
-      // here must not take out the queues the operator works from.
-      setPrepSummary(await listingPrepTransport.summary().catch(() => null));
+      if (activeRequest !== requestId.current) return;
       setCounts(c);
       setNeedsLocation(loc);
       setNeedsPhotos(photos);
@@ -170,18 +155,30 @@ export default function Workbench() {
       });
       setUnclassified(unclassifiedRows.map(asQueueRow));
       setNeedsCondition(conditionRows.map(asQueueRow));
-      if (intake) {
-        const page = await intake.listSessions(workspace.id, 10, 0);
-        setOpenSessions(page.sessions.filter((s) => s.state === 'open'));
-      }
+      const [corrections, prep, sessions] = await Promise.allSettled([
+        data.openCorrectionCount(),
+        listingPrepTransport.summary(),
+        intake ? intake.listSessions(workspaceId, 10, 0, 'open') : Promise.resolve(null),
+      ]);
+      if (activeRequest !== requestId.current) return;
+      if (corrections.status === 'fulfilled') setOpenCorrections(corrections.value);
+      else setCorrectionError(true);
+      if (prep.status === 'fulfilled') setPrepSummary(prep.value);
+      if (sessions.status === 'fulfilled' && sessions.value) {
+        setOpenSessions(sessions.value.sessions);
+        setOpenSessionCount(sessions.value.total);
+      } else if (intake) setIntakeError(true);
     } catch (e) {
-      setError((e as Error).message);
+      if (activeRequest === requestId.current) setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (activeRequest === requestId.current) setLoading(false);
     }
-  }, [data, workspace, intake, mediaTransport, listingPrepTransport]);
+  }, [data, workspaceId, intake, listingPrepTransport]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { requestId.current += 1; };
+  }, [load]);
 
   if (!workspace || !data) {
     return <div className="p-6 text-sm text-ink-muted">Select a workspace to see today's work.</div>;
@@ -221,7 +218,7 @@ export default function Workbench() {
           icon={<Camera className="h-4 w-4 text-accent" />}
           title="Needs photos"
           count={counts.needsPhotos}
-          explanation={photoExplanation(mediaSummary)}
+          explanation="Inventory with no recorded photos yet. Required-angle readiness and photo issues are tracked separately in Photo Issues."
           rows={needsPhotos}
           actionLabel="Add photos"
           onOpen={open}
@@ -257,6 +254,7 @@ export default function Workbench() {
           onOpen={() => navigate('/corrections')}
           onViewAll={() => navigate('/corrections')}
         />
+        {correctionError && <p role="alert" className="text-sm text-danger">Open corrections could not be read just now; no zero has been substituted.</p>}
 
         <ListingPrepCard summary={prepSummary} onOpen={(query) => navigate(`/listing-prep${query}`)} />
 
@@ -265,10 +263,12 @@ export default function Workbench() {
             <h2 className="flex items-center gap-2 text-sm font-semibold">
               <ClipboardList className="h-4 w-4 text-accent" /> Open intake sessions
             </h2>
-            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold">{openSessions.length}</span>
+            <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold">{intakeError ? '—' : openSessionCount}</span>
           </div>
           <p className="mb-3 text-xs text-ink-muted">Sessions you started but have not finished.</p>
-          {openSessions.length === 0 ? (
+          {intakeError ? (
+            <p role="alert" className="text-sm text-danger">Open intake sessions could not be read just now.</p>
+          ) : openSessions.length === 0 ? (
             <p className="text-sm text-ink-muted">Nothing waiting here.</p>
           ) : (
             <ul className="space-y-1">
