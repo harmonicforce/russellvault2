@@ -18,9 +18,16 @@
 --    while a live blocker has since appeared, and showing it as genuinely
 --    ready is how something reaches a buyer that should not have.
 --
--- The never-started predicate is written ONCE, as a view, and both the summary
--- count and the candidate listing read it. Two copies of a predicate is what
--- produced defect 1 in the first place.
+-- The predicate is written ONCE, as a view, and both the summary count and the
+-- candidate listing read it. Two copies of a predicate is what produced defect
+-- 1 in the first place.
+--
+-- It is called NO ACTIVE PREPARATION, not "never started". A record whose
+-- earlier preparation was listed or cancelled belongs here -- repeat
+-- preparation is deliberate: stock comes back, a listing ends, and the record
+-- needs preparing again. Calling that "never started" would have been false
+-- about the record's own history, and an operator who noticed would rightly
+-- stop trusting the tile.
 --
 -- listing_prep_readiness is recomputed on every read, so `regressed_ready`
 -- below is a live fact, not a stored flag. No record's status is mutated to
@@ -28,7 +35,7 @@
 -- UI says so.
 
 -- ---------------------------------------------------------------------------
--- The one never-started definition
+-- The one no-active-preparation definition
 -- ---------------------------------------------------------------------------
 
 create or replace view public.listing_prep_candidates
@@ -54,11 +61,19 @@ where o.is_available
   -- Defensive: a serialized parent lot is not a sellable unit. The overview
   -- does not emit one today, and this makes that independent of it.
   and not (o.record_kind = 'lot' and o.tracking_mode = 'serialized')
+  -- No LIVE preparation. A record whose only preparations are listed or
+  -- cancelled is available to be prepared again, which is why this is "no
+  -- active preparation" rather than "never started".
   and not exists (
     select 1 from public.listing_prep lp
      where lp.workspace_id = o.workspace_id
        and coalesce(lp.item_id, lp.lot_id) = o.record_id
        and lp.status not in ('listed', 'cancelled'));
+
+comment on view public.listing_prep_candidates is
+  'Current sellable stock with no live listing preparation. Includes records '
+  'whose earlier preparation was listed or cancelled, because repeat '
+  'preparation is supported; it is therefore NOT a "never started" population.';
 
 revoke all on public.listing_prep_candidates from public, anon;
 grant select on public.listing_prep_candidates to authenticated;
@@ -104,7 +119,7 @@ begin
     -- Both of these read the ONE candidate view, so the tile and the page it
     -- opens cannot describe different populations.
     (select count(*)::int from public.listing_prep_candidates c
-      where c.workspace_id = p_workspace_id) as never_started,
+      where c.workspace_id = p_workspace_id) as no_active_preparation,
     -- Status says ready; live readiness agrees.
     (select count(*)::int from public.listing_prep_readiness rr
       where rr.workspace_id = p_workspace_id
@@ -125,7 +140,7 @@ begin
     'by_readiness', v_readiness,
     'unassigned', coalesce(v_row.unassigned, 0),
     'listed_last_7_days', coalesce(v_row.listed_last_7_days, 0),
-    'never_started', coalesce(v_row.never_started, 0),
+    'no_active_preparation', coalesce(v_row.no_active_preparation, 0),
     'ready_now', coalesce(v_row.ready_now, 0),
     'regressed_ready', coalesce(v_row.regressed_ready, 0));
 end
@@ -135,12 +150,13 @@ revoke all on function public.get_listing_prep_summary(uuid) from public, anon;
 grant execute on function public.get_listing_prep_summary(uuid) to authenticated;
 
 -- ---------------------------------------------------------------------------
--- The never-started destination
+-- The no-active-preparation destination
 -- ---------------------------------------------------------------------------
 
--- The "Not started" tab. Reads the same view the count does, so an operator who
--- clicks the tile lands on exactly those records and can start a preparation
--- for any of them.
+-- The "No active preparation" tab. Reads the same view the count does, so an
+-- operator who clicks the tile lands on exactly those records and can start a
+-- preparation for any of them -- including a repeat preparation for a record
+-- that has been listed before.
 create or replace function public.list_listing_prep_candidates(
   p_workspace_id uuid,
   p_search text default null,

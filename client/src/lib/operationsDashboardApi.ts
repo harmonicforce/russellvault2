@@ -4,8 +4,23 @@ export interface HealthPanel { asOf: string; serializedUnits: number; lotManaged
 export interface WorkTask { taskType: string; subjectKind: string; subjectId: string; publicId: string; displayName: string; reason: string; ageDays: number; severity: string; score: number; scoreExplanation: string; destination: string }
 export interface WorkPanel { asOf: string; definition: string; tasks: WorkTask[] }
 export interface ActivityPanel { asOf: string; source: string; events: Array<{ id: string; public_id: string; eventType: string; moved_at: string; destination: string }> }
-export type MediaReadinessStatus =
-  'complete' | 'missing_required_angle' | 'missing_defect_photo' | 'media_review_needed' | 'upload_incomplete';
+/**
+ * The readiness vocabulary, named once. Anything arriving from a URL, a saved
+ * link or a hand-edited query string is checked against this before it reaches
+ * a lookup table or the database — an unrecognised status that is passed
+ * through matches no rows and reports an empty backlog, which is the same lie
+ * as substituting a zero.
+ */
+export const MEDIA_READINESS_STATUSES = [
+  'complete', 'missing_required_angle', 'missing_defect_photo',
+  'media_review_needed', 'upload_incomplete',
+] as const;
+
+export type MediaReadinessStatus = (typeof MEDIA_READINESS_STATUSES)[number];
+
+export function isMediaReadinessStatus(value: string | null | undefined): value is MediaReadinessStatus {
+  return !!value && (MEDIA_READINESS_STATUSES as readonly string[]).includes(value);
+}
 
 export interface MediaReadinessRow {
   subject_kind: 'item' | 'lot';
@@ -39,7 +54,10 @@ export interface WorkflowPanel {
     /** Raw lifecycle tally, unchanged. */
     by_status: Partial<Record<'not_started' | 'in_preparation' | 'blocked' | 'needs_review' | 'ready_to_list' | 'listed' | 'cancelled', number>>;
     by_readiness: Partial<Record<'ready' | 'needs_photos' | 'needs_condition_review' | 'needs_owner_review' | 'blocked', number>>;
-    never_started: number;
+    /** Current stock with no LIVE preparation. A record whose earlier
+     * preparation was listed or cancelled counts here, so this is deliberately
+     * not called "never started". */
+    no_active_preparation: number;
     /** Status says ready AND live readiness agrees. */
     ready_now: number;
     /** Status still says ready, but a blocker has appeared since. */
@@ -93,8 +111,21 @@ export const createOperationsDashboardTransport = (token: TokenProvider) => ({
   health: (workspaceId: string) => request<HealthPanel>(token, workspaceId, 'health'),
   work: (workspaceId: string) => request<WorkPanel>(token, workspaceId, 'work'),
   workflows: (workspaceId: string) => request<WorkflowPanel>(token, workspaceId, 'workflows'),
-  mediaReadiness: (workspaceId: string, status?: readonly MediaReadinessStatus[]) =>
-    request<MediaReadinessPage>(token, workspaceId, 'media-readiness',
-      { status: status?.length ? status.join(',') : undefined }),
+  /**
+   * One page of the readiness backlog. `total` is the exact governed count, so
+   * a backlog larger than one page is reachable rather than silently truncated
+   * at the default 50.
+   */
+  mediaReadiness: (
+    workspaceId: string,
+    status?: readonly MediaReadinessStatus[],
+    limit?: number,
+    offset?: number,
+  ) =>
+    request<MediaReadinessPage>(token, workspaceId, 'media-readiness', {
+      status: status?.length ? status.join(',') : undefined,
+      limit: limit === undefined ? undefined : String(limit),
+      offset: offset === undefined || offset === 0 ? undefined : String(offset),
+    }),
   activity: (workspaceId: string) => request<ActivityPanel>(token, workspaceId, 'activity'),
 });

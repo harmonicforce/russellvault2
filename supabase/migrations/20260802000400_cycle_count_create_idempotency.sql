@@ -19,11 +19,56 @@
 alter table public.cycle_count_sessions
   add column if not exists idempotency_key uuid;
 
+-- A key alone is not idempotency. Without the payload bound to it, reusing a
+-- key with a DIFFERENT scope silently returns the first session, so an operator
+-- who corrects the shelf and presses create again is handed a count over the
+-- shelf they just corrected away from -- and believes it is the one they asked
+-- for. The fingerprint makes the key mean "this exact request".
+--
+-- md5 of a canonical jsonb array, matching the convention already established
+-- for observation idempotency in 20260730000300.
+alter table public.cycle_count_sessions
+  add column if not exists idempotency_fingerprint text;
+
 -- Partial, so the column stays optional for rows created before this migration
 -- and for any future internal caller that has no key to offer.
 create unique index if not exists cycle_count_sessions_idempotency_key_unique
   on public.cycle_count_sessions (workspace_id, idempotency_key)
   where idempotency_key is not null;
+
+-- The replay-or-conflict decision, in one place so the ordinary path and the
+-- lost-race path cannot answer it differently.
+--
+-- A matching fingerprint is the retry this mechanism exists for. A different
+-- one is key reuse across a changed request: the original session is neither
+-- returned nor modified, because handing back a count over a shelf the operator
+-- has since corrected away from is worse than refusing. Reported as an outcome
+-- rather than raised, matching the observation idempotency convention in
+-- 20260730000300, so the caller can act on `code` without parsing a message.
+create or replace function app.cycle_count_create_replay(
+  p_existing public.cycle_count_sessions,
+  p_fingerprint text
+)
+returns jsonb
+language sql
+immutable
+set search_path = ''
+as $$
+  select case
+    when p_existing.idempotency_fingerprint is distinct from p_fingerprint
+      then jsonb_build_object(
+        'outcome', 'idempotency_conflict',
+        'code', 'IDEMPOTENCY_KEY_REUSED')
+    else jsonb_build_object(
+      'id', p_existing.id,
+      'public_id', p_existing.public_id,
+      'status', p_existing.status,
+      'outcome', 'idempotent_replay')
+  end
+$$;
+
+revoke all on function app.cycle_count_create_replay(public.cycle_count_sessions, text)
+  from public, anon, authenticated;
 
 create or replace function public.create_cycle_count_session(
   p_workspace_id uuid,
@@ -46,6 +91,10 @@ declare
   v_public text;
   v_id uuid;
   v_existing public.cycle_count_sessions%rowtype;
+  v_notes text := nullif(btrim(coalesce(p_notes, '')), '');
+  v_descendants boolean := coalesce(p_include_descendants, false);
+  v_blind boolean := coalesce(p_blind_count, true);
+  v_fingerprint text;
 begin
   v_uid := app.cycle_count_require_counter(p_workspace_id);
 
@@ -54,17 +103,14 @@ begin
       using errcode = '23514';
   end if;
 
-  -- A replayed request returns the session the first attempt created. The
-  -- operator sees one draft, not two, however many times the button was
-  -- pressed or the response was lost.
-  select * into v_existing from public.cycle_count_sessions
-   where workspace_id = p_workspace_id and idempotency_key = p_idempotency_key;
-  if v_existing.id is not null then
-    return jsonb_build_object(
-      'id', v_existing.id, 'public_id', v_existing.public_id,
-      'status', v_existing.status, 'outcome', 'idempotent_replay');
-  end if;
-
+  -- Resolved BEFORE the key is looked up, because the fingerprint must describe
+  -- the location this request actually names, not the code string it used: two
+  -- codes can resolve to one location, and a code can be re-pointed. The cost is
+  -- that a replay whose location has since been retired raises instead of
+  -- replaying -- it still creates nothing, so the no-double-create guarantee is
+  -- untouched, and refusing is safer than returning a session whose scope can no
+  -- longer be confirmed.
+  --
   -- Resolves ACTIVE locations in THIS workspace only; a retired code or a
   -- neighbour's code simply does not resolve.
   v_location := app.intake_resolve_location(p_workspace_id, p_root_location_code);
@@ -73,19 +119,36 @@ begin
       p_root_location_code using errcode = '23514';
   end if;
 
+  -- Every dimension that changes what gets counted. Normalized first, so
+  -- 'BIN-A ' and 'BIN-A', or null and false, are the same request rather than a
+  -- spurious conflict.
+  v_fingerprint := md5(jsonb_build_array(
+    v_location,
+    v_descendants,
+    coalesce(p_subtype_filter::text, ''),
+    coalesce(p_vertical_filter::text, ''),
+    v_blind,
+    coalesce(v_notes, ''))::text);
+
+  select * into v_existing from public.cycle_count_sessions
+   where workspace_id = p_workspace_id and idempotency_key = p_idempotency_key;
+  if v_existing.id is not null then
+    return app.cycle_count_create_replay(v_existing, v_fingerprint);
+  end if;
+
   v_public := app.mint_governed_public_id('RV-CC');
   begin
     insert into public.cycle_count_sessions (
       workspace_id, public_id, status, scope_type, root_location_id,
       include_descendants, subtype_filter, vertical_filter, blind_count, notes,
-      created_by, idempotency_key)
+      created_by, idempotency_key, idempotency_fingerprint)
     values (
       p_workspace_id, v_public, 'draft',
-      (case when p_include_descendants then 'location_and_descendants' else 'single_location' end)
+      (case when v_descendants then 'location_and_descendants' else 'single_location' end)
         ::public.cycle_count_scope_type,
-      v_location, coalesce(p_include_descendants, false), p_subtype_filter, p_vertical_filter,
-      coalesce(p_blind_count, true), nullif(btrim(coalesce(p_notes, '')), ''), v_uid,
-      p_idempotency_key)
+      v_location, v_descendants, p_subtype_filter, p_vertical_filter,
+      v_blind, v_notes, v_uid,
+      p_idempotency_key, v_fingerprint)
     returning id into v_id;
   exception when unique_violation then
     -- Two presses raced past the read above. The index settles it; the loser
@@ -93,9 +156,14 @@ begin
     -- act on.
     select * into v_existing from public.cycle_count_sessions
      where workspace_id = p_workspace_id and idempotency_key = p_idempotency_key;
-    return jsonb_build_object(
-      'id', v_existing.id, 'public_id', v_existing.public_id,
-      'status', v_existing.status, 'outcome', 'idempotent_replay');
+    -- Only if a row for THIS key really exists. The unique violation could have
+    -- come from somewhere else entirely -- the public_id index, a constraint
+    -- added later -- and swallowing that would report a replay that never
+    -- happened and hide a real fault. Re-raise what we cannot explain.
+    if v_existing.id is null then
+      raise;
+    end if;
+    return app.cycle_count_create_replay(v_existing, v_fingerprint);
   end;
 
   return jsonb_build_object('id', v_id, 'public_id', v_public, 'status', 'draft',

@@ -109,9 +109,13 @@ router.get('/', requireMember, asyncRoute(async (req, res) => {
 }));
 
 /**
- * Current inventory with no live preparation — the "Not started" tab, and the
- * exact population `get_listing_prep_summary.never_started` counts. Both read
- * the same governed view, so the tile and its destination cannot disagree.
+ * Current inventory with no live preparation — the "No active preparation" tab,
+ * and the exact population `get_listing_prep_summary.no_active_preparation`
+ * counts. Both read the same governed view, so the tile and its destination
+ * cannot disagree.
+ *
+ * Deliberately not "never started": a record whose earlier preparation was
+ * listed or cancelled is here too, because repeat preparation is supported.
  */
 router.get('/candidates', requireMember, asyncRoute(async (req, res) => {
   const q = req.query;

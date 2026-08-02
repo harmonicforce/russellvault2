@@ -29,7 +29,8 @@ const TABS = [
   { key: 'listed', label: 'Listed', statuses: ['listed'] as PrepStatus[] },
   // Inventory with no preparation at all. Not backed by listing_prep rows, so
   // it reads the governed candidate view instead of the queue.
-  { key: 'candidates', label: 'Not started', statuses: [] as PrepStatus[] },
+  // Not "Never started": a record prepared and listed before belongs here too.
+  { key: 'candidates', label: 'No active preparation', statuses: [] as PrepStatus[] },
 ] as const;
 type TabKey = (typeof TABS)[number]['key'];
 

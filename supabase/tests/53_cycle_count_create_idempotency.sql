@@ -88,6 +88,151 @@ select is(
   'first attempt',
   'a replay does not overwrite the session it returns');
 
+-- Normalization: the same request expressed slightly differently is still the
+-- same request, not a conflict.
+select is(
+  (public.create_cycle_count_session(
+    'fd000000-0000-4000-8000-000000000001', 'BIN-I',
+    'fd0aaaaa-0001-4000-8000-000000000001'::uuid, false, null, null, true,
+    '  first attempt  '))->>'outcome',
+  'idempotent_replay',
+  'whitespace around the notes does not turn a replay into a conflict');
+
+-- THE KEY-REUSE REGRESSION ---------------------------------------------------
+-- A key bound to nothing is not idempotency. Reusing it with a DIFFERENT scope
+-- returned the first session, so an operator who corrected the shelf and
+-- pressed create again was handed a count over the shelf they corrected away
+-- from -- and had no way to tell.
+select public.register_storage_location('fd000000-0000-4000-8000-000000000001', 'BIN-J', null, 'Other bin');
+
+-- Each dimension that changes what gets counted, one at a time.
+select is(
+  (public.create_cycle_count_session(
+    'fd000000-0000-4000-8000-000000000001', 'BIN-J',
+    'fd0aaaaa-0001-4000-8000-000000000001'::uuid, false, null, null, true,
+    'first attempt'))->>'outcome',
+  'idempotency_conflict',
+  'the same key over a different root location is a conflict');
+
+select is(
+  (public.create_cycle_count_session(
+    'fd000000-0000-4000-8000-000000000001', 'BIN-I',
+    'fd0aaaaa-0001-4000-8000-000000000001'::uuid, true, null, null, true,
+    'first attempt'))->>'outcome',
+  'idempotency_conflict',
+  'the same key with descendants included is a conflict');
+
+select is(
+  (public.create_cycle_count_session(
+    'fd000000-0000-4000-8000-000000000001', 'BIN-I',
+    'fd0aaaaa-0001-4000-8000-000000000001'::uuid, false, 'graded_card', null, true,
+    'first attempt'))->>'outcome',
+  'idempotency_conflict',
+  'the same key with a subtype filter is a conflict');
+
+select is(
+  (public.create_cycle_count_session(
+    'fd000000-0000-4000-8000-000000000001', 'BIN-I',
+    'fd0aaaaa-0001-4000-8000-000000000001'::uuid, false, null, 'tcg', true,
+    'first attempt'))->>'outcome',
+  'idempotency_conflict',
+  'the same key with a vertical filter is a conflict');
+
+select is(
+  (public.create_cycle_count_session(
+    'fd000000-0000-4000-8000-000000000001', 'BIN-I',
+    'fd0aaaaa-0001-4000-8000-000000000001'::uuid, false, null, null, false,
+    'first attempt'))->>'outcome',
+  'idempotency_conflict',
+  'the same key with blind counting turned off is a conflict');
+
+select is(
+  (public.create_cycle_count_session(
+    'fd000000-0000-4000-8000-000000000001', 'BIN-I',
+    'fd0aaaaa-0001-4000-8000-000000000001'::uuid, false, null, null, true,
+    'a different note'))->>'outcome',
+  'idempotency_conflict',
+  'the same key with different notes is a conflict');
+
+-- A conflict carries a stable code the caller can branch on without reading
+-- prose, matching the observation idempotency convention.
+select is(
+  (public.create_cycle_count_session(
+    'fd000000-0000-4000-8000-000000000001', 'BIN-J',
+    'fd0aaaaa-0001-4000-8000-000000000001'::uuid, false, null, null, true,
+    'first attempt'))->>'code',
+  'IDEMPOTENCY_KEY_REUSED',
+  'a conflict reports a stable code');
+
+-- A conflict must reveal nothing about, and change nothing in, the session the
+-- key already belongs to.
+select ok(
+  (public.create_cycle_count_session(
+    'fd000000-0000-4000-8000-000000000001', 'BIN-J',
+    'fd0aaaaa-0001-4000-8000-000000000001'::uuid, false, null, null, true,
+    'first attempt')) ? 'id' = false,
+  'a conflict does not return the original session');
+
+select is(
+  (select l.location_code from public.cycle_count_sessions s
+     join public.storage_locations l on l.id = s.root_location_id
+    where s.id = pg_temp.get('first')),
+  'BIN-I',
+  'and does not repoint the original session at the new scope');
+
+select is(
+  (select count(*)::int from public.cycle_count_sessions
+    where workspace_id = 'fd000000-0000-4000-8000-000000000001'
+      and idempotency_key = 'fd0aaaaa-0001-4000-8000-000000000001'::uuid),
+  1,
+  'and creates nothing');
+
+-- The race path returns the winner's session only when a row for that key
+-- genuinely exists. app.cycle_count_create_replay is the single decision both
+-- the ordinary read and the unique_violation handler call, so they cannot
+-- disagree; here it is exercised directly on both verdicts.
+--
+-- It lives in `app` and is revoked from every application role -- no operator
+-- may reach the replay decision without going through the governed create --
+-- so these assertions step out of `authenticated` deliberately.
+select ok(
+  not has_function_privilege('authenticated',
+    'app.cycle_count_create_replay(public.cycle_count_sessions, text)', 'execute'),
+  'the replay decision is not reachable by an application role');
+
+reset role;
+
+select is(
+  (app.cycle_count_create_replay(
+    (select s from public.cycle_count_sessions s where s.id = pg_temp.get('first')),
+    (select idempotency_fingerprint from public.cycle_count_sessions
+      where id = pg_temp.get('first'))))->>'outcome',
+  'idempotent_replay',
+  'the race path replays when the raced request is the same request');
+
+select is(
+  (app.cycle_count_create_replay(
+    (select s from public.cycle_count_sessions s where s.id = pg_temp.get('first')),
+    'a-different-fingerprint'))->>'outcome',
+  'idempotency_conflict',
+  'and conflicts when the raced request is a different one');
+
+-- The fingerprint is recorded, so a session created before this migration
+-- (fingerprint null) cannot be silently replayed against a real request.
+select isnt(
+  (select idempotency_fingerprint from public.cycle_count_sessions where id = pg_temp.get('first')),
+  null,
+  'a governed create records the fingerprint of the request that made it');
+
+select is(
+  (app.cycle_count_create_replay(
+    (select s from public.cycle_count_sessions s where s.id = pg_temp.get('first')),
+    null))->>'outcome',
+  'idempotency_conflict',
+  'a null fingerprint on either side is a conflict, never a replay');
+
+select pg_temp.login('fd011111-1111-4111-8111-111111111111');
+
 -- The non-idempotent path is closed ------------------------------------------------
 select ok(
   not has_function_privilege('authenticated',

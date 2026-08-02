@@ -140,4 +140,119 @@ describe('Cycle Counts first use', () => {
     await waitFor(() => expect(api.create).toHaveBeenCalled());
     expect(api.create.mock.calls[0][0].blindCount).toBe(false);
   });
+
+  // Scope filters are database enums. Typing them by hand produced a filter
+  // that matched nothing and a count that found nothing, with no way to tell
+  // which had happened.
+  it('offers the governed categories as choices rather than free text', async () => {
+    await openForm();
+    const subtype = screen.getByLabelText('Category (optional)') as HTMLSelectElement;
+    expect(subtype.tagName).toBe('SELECT');
+    const options = [...subtype.options].map((o) => o.textContent);
+    expect(options[0]).toBe('Every category');
+    expect(options).toContain('Graded Card');
+    expect(options).toContain('Sealed TCG');
+    // Never a raw enum value in front of the operator.
+    expect(options).not.toContain('graded_card');
+  });
+
+  it('offers the governed verticals as choices rather than free text', async () => {
+    await openForm();
+    const vertical = screen.getByLabelText('Business vertical (optional)') as HTMLSelectElement;
+    expect(vertical.tagName).toBe('SELECT');
+    const options = [...vertical.options].map((o) => o.textContent);
+    expect(options[0]).toBe('Every vertical');
+    expect(options).toContain('Trading cards');
+    expect(options).not.toContain('tcg');
+  });
+
+  it('sends the enum value each select stands for', async () => {
+    await openForm();
+    fireEvent.change(screen.getByLabelText('Root location code'), { target: { value: 'BIN-A' } });
+    fireEvent.change(screen.getByLabelText('Category (optional)'), { target: { value: 'sealed_tcg' } });
+    fireEvent.change(screen.getByLabelText('Business vertical (optional)'), { target: { value: 'tcg' } });
+    fireEvent.click(screen.getByText('Review scope'));
+    // The review screen reads back the label, not the enum.
+    expect(await screen.findByText('Sealed TCG')).toBeTruthy();
+    expect(screen.getByText('Trading cards')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Create draft'));
+    await waitFor(() => expect(api.create).toHaveBeenCalled());
+    expect(api.create.mock.calls[0][0].subtypeFilter).toBe('sealed_tcg');
+    expect(api.create.mock.calls[0][0].verticalFilter).toBe('tcg');
+  });
+
+  it('sends no filter at all when neither select is used', async () => {
+    await openForm();
+    reviewScope();
+    fireEvent.click(await screen.findByText('Create draft'));
+    await waitFor(() => expect(api.create).toHaveBeenCalled());
+    expect(api.create.mock.calls[0][0].subtypeFilter ?? null).toBeNull();
+    expect(api.create.mock.calls[0][0].verticalFilter ?? null).toBeNull();
+  });
+
+  // The key is bound in the database to the scope it was first used with.
+  // Editing the scope after an unknown result makes this a DIFFERENT request,
+  // so it must carry a different key — otherwise the database correctly
+  // refuses it as key reuse and the operator cannot proceed at all.
+  it('mints a new key when the scope is edited after an unknown result', async () => {
+    api.create.mockRejectedValueOnce(new Error('network lost'));
+    await openForm();
+    reviewScope();
+    fireEvent.click(await screen.findByText('Create draft'));
+    await screen.findByRole('alert');
+
+    fireEvent.click(screen.getByText('Back'));
+    fireEvent.change(screen.getByLabelText('Root location code'), { target: { value: 'BIN-B' } });
+    fireEvent.click(screen.getByText('Review scope'));
+    fireEvent.click(await screen.findByText('Create draft'));
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(2));
+
+    expect(api.create.mock.calls[1][0].rootLocationCode).toBe('BIN-B');
+    expect(api.create.mock.calls[1][0].idempotencyKey)
+      .not.toBe(api.create.mock.calls[0][0].idempotencyKey);
+  });
+
+  it('still reuses the key when the scope is untouched after an unknown result', async () => {
+    api.create.mockRejectedValueOnce(new Error('network lost'))
+      .mockResolvedValueOnce({ id: 'cc-1', public_id: 'RV-CC-AAA111', status: 'draft', outcome: 'idempotent_replay' });
+    await openForm();
+    reviewScope();
+    fireEvent.click(await screen.findByText('Create draft'));
+    await screen.findByRole('alert');
+    // Back and forward through the form without changing anything.
+    fireEvent.click(screen.getByText('Back'));
+    fireEvent.click(screen.getByText('Review scope'));
+    fireEvent.click(await screen.findByText('Create draft'));
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(2));
+    expect(api.create.mock.calls[1][0].idempotencyKey).toBe(api.create.mock.calls[0][0].idempotencyKey);
+  });
+
+  it('explains a key-reuse conflict without inventing a draft', async () => {
+    api.create.mockResolvedValueOnce({ outcome: 'idempotency_conflict', code: 'IDEMPOTENCY_KEY_REUSED' });
+    await openForm();
+    reviewScope();
+    fireEvent.click(await screen.findByText('Create draft'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/already used to create a different count/);
+    expect(alert.textContent).toMatch(/nothing was created or altered/);
+    // No draft was invented from a response that carried none.
+    expect(screen.queryByText('Start counting')).toBeNull();
+  });
+
+  it('recovers from a conflict with a fresh key on the next attempt', async () => {
+    api.create.mockResolvedValueOnce({ outcome: 'idempotency_conflict', code: 'IDEMPOTENCY_KEY_REUSED' })
+      .mockResolvedValueOnce({ id: 'cc-1', public_id: 'RV-CC-AAA111', status: 'draft', outcome: 'created' });
+    await openForm();
+    reviewScope();
+    fireEvent.click(await screen.findByText('Create draft'));
+    await screen.findByRole('alert');
+
+    fireEvent.click(screen.getByText('Create draft'));
+    await waitFor(() => expect(api.create).toHaveBeenCalledTimes(2));
+    expect(api.create.mock.calls[1][0].idempotencyKey)
+      .not.toBe(api.create.mock.calls[0][0].idempotencyKey);
+    expect(await screen.findByText('Start counting')).toBeTruthy();
+  });
 });

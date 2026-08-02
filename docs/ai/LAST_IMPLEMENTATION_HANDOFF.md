@@ -8,8 +8,12 @@
 - Work order: Production Integrity Repair Pass
 - Implementation branch: `claude/repair-production-integrity`
 - Pull request: draft, into `main`
-- Repository migration count: **56 → 60** (four new forward migrations; no
-  existing migration file edited)
+- Repository migration count: **56 → 60** (four new forward migrations). No
+  migration that has ever been applied anywhere was edited. `20260802000400` was
+  amended in place during the review pass — it exists only on this unmerged
+  branch and has been applied to no database — so the count is unchanged by that
+  amendment. Count it from the directory, not from this line:
+  `ls supabase/migrations/*.sql | wc -l`.
 - pgTAP files: 50 → 54
 - Hosted Supabase parity: **not checked and not claimed.** No migration applied
   remotely.
@@ -94,19 +98,22 @@ readiness tab on Photo Issues.
 
 ### 4. Listing Prep destinations (`0acdfee`, migration `20260802000300`)
 
-Three separate mismatches: `never_started` was counted but had no reachable
+Three separate mismatches: the no-active-preparation count had no reachable
 destination; readiness links forced `tab=queue`, whose statuses exclude
 `ready_to_list`, so a regressed ready record was counted and then unreachable;
 and `by_status.ready_to_list` counted records that had since acquired blockers.
 
-`listing_prep_candidates` is one view holding the never-started predicate, and
-both the summary count and the new candidate listing read it, so they cannot
-drift. Raw `by_status` is preserved unchanged; `ready_now` (ready with
-`blocker_count = 0`) and `regressed_ready` (ready with blockers) are added
-alongside it, and the dashboard uses those. `list_listing_prep_queue` keeps its
-signature — no new overload — and readiness queries broaden the status list they
-supply. Listing Prep gains a "Not started" tab and a "Regressed from ready"
-badge. No record's status is silently mutated.
+`listing_prep_candidates` is one view holding the predicate, and both the
+summary count and the new candidate listing read it, so they cannot drift. Raw
+`by_status` is preserved unchanged; `ready_now` (ready with `blocker_count = 0`)
+and `regressed_ready` (ready with blockers) are added alongside it, and the
+dashboard uses those. `list_listing_prep_queue` keeps its signature — no new
+overload — and readiness queries broaden the status list they supply. Listing
+Prep gains a "No active preparation" tab and a "Regressed from ready" badge. No
+record's status is silently mutated.
+
+The population is named for what it is, not "never started" — see review
+correction 5.
 
 ### 5. Deterministic candidate selection (`eda1a88`)
 
@@ -171,6 +178,112 @@ model, state that the two totals are never summed, describe the governance rules
 actually enforced, and separate **repository** migration state (countable here)
 from **hosted** migration state (not verifiable here, and not claimed).
 
+## Review corrections (second pass)
+
+Independent review of the draft PR found six required corrections. All six are
+applied on the same branch. Each was a real defect; none is cosmetic.
+
+### 1. The drawer closed on any click inside the nav
+
+`NavigationPanel` put the close handler on the `<nav>` element, so it fired for
+anything that bubbled — including the "Tools & legacy" expander. Opening that
+group closed the panel containing it, which made every legacy and tools
+destination unreachable from a tablet.
+
+The handler moved onto each `NavLink`, and `ToolsNavGroup` now receives and
+applies it to its nested links. `App.governedNav.test.tsx` renders the shell
+with the governed surfaces **enabled** — the configuration where the nav
+contains anything other than destinations — and proves the group expands
+without closing, its nested destinations stay reachable, choosing one closes the
+drawer, and backdrop and Escape still work. Verified as a genuine regression
+test: with the handler restored to the `<nav>`, four of its seven cases fail.
+
+### 2. The readiness drill-down could not reach past fifty records
+
+`list_current_media_readiness` returns an exact total and defaults to fifty
+rows. `MediaIssues` made one request and offered no paging, so a dashboard tile
+reporting 120 opened a page from which seventy of those records were
+unreachable — the same class of defect as a count opening the wrong page.
+
+The transport takes `limit`/`offset`; the page holds status *and* page in the
+URL, so a filtered page is shareable and Back restores it. Changing status
+resets to page one, because a different population starts at its own beginning.
+Readiness rows are **cleared before each load** — showing the previous status's
+rows under a new heading reads as the answer to the new question.
+
+Status is now validated on both sides. `MediaIssues` drops an unrecognised
+status and says so rather than indexing the label table with it and taking the
+page down; the route refuses one with a `400 invalid_status` rather than
+forwarding text that matches no rows and reports an empty backlog. Nine rendered
+cases plus six server cases cover it, including SQL-injection-shaped input.
+
+### 3. A cycle count key was bound to nothing
+
+`create_cycle_count_session` returned the existing session for a matching key
+without checking that the request was the same request. An operator who noticed
+the wrong shelf, corrected it, and pressed create again was handed the count
+over the shelf they had just corrected away from — and nothing said so.
+
+The key is now bound to a fingerprint of the normalized creation payload:
+resolved root location, include-descendants, subtype filter, vertical filter,
+blind-count setting, and normalized notes. Identical replay returns
+`idempotent_replay`; any changed dimension returns
+`{outcome: 'idempotency_conflict', code: 'IDEMPOTENCY_KEY_REUSED'}` and neither
+returns nor modifies the original session. This matches the convention already
+established for observation idempotency in `20260730000300`.
+
+The `unique_violation` handler now re-selects and returns the existing session
+**only if a row for that key genuinely exists**, and re-raises otherwise — the
+violation could have come from another constraint entirely, and swallowing it
+would have reported a replay that never happened.
+
+The location is resolved *before* the key lookup, so the fingerprint describes
+the location the request names rather than the code string it used. The cost is
+that a replay whose location has since been retired raises instead of replaying;
+it still creates nothing, so the no-double-create guarantee is untouched.
+
+Client side: editing the scope after an attempt mints a fresh key, because that
+is a different request and the database now correctly refuses key reuse. Leaving
+the scope untouched still reuses the key. A conflict is reported plainly and no
+draft is invented from a response that carried none.
+
+`20260802000400` was **amended in place** rather than superseded. It exists only
+on this unmerged branch, has been applied to no database, and `db:reset` replays
+every migration from empty, so there is no drift for a forward correction to
+protect against. `ENGINEERING_RULES.md` says "prefer additive migrations" and
+does not forbid this. **The repository migration count is unchanged at 60.**
+
+### 4. Cycle Count scope filters were raw enum text boxes
+
+Category and Business vertical were free-text inputs over database enums. A typo
+produced a filter matching nothing and a count finding nothing, with no way to
+tell which had happened. Both are now selects built from `INVENTORY_SUBTYPES`
+and `BUSINESS_VERTICALS` — the same governed constants Current Inventory filters
+by — showing labels, never raw enum values, on both the form and the review
+screen.
+
+### 5. "Never started" was false
+
+`listing_prep_candidates` admits records whose prior preparations are `listed`
+or `cancelled`, because repeat preparation is deliberate: stock comes back, a
+listing ends, and the record needs preparing again. Calling that population
+"never started" was false about those records' own history.
+
+Repeat-preparation behaviour is preserved and the name corrected throughout:
+`get_listing_prep_summary.never_started` → `no_active_preparation`, the dashboard
+tile and Listing Prep tab → "No active preparation", plus the view comment, the
+API types, the Workbench tile (which also pointed at the wrong tab), the route
+documentation and the pgTAP. `52_listing_prep_destinations.sql` now proves a
+record whose preparation was **listed** returns to the population, which is the
+decisive case for the naming.
+
+### 6. Handoff accuracy
+
+Totals refreshed from GitHub, and the hosted rollback instruction replaced — see
+"Rollback". The previous wording advised re-applying prior migration files,
+which is not a safe rollback and could have destroyed the migration ledger's
+value as evidence.
+
 ## Files changed
 
 34 files, +3430 / −103 against `ac0441c`.
@@ -183,8 +296,8 @@ Migrations added (four; no existing migration edited):
 - `supabase/migrations/20260802000400_cycle_count_create_idempotency.sql`
 
 pgTAP added (four): `50_active_media_semantics.sql` (18 assertions),
-`51_current_media_readiness.sql` (18), `52_listing_prep_destinations.sql` (20),
-`53_cycle_count_create_idempotency.sql` (15). `06_provenance_structure.sql` moves
+`51_current_media_readiness.sql` (18), `52_listing_prep_destinations.sql` (25),
+`53_cycle_count_create_idempotency.sql` (31). `06_provenance_structure.sql` moves
 its ledger assertion 56 → 60 and names the four new migrations.
 
 Server: `operationsDashboard/contract.ts` (new), `routes/operationsDashboard.ts`,
@@ -192,9 +305,10 @@ Server: `operationsDashboard/contract.ts` (new), `routes/operationsDashboard.ts`
 
 Client: `App.tsx`, `pages/CurrentInventory.tsx`, `pages/Dashboard.tsx`,
 `pages/ListingPrep.tsx`, `pages/MediaIssues.tsx`, `pages/CycleCounts.tsx`,
-`lib/inventoryData.ts`, `lib/operationsDashboardApi.ts`, `lib/listingPrepApi.ts`,
-`lib/cycleCountApi.ts`, plus tests including the new
-`App.responsive.test.tsx`.
+`pages/Workbench.tsx`, `lib/inventoryData.ts`, `lib/operationsDashboardApi.ts`,
+`lib/listingPrepApi.ts`, `lib/cycleCountApi.ts`, plus tests including the new
+`App.responsive.test.tsx`, `App.governedNav.test.tsx` and
+`pages/MediaIssues.readiness.test.tsx`.
 
 Docs: `README.md`, `docs/architecture.md`,
 `docs/runbooks/hosted-migration-parity.md` (new), this file.
@@ -207,10 +321,10 @@ reported as passed that did not actually run.
 - `npm run lint` — exit 0. Seven pre-existing warnings, all confirmed present on
   `ac0441c` by linting the base version of the same files. No new warning.
 - `npm run typecheck` (server `tsc --noEmit` + client `tsc -b`) — exit 0.
-- `npm test` — server 27 files / 407 tests passed; client 31 files / 417 tests
+- `npm test` — server 27 files / 413 tests passed; client 33 files / 441 tests
   passed; DB guard 23/23 passed.
 - `npm run db:reset` then `npm run db:test` (**shim tier**) — replayed all 60
-  migrations from empty; **54 files, 1604 assertions, all passed.**
+  migrations from empty; **54 files, 1625 assertions, all passed.**
 - `git diff --check` — clean.
 
 **One honest caveat about the shim run.** On the first attempt,
@@ -259,20 +373,60 @@ real iPad — or a browser harness this repository does not have — settles it.
   were not audited — but it means two similarly-named columns now exist and a
   future reader could pick the wrong one. `active_media_count` and `needs_photos`
   are the authoritative ones.
+- The readiness drill-down pages at fifty. That is a page size, not a cap, and
+  the exact total is always shown — but there is no jump-to-page control, so
+  reaching page 12 of a large backlog is eleven clicks.
+- A cycle count replay whose root location has been retired between attempts
+  raises rather than replaying. It creates nothing, so no count is duplicated,
+  but the operator must re-enter a valid location.
 - The intermittent `15_acquisition_digest_parity.sql` in-suite slowdown is
   unexplained and unfixed.
 
 ## Rollback
 
-Revert every commit after `ac0441c` on this branch — `eda1a88`, `a2e6960`,
-`0f54c6c`, `0acdfee`, `89ce4e0`, `e77f4af` and the documentation commit that
-follows them — or reset `main` to `ac0441c`. The four
-migrations are additive; if any has already been applied to a database, the views
-and functions they replace are restored by re-applying the prior migration files,
-and the one added column (`cycle_count_sessions.idempotency_key`) plus its
-partial index are dropped separately. Because `create_cycle_count` was revoked
-rather than dropped, a rollback that restores its grants restores the previous
-behaviour without recreating the function.
+**Before the migrations have been applied to any hosted database** — which is
+the current state — rollback is entirely a repository action: revert every
+commit after `ac0441c` on this branch, or close the PR. Nothing outside the
+repository has changed, so nothing outside the repository needs undoing.
+
+**After a hosted application**, rollback is *not* a repository action and the
+repository cannot describe it precisely, because it depends on what the data
+looks like at that moment. It requires either:
+
+- a **separately reviewed compensating migration**, written against the actual
+  post-application schema and reviewed on its own merits; or
+- a **restore from a verified backup**, taken before the application.
+
+Specifically forbidden, because each silently corrupts the record of what the
+database actually is:
+
+- **Do not re-apply historical migration files** to "put back" a replaced view
+  or function. A migration is a statement about a transition from one specific
+  prior state, not a reversible patch; replaying one against a database that has
+  moved on can restore a definition whose dependencies no longer match, and it
+  appends a second ledger row claiming the migration ran again.
+- **Do not delete rows from `schema_migrations_log`.** That ledger is the only
+  evidence of what was applied. Editing it to make a rollback look clean
+  destroys the one artefact the parity runbook depends on, and the next parity
+  check will report a state that never existed.
+- **Do not hand-edit schema to match an older migration file.** The result is a
+  database that matches no migration in the repository.
+
+An earlier draft of this section advised re-applying prior migration files. That
+was wrong and is corrected here.
+
+For reference when writing a compensating migration, this branch's schema
+changes are: four replaced views/functions (`inventory_item_overview`,
+`inventory_lot_overview`, `inventory_record_overview`,
+`get_media_readiness_summary`, `get_listing_prep_summary`, `start_cycle_count`),
+three new views/functions (`inventory_media_readiness_current`,
+`listing_prep_candidates`, `list_listing_prep_candidates`,
+`list_current_media_readiness`, `get_operations_media_backlog`,
+`create_cycle_count_session`, `app.cycle_count_create_replay`), two added columns
+(`cycle_count_sessions.idempotency_key`, `.idempotency_fingerprint`) with one
+partial unique index, and one revocation (`create_cycle_count`, revoked rather
+than dropped — restoring its grants restores the previous behaviour without
+recreating the function).
 
 ## Owner acceptance checklist (hosted, after migrations are separately authorized)
 
@@ -289,22 +443,37 @@ runbook re-run afterwards.
    the total is not silently capped at twenty.
 5. "Missing required angles" — opens the Photo Issues readiness tab filtered to
    that status, not the no-photo queue.
+5b. If that backlog exceeds 50, page forward and confirm the last page is
+   reachable and the total matches the tile. Edit the URL's `status=` to
+   nonsense and confirm the page still loads, says the filter was not
+   recognised, and reports no backlog as empty on the strength of it.
 6. Confirm a recently voided or fully depleted record does **not** appear in the
    photo backlog, and that its detail page still opens.
 7. "Ready to list" — every row shown has no blockers. "Regressed from ready" —
    every row shown is status ready **and** has at least one blocker.
-8. "Never started" — opens the Not started tab; *Prepare for listing* on one row
-   moves it into the queue and the two counts move by one in opposite directions.
+8. "No active preparation" — opens that tab; *Prepare for listing* on one row
+   moves it into the queue and the two counts move by one in opposite
+   directions. Confirm a record that was listed and whose listing has ended
+   appears here, since repeat preparation is supported.
 9. Reload the dashboard several times; the twenty work candidates are the same
    twenty in the same order.
 10. Cycle Counts in a workspace with no sessions offers *Start cycle count*.
-    Create one; the scope review shows no expected totals. Start it; still no
-    expected totals. Press create twice quickly — exactly one draft exists.
+    Category and Business vertical are dropdowns showing labels, never raw enum
+    values. Create one; the scope review shows no expected totals. Start it;
+    still no expected totals. Press create twice quickly — exactly one draft
+    exists.
+10b. Begin a create, interrupt the network so the result is unknown, then go
+    Back, change the root location, and create again. A second count is created
+    for the new location and the first is untouched — not a conflict, and not a
+    silent hand-back of the original.
 11. Sign in as a viewer: creating a cycle count is refused.
 12. On an iPad in portrait: no horizontal page scroll anywhere; Current Inventory
     shows cards, not a clipped table; selection checkboxes are reachable and bulk
     move works; the hamburger opens the drawer, and choosing a destination both
     navigates and closes it in one tap.
+13. In the same drawer, tap "Tools & legacy". It expands and the drawer stays
+    open; the legacy destinations inside it are reachable and choosing one
+    closes the drawer.
 
 ## Proposed `CURRENT_STATE.md` replacement text
 
@@ -335,8 +504,10 @@ order did not grant an exception. Proposed replacements, section by section:
 **Replace the "Listing and sales operations" bullet list with:**
 
 > - Listing Prep is implemented and merged (PR #28): blockers, readiness, a
->   not-started candidate list, bulk operations and Workbench integration. It has
->   had no hosted acceptance.
+>   no-active-preparation candidate list, bulk operations and Workbench
+>   integration. Repeat preparation is supported, so that population includes
+>   records whose earlier preparation was listed or cancelled; it is deliberately
+>   not called "never started". It has had no hosted acceptance.
 > - marketplace publishing remains out of scope unless explicitly authorized;
 > - sales, fulfillment, returns, and governed inventory exit are incomplete.
 
@@ -365,14 +536,20 @@ order did not grant an exception. Proposed replacements, section by section:
 >   the boundary was enforced only in the Express route; it is now enforced in
 >   the database. Other governed functions have not been swept for the same
 >   one-transport-only pattern.
+> - cycle count creation accepted an idempotency key bound to nothing, so
+>   reusing it with a different scope returned the original session. The key is
+>   now bound to a fingerprint of the normalized creation payload. Other keyed
+>   operations were not re-audited for the same unbound-key pattern.
 
 **Amend the Media bullet list to add:**
 
 > - `media_count` counts every media lifecycle and is retained for its existing
 >   consumers; `active_media_count` and `needs_photos` are the authoritative
 >   current-photo facts.
+> - the readiness drill-down pages at fifty with the exact total always shown;
+>   there is no jump-to-page control.
 
-## PR cleanup assessment (report only — nothing was closed)
+## PR cleanup assessment
 
 Each head was diffed against `ac0441c`.
 
@@ -383,8 +560,10 @@ Each head was diffed against `ac0441c`.
   the two test harnesses ship incompatible overloads. **There is no unique fix in
   any of them and nothing to recover.**
 
-Recommendation: close all three as superseded by #35. **Not closed here** — the
-work order does not grant that authority.
+Recommendation was to close all three as superseded by #35. The owner
+subsequently gave explicit instruction to do so, and all three are now closed
+with a comment recording the reason. Each was already conflicting with `main`,
+which corroborates the assessment independently.
 
 ## Standing owner actions carried forward
 

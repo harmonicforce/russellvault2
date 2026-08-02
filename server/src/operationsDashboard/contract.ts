@@ -18,7 +18,45 @@ export type PanelErrorCode =
   | 'unauthorized_workspace'
   | 'feature_unavailable'
   | 'dashboard_contract_missing'
-  | 'dependency_failed';
+  | 'dependency_failed'
+  | 'invalid_status';
+
+/**
+ * The readiness vocabulary the database actually stores. A status outside this
+ * set matches no rows, so passing one through would answer "nothing is
+ * outstanding" for a query that was never valid — a fabricated zero arriving by
+ * a different door. Unknown values are refused instead.
+ */
+export const MEDIA_READINESS_STATUSES: readonly string[] = [
+  'complete', 'missing_required_angle', 'missing_defect_photo',
+  'media_review_needed', 'upload_incomplete',
+];
+
+/**
+ * Parse the comma-separated `status` filter. Returns `null` for "no filter",
+ * or the rejected values so the caller can refuse rather than guess.
+ */
+export function parseReadinessStatuses(
+  raw: unknown,
+): { statuses: string[] | null; invalid: string[] } {
+  if (typeof raw !== 'string' || raw.length === 0) return { statuses: null, invalid: [] };
+  const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return { statuses: null, invalid: [] };
+  const invalid = parts.filter((p) => !MEDIA_READINESS_STATUSES.includes(p));
+  return { statuses: invalid.length === 0 ? parts : null, invalid };
+}
+
+/** Bound a page window. Anything unparseable falls back to the default. */
+export function parsePageWindow(
+  rawLimit: unknown, rawOffset: unknown,
+): { limit: number; offset: number } {
+  const limit = Number.parseInt(String(rawLimit ?? ''), 10);
+  const offset = Number.parseInt(String(rawOffset ?? ''), 10);
+  return {
+    limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 200) : 50,
+    offset: Number.isFinite(offset) && offset > 0 ? offset : 0,
+  };
+}
 
 export interface PanelFailure {
   readonly status: number;
@@ -37,6 +75,8 @@ const MESSAGES: Record<PanelErrorCode, string> = {
     'This dashboard panel is not available because the required database update has not been applied.',
   dependency_failed:
     'This dashboard panel could not be loaded because a dependency failed. The value is unknown, not zero.',
+  invalid_status:
+    'That photo readiness filter is not one this system recognises, so no backlog was reported for it.',
 };
 
 /**

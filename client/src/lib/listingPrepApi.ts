@@ -153,7 +153,9 @@ export interface PrepSummary {
   readonly by_readiness: Partial<Record<PrepReadiness, number>>;
   readonly unassigned: number;
   readonly listed_last_7_days: number;
-  readonly never_started: number;
+  /** Current stock with no LIVE preparation. Includes records prepared and
+   * listed before, because repeat preparation is supported. */
+  readonly no_active_preparation: number;
   /** Status says ready AND live readiness agrees. */
   readonly ready_now: number;
   /** Status still says ready, but a blocker has appeared since. */

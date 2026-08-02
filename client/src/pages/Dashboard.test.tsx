@@ -17,7 +17,7 @@ vi.mock('../lib/operationsDashboardApi', () => ({
   createOperationsDashboardTransport: () => ({
     health: async () => { calls.health++; return { asOf: '2026-08-01T00:00:00Z', serializedUnits: 2, lotManagedRecords: 1, lotManagedUnits: 4, withoutLocation: 1 }; },
     work: async () => { calls.work++; return { asOf: '2026-08-01T00:00:00Z', definition: 'inventory age', tasks: [{ taskType: 'missing_location', subjectKind: 'item', subjectId: 'i1', publicId: 'RV-I1', displayName: 'Charizard', reason: 'No active storage location is recorded.', ageDays: 3, severity: 'high', score: 83, scoreExplanation: '80 rule weight + 3 age points', destination: '/inventory/current?needsLocation=1' }] }; },
-    workflows: async () => { calls.workflows++; return { asOf: '2026-08-01T00:00:00Z', media: { no_active_photo: 7, by_readiness: { missing_required_angle: 3 }, open_issue_count: 2 }, listingPrep: { by_status: { ready_to_list: 4 }, by_readiness: { needs_owner_review: 1, needs_photos: 5, blocked: 2 }, never_started: 6, ready_now: 3, regressed_ready: 1 } }; },
+    workflows: async () => { calls.workflows++; return { asOf: '2026-08-01T00:00:00Z', media: { no_active_photo: 7, by_readiness: { missing_required_angle: 3 }, open_issue_count: 2 }, listingPrep: { by_status: { ready_to_list: 4 }, by_readiness: { needs_owner_review: 1, needs_photos: 5, blocked: 2 }, no_active_preparation: 6, ready_now: 3, regressed_ready: 1 } }; },
     activity: async () => { calls.activity++; return { asOf: '2026-08-01T00:00:00Z', source: 'immutable inventory_movements', events: [{ id: 'm1', public_id: 'RV-M1', eventType: 'inventory_moved', moved_at: '2026-08-01T00:00:00Z', destination: '/inventory/current/i1' }, { id: 'm2', public_id: 'RV-M2', eventType: 'inventory_moved', moved_at: '2026-08-01T00:00:00Z', destination: '/inventory/lots/l1' }] }; },
   }),
 }));
@@ -103,11 +103,11 @@ describe('backlog tiles open exactly what they counted', () => {
     expect(href(/Regressed from ready/)).toBe('/listing-prep?tab=ready&regressed=1');
   });
 
-  it('sends never-started inventory to a queue that can actually contain it', async () => {
+  it('sends unprepared inventory to a queue that can actually contain it', async () => {
     renderDashboard();
-    await screen.findByText('Never started');
+    await screen.findByText('No active preparation');
     // The old link was tab=queue, which reads listing_prep rows — and a
     // never-started record has none by definition.
-    expect(href(/Never started/)).toBe('/listing-prep?tab=candidates');
+    expect(href(/No active preparation/)).toBe('/listing-prep?tab=candidates');
   });
 });

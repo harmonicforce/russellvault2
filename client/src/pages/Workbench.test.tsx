@@ -42,7 +42,7 @@ vi.mock('../lib/inventoryData', () => ({
 vi.mock('../lib/intakeApi', () => ({ createIntakeTransport: () => ({ listSessions }) }));
 vi.mock('../lib/listingPrepApi', async (original) => ({
   ...(await original<Record<string, unknown>>()),
-  createListingPrepTransport: () => ({ summary: async () => ({ by_readiness: {}, by_status: {}, never_started: 0 }) }),
+  createListingPrepTransport: () => ({ summary: async () => ({ by_readiness: {}, by_status: {}, no_active_preparation: 0 }) }),
 }));
 
 beforeEach(() => {

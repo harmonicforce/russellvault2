@@ -1,6 +1,7 @@
 import { useEffect,useMemo,useRef,useState } from 'react';
 import { ClipboardCheck,History,Plus,RefreshCw,ScanLine } from 'lucide-react';
 import { useWorkspace } from '../lib/workspaceContext';
+import { BUSINESS_VERTICALS,INVENTORY_SUBTYPES,VERTICAL_LABELS,subtypeLabel } from '../lib/inventoryQuery';
 import { createCycleCountTransport,type CycleCountScope,type CurrentObservation,type CycleCountCompletionSummary,type CycleCountDiscrepancy,type CycleCountRoundHistory,type CycleCountSession,type ResolutionAttempt,type RoundProgress } from '../lib/cycleCountApi';
 const newKey=()=>crypto.randomUUID();
 
@@ -78,14 +79,42 @@ function NewCycleCount({api,canCount,onCancel,onStarted}:{
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState<string|null>(null);
  const [notice,setNotice]=useState<string|null>(null);
+ // Whether a create has been sent with the CURRENT key. Only after that does
+ // the key describe a request the database may already have committed.
+ const [attempted,setAttempted]=useState(false);
 
  if(!canCount) return null;
  const field='w-full rounded border border-hairline bg-surface-0 px-2 py-1.5 text-sm';
 
+ /**
+  * Every scope edit goes through here.
+  *
+  * While no attempt has been made, the key is just an unused token and the edit
+  * changes nothing about it. Once an attempt HAS been made, the key is bound in
+  * the database to that exact scope, so continuing to use it after an edit
+  * would be reusing a key for a different request — which the database now
+  * correctly refuses. Editing the scope therefore mints a new key: this is a
+  * different request, and creating a separate count for a different shelf is
+  * the right outcome, not a double-create.
+  */
+ const editScope=(next:Partial<CycleCountScope>)=>{
+  setScope(s=>({...s,...next,...(attempted?{idempotencyKey:newKey()}:{})}));
+  if(attempted){setAttempted(false);setNotice(null)}
+ };
+
  const create=async()=>{
-  setBusy(true); setError(null);
+  setBusy(true); setError(null); setAttempted(true);
   try{
    const result=await api.create(scope);
+   if(result.outcome==='idempotency_conflict'||!result.id||!result.public_id){
+    // The key belongs to a different request. The database did not return that
+    // session and did not change it, and neither does this: the operator gets a
+    // fresh key and is told plainly what happened.
+    setScope(s=>({...s,idempotencyKey:newKey()}));
+    setAttempted(false);
+    setError('This request was already used to create a different count. The scope has changed since then, so nothing was created or altered. Press “Create draft” again to create a count for the scope shown above.');
+    return;
+   }
    setDraft({id:result.id,public_id:result.public_id});
    setStage('draft');
    // A replay is reported, not hidden: the operator should know the retry
@@ -94,9 +123,11 @@ function NewCycleCount({api,canCount,onCancel,onStarted}:{
     ?`Reattached to the draft this request already created (${result.public_id}).`
     :`Draft ${result.public_id} created. It is not counting yet.`);
   }catch(e){
-   // The key is deliberately NOT regenerated: if this failed after the
-   // database committed, retrying with the same key must find that session
-   // rather than open a second count over the same shelf.
+   // The key is deliberately NOT regenerated here: if this failed after the
+   // database committed, retrying the SAME scope with the same key must find
+   // that session rather than open a second count over the same shelf. It is
+   // regenerated only when the operator changes the scope, because that is a
+   // different request.
    setError((e as Error).message);
   }finally{setBusy(false)}
  };
@@ -123,34 +154,45 @@ function NewCycleCount({api,canCount,onCancel,onStarted}:{
    <div>
     <label className="block text-xs" htmlFor="cc-root">Root location code</label>
     <input id="cc-root" required value={scope.rootLocationCode} className={field}
-      onChange={e=>setScope({...scope,rootLocationCode:e.target.value})}/>
+      onChange={e=>editScope({rootLocationCode:e.target.value})}/>
    </div>
    <label className="flex items-center gap-2 text-sm">
     <input type="checkbox" checked={scope.includeDescendants??false}
-      onChange={e=>setScope({...scope,includeDescendants:e.target.checked})}/>
+      onChange={e=>editScope({includeDescendants:e.target.checked})}/>
     Include locations inside it
    </label>
+   {/* Selects, not free text. These are database enums: a typo in a text box
+       produced a scope filter that matched nothing and a count that found
+       nothing, and the operator had no way to know which. The options come from
+       the same governed constants Current Inventory filters by, so the two
+       cannot drift. */}
    <div className="grid gap-3 md:grid-cols-2">
     <div>
      <label className="block text-xs" htmlFor="cc-subtype">Category (optional)</label>
-     <input id="cc-subtype" value={scope.subtypeFilter??''} className={field}
-       onChange={e=>setScope({...scope,subtypeFilter:e.target.value||null})}/>
+     <select id="cc-subtype" value={scope.subtypeFilter??''} className={field}
+       onChange={e=>editScope({subtypeFilter:e.target.value||null})}>
+      <option value="">Every category</option>
+      {INVENTORY_SUBTYPES.map(s=><option key={s} value={s}>{subtypeLabel(s)}</option>)}
+     </select>
     </div>
     <div>
      <label className="block text-xs" htmlFor="cc-vertical">Business vertical (optional)</label>
-     <input id="cc-vertical" value={scope.verticalFilter??''} className={field}
-       onChange={e=>setScope({...scope,verticalFilter:e.target.value||null})}/>
+     <select id="cc-vertical" value={scope.verticalFilter??''} className={field}
+       onChange={e=>editScope({verticalFilter:e.target.value||null})}>
+      <option value="">Every vertical</option>
+      {BUSINESS_VERTICALS.map(v=><option key={v} value={v}>{VERTICAL_LABELS[v]}</option>)}
+     </select>
     </div>
    </div>
    <label className="flex items-center gap-2 text-sm">
     <input type="checkbox" checked={scope.blindCount!==false}
-      onChange={e=>setScope({...scope,blindCount:e.target.checked})}/>
+      onChange={e=>editScope({blindCount:e.target.checked})}/>
     Blind count — do not show what is expected
    </label>
    <div>
     <label className="block text-xs" htmlFor="cc-notes">Notes (optional)</label>
     <input id="cc-notes" value={scope.notes??''} className={field}
-      onChange={e=>setScope({...scope,notes:e.target.value})}/>
+      onChange={e=>editScope({notes:e.target.value})}/>
    </div>
    <div className="flex gap-2">
     <button type="submit" className="rounded bg-accent px-3 py-2 text-sm font-semibold text-white">Review scope</button>
@@ -164,8 +206,12 @@ function NewCycleCount({api,canCount,onCancel,onStarted}:{
    <dl className="grid grid-cols-2 gap-2 text-sm">
     <dt className="text-ink-muted">Root location</dt><dd>{scope.rootLocationCode}</dd>
     <dt className="text-ink-muted">Locations inside it</dt><dd>{scope.includeDescendants?'Included':'Not included'}</dd>
-    <dt className="text-ink-muted">Category</dt><dd>{scope.subtypeFilter||'Any'}</dd>
-    <dt className="text-ink-muted">Business vertical</dt><dd>{scope.verticalFilter||'Any'}</dd>
+    {/* Labels here too — the review screen is the last chance to notice a
+        wrong scope, and a raw enum is not something to check against. */}
+    <dt className="text-ink-muted">Category</dt>
+    <dd>{scope.subtypeFilter?subtypeLabel(scope.subtypeFilter):'Every category'}</dd>
+    <dt className="text-ink-muted">Business vertical</dt>
+    <dd>{scope.verticalFilter?(VERTICAL_LABELS[scope.verticalFilter]??scope.verticalFilter):'Every vertical'}</dd>
     <dt className="text-ink-muted">Counting</dt><dd>{scope.blindCount!==false?'Blind':'Expected quantities visible'}</dd>
    </dl>
    {scope.blindCount!==false&&<p className="text-xs text-ink-muted">

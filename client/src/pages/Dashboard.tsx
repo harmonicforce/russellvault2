@@ -74,7 +74,7 @@ function WorkspaceSummarySection() {
           <BacklogLink to="/listing-prep?readiness=needs_owner_review" label="Needs owner review" value={workflows.data.listingPrep.by_readiness.needs_owner_review ?? 0}/>
           <BacklogLink to="/listing-prep?readiness=needs_photos" label="Prep needs photos" value={workflows.data.listingPrep.by_readiness.needs_photos ?? 0}/>
           <BacklogLink to="/listing-prep?readiness=blocked" label="Blocked" value={workflows.data.listingPrep.by_readiness.blocked ?? 0}/>
-          <BacklogLink to="/listing-prep?tab=candidates" label="Never started" value={workflows.data.listingPrep.never_started ?? 0}/>
+          <BacklogLink to="/listing-prep?tab=candidates" label="No active preparation" value={workflows.data.listingPrep.no_active_preparation ?? 0}/>
         </div></section>}</PanelState>
       </div>
       <PanelState query={activity} label="Recent Movements">{activity.data && <section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Recent Movements</h3><p className="text-xs text-ink-muted">Source: {activity.data.source} · as of {new Date(activity.data.asOf).toLocaleString()}</p><div className="mt-2 divide-y divide-hairline">{activity.data.events.slice(0, 6).map(event => <Link key={event.id} to={event.destination} className="flex justify-between py-2 text-sm hover:underline"><span>Inventory moved · {event.public_id}</span><span>{shortDate(event.moved_at)}</span></Link>)}{!activity.data.events.length && <p className="py-3 text-sm text-ink-muted">No governed movement events yet.</p>}</div></section>}</PanelState>

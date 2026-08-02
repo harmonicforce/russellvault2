@@ -1,7 +1,9 @@
 import { Router, type NextFunction, type Response } from 'express';
 import { requireMember, type AuthedRequest } from '../provenance/auth.js';
 import { isProvenanceEnabled } from '../provenance/config.js';
-import { classifyDependencyFailure, panelFailure } from '../operationsDashboard/contract.js';
+import {
+  classifyDependencyFailure, panelFailure, parsePageWindow, parseReadinessStatuses,
+} from '../operationsDashboard/contract.js';
 
 const router = Router();
 router.use((_req, res, next) => isProvenanceEnabled(process.env)
@@ -109,14 +111,19 @@ router.get('/workflows', requireMember, run(async (req, res) => {
  */
 router.get('/media-readiness', requireMember, run(async (req, res) => {
   const { client, workspaceId } = caller(req);
-  const statuses = typeof req.query.status === 'string' && req.query.status.length > 0
-    ? req.query.status.split(',').filter(Boolean)
-    : null;
+  // An unrecognised status matches no rows, so passing it through would answer
+  // "nothing outstanding" for a question that was never asked. Refuse instead.
+  const { statuses, invalid } = parseReadinessStatuses(req.query.status);
+  if (invalid.length > 0) {
+    const failure = panelFailure('invalid_status', 400);
+    return void res.status(failure.status).json(failure.body);
+  }
+  const { limit, offset } = parsePageWindow(req.query.limit, req.query.offset);
   const { data, error } = await client.rpc('list_current_media_readiness' as never, {
     p_workspace_id: workspaceId,
     p_statuses: statuses,
-    p_limit: Number.parseInt(String(req.query.limit ?? '50'), 10) || 50,
-    p_offset: Number.parseInt(String(req.query.offset ?? '0'), 10) || 0,
+    p_limit: limit,
+    p_offset: offset,
   } as never);
   if (error) return fail(res, 'media-readiness', error.message);
   res.json({ asOf: new Date().toISOString(), ...(data as object) });

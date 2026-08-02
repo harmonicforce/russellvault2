@@ -341,7 +341,7 @@ function ListingPrepCard({
         ['Waiting on your review', summary.by_readiness.needs_owner_review ?? 0, '?readiness=needs_owner_review'],
         [READINESS_LABELS.needs_photos, summary.by_readiness.needs_photos ?? 0, '?readiness=needs_photos'],
         [READINESS_LABELS.blocked, summary.by_readiness.blocked ?? 0, '?readiness=blocked'],
-        ['Not started', summary.never_started, '?tab=queue'],
+        ['No active preparation', summary.no_active_preparation, '?tab=candidates'],
       ]
     : [];
 

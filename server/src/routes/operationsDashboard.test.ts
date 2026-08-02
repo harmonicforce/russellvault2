@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { priorityScore, rankWorkCandidates } from './operationsDashboard.js';
 import {
   FORBIDDEN_IN_CLIENT_PAYLOAD, classifyDependencyFailure, panelFailure,
+  parsePageWindow, parseReadinessStatuses,
 } from '../operationsDashboard/contract.js';
 
 describe('operational priority definition', () => {
@@ -159,5 +160,63 @@ describe('work candidate query ordering', () => {
       expect(call.order).toEqual(['created_at', 'subject_kind', 'subject_id']);
       expect(call.limitedAfter).toBe(3);
     }
+  });
+});
+
+// The readiness drill-down is paged. The dashboard tile reports an exact total,
+// so a backlog above one page has to be reachable — and the parameters that
+// reach it have to be checked, because an unrecognised status matches no rows
+// and would answer "nothing outstanding" for a question never asked.
+describe('readiness filter and page window', () => {
+  it('accepts the statuses the database actually stores', () => {
+    expect(parseReadinessStatuses('missing_required_angle'))
+      .toEqual({ statuses: ['missing_required_angle'], invalid: [] });
+    expect(parseReadinessStatuses('missing_required_angle,upload_incomplete'))
+      .toEqual({ statuses: ['missing_required_angle', 'upload_incomplete'], invalid: [] });
+    expect(parseReadinessStatuses(' missing_defect_photo , complete '))
+      .toEqual({ statuses: ['missing_defect_photo', 'complete'], invalid: [] });
+  });
+
+  it('treats an absent or empty filter as no filter', () => {
+    for (const raw of [undefined, '', ',,', 42, null]) {
+      expect(parseReadinessStatuses(raw)).toEqual({ statuses: null, invalid: [] });
+    }
+  });
+
+  // THE REGRESSION. Passing this through returns zero rows and a zero total,
+  // which reads exactly like a cleared backlog.
+  it('refuses an unrecognised status instead of reporting an empty backlog', () => {
+    expect(parseReadinessStatuses('not_a_real_status'))
+      .toEqual({ statuses: null, invalid: ['not_a_real_status'] });
+    // One bad value poisons the whole filter — a partially-applied filter would
+    // report a total for a different question than the one asked.
+    expect(parseReadinessStatuses('missing_required_angle,nonsense'))
+      .toEqual({ statuses: null, invalid: ['nonsense'] });
+  });
+
+  it('rejects an attempt to smuggle SQL through the filter', () => {
+    const { statuses, invalid } = parseReadinessStatuses("complete'; drop table listing_prep; --");
+    expect(statuses).toBeNull();
+    expect(invalid).toHaveLength(1);
+  });
+
+  it('carries an invalid filter as a stable client contract', () => {
+    const failure = panelFailure('invalid_status', 400);
+    expect(failure.status).toBe(400);
+    expect(failure.body.code).toBe('invalid_status');
+    for (const forbidden of FORBIDDEN_IN_CLIENT_PAYLOAD) {
+      expect(JSON.stringify(failure.body)).not.toContain(forbidden);
+    }
+  });
+
+  it('bounds the page window and falls back rather than throwing', () => {
+    expect(parsePageWindow('50', '100')).toEqual({ limit: 50, offset: 100 });
+    expect(parsePageWindow(undefined, undefined)).toEqual({ limit: 50, offset: 0 });
+    expect(parsePageWindow('abc', 'abc')).toEqual({ limit: 50, offset: 0 });
+    // A negative offset would page backwards past the start.
+    expect(parsePageWindow('10', '-5')).toEqual({ limit: 10, offset: 0 });
+    // An unbounded limit is a denial-of-service shaped like a query.
+    expect(parsePageWindow('100000', '0')).toEqual({ limit: 200, offset: 0 });
+    expect(parsePageWindow('0', '0')).toEqual({ limit: 50, offset: 0 });
   });
 });

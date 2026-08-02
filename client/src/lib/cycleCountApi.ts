@@ -16,7 +16,12 @@ export interface CycleCountTransport {
  observations(id:string):Promise<readonly CurrentObservation[]>;
  voidObservation(id:string,observationId:string,subjectKind:'item'|'lot',reason:string,key:string):Promise<Record<string,unknown>>;
 /** Scope of a new count. Blind unless the operator deliberately says otherwise. */
- create(scope:CycleCountScope):Promise<{id:string;public_id:string;status:string;outcome?:string}>;
+ /**
+  * `idempotency_conflict` carries no session: the key was reused for a request
+  * that is not the one it belongs to, and the database refuses to hand back a
+  * count over a scope the operator has since changed.
+  */
+ create(scope:CycleCountScope):Promise<{id?:string;public_id?:string;status?:string;outcome?:string;code?:string}>;
  start(id:string):Promise<Record<string,unknown>>;
  submit(id:string,confirm:boolean):Promise<Record<string,unknown>>;
  selectRecount(id:string,discrepancyIds:string[],reason:string):Promise<Record<string,unknown>>;
@@ -63,7 +68,7 @@ export function createCycleCountTransport(client:SupabaseClient<never,never,neve
       p_blind_count:scope.blindCount !== false,
       p_notes:scope.notes ?? null,
     });
-    return result as unknown as {id:string;public_id:string;status:string;outcome?:string};
+    return result as unknown as {id?:string;public_id?:string;status?:string;outcome?:string;code?:string};
   },
   start:(id)=>rpc('start_cycle_count',{p_session_id:id}),
   submit:(id,confirm)=>rpc('submit_cycle_count_round',{p_session_id:id,p_confirm_uncounted:confirm}),

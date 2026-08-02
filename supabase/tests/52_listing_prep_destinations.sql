@@ -47,20 +47,24 @@ select pg_temp.put('a', (public.mint_serialized_item('fc000000-0000-4000-8000-00
 select pg_temp.put('b', (public.mint_serialized_item('fc000000-0000-4000-8000-000000000001', pg_temp.get('lot'), null, null, 'D-B')->>'id')::uuid);
 select pg_temp.put('c', (public.mint_serialized_item('fc000000-0000-4000-8000-000000000001', pg_temp.get('lot'), null, null, 'D-C')->>'id')::uuid);
 
--- NEVER STARTED --------------------------------------------------------------------
+-- NO ACTIVE PREPARATION -------------------------------------------------------------
 -- The tile counted `not exists against listing_prep`; the destination read
 -- listing_prep rows. One view now feeds both.
-select is(pg_temp.summary('never_started'), 3,
-  'all three items start as never-started candidates');
+--
+-- The population is named for what it actually is. It admits records whose
+-- earlier preparation was listed or cancelled, so calling it "never started"
+-- was false about their history -- see the repeat-preparation assertions below.
+select is(pg_temp.summary('no_active_preparation'), 3,
+  'all three items start with no active preparation');
 select is(
   ((public.list_listing_prep_candidates('fc000000-0000-4000-8000-000000000001'))->>'total')::int,
-  pg_temp.summary('never_started'),
-  'the never-started tile and its destination report the same total');
+  pg_temp.summary('no_active_preparation'),
+  'the tile and its destination report the same total');
 
 select pg_temp.put('prep_a', (public.start_listing_prep(
   'fc000000-0000-4000-8000-000000000001', 'item', pg_temp.get('a'))->>'id')::uuid);
 
-select is(pg_temp.summary('never_started'), 2,
+select is(pg_temp.summary('no_active_preparation'), 2,
   'starting a preparation removes that record from the candidate count');
 select is(
   ((public.list_listing_prep_candidates('fc000000-0000-4000-8000-000000000001'))->>'total')::int,
@@ -82,11 +86,22 @@ select ok(
      where (r->>'subject_id')::uuid = pg_temp.get('lot')),
   'a serialized parent lot is never offered as a listing candidate');
 
--- A cancelled preparation frees the record to be a candidate again.
+-- REPEAT PREPARATION ----------------------------------------------------------------
+-- Why the population is NOT called "never started". A cancelled preparation
+-- frees the record to be prepared again, and so does a completed listing: stock
+-- comes back, a listing ends, and the record genuinely needs preparing afresh.
+-- Both records below have a listing_prep history, and both belong here.
 select public.transition_listing_prep('fc000000-0000-4000-8000-000000000001',
   pg_temp.get('prep_a'), 'cancelled', 'starting over');
-select is(pg_temp.summary('never_started'), 3,
+select is(pg_temp.summary('no_active_preparation'), 3,
   'a cancelled preparation returns the record to the candidate population');
+
+select ok(
+  exists (
+    select 1 from public.listing_prep lp
+     where lp.workspace_id = 'fc000000-0000-4000-8000-000000000001'
+       and lp.item_id = pg_temp.get('a')),
+  'that record demonstrably has a preparation history, so "never started" would be false of it');
 
 -- REGRESSED READY --------------------------------------------------------------------
 -- Take a record all the way to ready, then break it, and prove the tile and the
@@ -193,6 +208,49 @@ select is(
            'needs_price', 'needs_content', 'needs_owner_review']))->>'total')::int,
   pg_temp.summary('regressed_ready'),
   'the regressed destination contains exactly the regressed count');
+
+-- A LISTED record returns to the population ------------------------------------------
+-- The decisive case for the naming. Item B has been prepared all the way and
+-- listed; when that listing ends the record is sellable again and needs
+-- preparing afresh, so it belongs in this population -- and it has plainly not
+-- "never started".
+-- Re-photograph what was deleted above, so the record is genuinely ready again
+-- rather than being listed while regressed.
+do $$
+declare r record; i int := 0;
+begin
+  for r in select slot_key, slot_label from public.inventory_media_requirements
+            where subtype = 'raw_card' and is_required loop
+    i := i + 1;
+    perform pg_temp.photograph(r.slot_key, r.slot_label,
+      ('fc0bbbbb-000' || i || '-4000-8000-000000000001')::uuid);
+  end loop;
+end $$;
+
+select is(pg_temp.summary('regressed_ready'), 0,
+  'restoring the photograph clears the regression, with no status change');
+
+-- Through the governed listing path, not a raw status transition: the
+-- lifecycle deliberately refuses `transition_listing_prep(..., 'listed', ...)`.
+select public.mark_listing_prep_listed('fc000000-0000-4000-8000-000000000001',
+  pg_temp.get('prep_b'), 'EXT-LISTING-1');
+
+select is(
+  (select status::text from public.listing_prep where id = pg_temp.get('prep_b')),
+  'listed',
+  'the preparation reached listed');
+
+select ok(
+  exists (
+    select 1 from jsonb_array_elements(
+      (public.list_listing_prep_candidates('fc000000-0000-4000-8000-000000000001'))->'rows') r
+     where (r->>'subject_id')::uuid = pg_temp.get('b')),
+  'a record whose preparation was listed is offered for preparation again');
+
+select is(
+  ((public.list_listing_prep_candidates('fc000000-0000-4000-8000-000000000001'))->>'total')::int,
+  pg_temp.summary('no_active_preparation'),
+  'and the tile still matches its destination after that repeat becomes possible');
 
 -- No overload was added to the queue function ---------------------------------------
 -- Amendment: broadening the status list is a caller decision. A second

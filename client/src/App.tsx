@@ -154,7 +154,7 @@ function FirstRunGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function ToolsNavGroup() {
+function ToolsNavGroup({ onNavigate }: { onNavigate?: () => void }) {
   const [open, setOpen] = useState(false);
   const items = [...LEGACY_NAV, ...TOOLS_NAV];
   return (
@@ -162,6 +162,7 @@ function ToolsNavGroup() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
         className="flex w-full items-center justify-between rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted hover:text-ink"
       >
         Tools &amp; legacy
@@ -170,7 +171,7 @@ function ToolsNavGroup() {
       {open && (
         <div className="flex flex-col gap-0.5">
           {items.map((item) => (
-            <NavLink key={item.to} to={item.to} className={navLinkClass}>
+            <NavLink key={item.to} to={item.to} className={navLinkClass} onClick={onNavigate}>
               <item.icon className="h-4 w-4 shrink-0" />
               {item.label}
             </NavLink>
@@ -196,14 +197,18 @@ function NavigationPanel({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       </div>
       {PROVENANCE_ENABLED && <WorkspaceHeader />}
-      <nav className="flex-1 py-3 px-2 flex flex-col gap-0.5" onClick={onNavigate}>
+      {/* The close handler belongs on each destination, not on the <nav>.
+          Anything else inside the panel — the "Tools & legacy" toggle, the
+          workspace switcher, the sign-out button — would bubble to the nav and
+          shut the drawer before the operator could use what they just opened. */}
+      <nav className="flex-1 py-3 px-2 flex flex-col gap-0.5">
         {(PROVENANCE_ENABLED ? PRIMARY_NAV : LEGACY_ONLY_NAV).map((item) => (
-          <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass}>
+          <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass} onClick={onNavigate}>
             <item.icon className="h-4 w-4 shrink-0" />
             {item.label}
           </NavLink>
         ))}
-        {PROVENANCE_ENABLED && <ToolsNavGroup />}
+        {PROVENANCE_ENABLED && <ToolsNavGroup onNavigate={onNavigate} />}
       </nav>
       <div className="px-4 py-3 border-t border-hairline text-xs text-ink-muted">
         Add inventory → link cost → list → record sale
