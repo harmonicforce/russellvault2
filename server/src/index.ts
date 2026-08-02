@@ -23,6 +23,7 @@ import locationsRouter from './routes/locations.js';
 import cycleCountsRouter from './routes/cycleCounts.js';
 import mediaRouter from './routes/media.js';
 import listingPrepRouter from './routes/listingPrep.js';
+import operationsDashboardRouter from './routes/operationsDashboard.js';
 
 seedIfEmpty();
 migrateProductType();
@@ -77,6 +78,7 @@ app.use('/api/media', mediaRouter);
 // Listing Prep. The operational layer between inventory and creating a listing
 // elsewhere: it publishes nothing and moves no stock. Same gates as above.
 app.use('/api/listing-prep', listingPrepRouter);
+app.use('/api/operations-dashboard', operationsDashboardRouter);
 
 app.use('/api', legacyWriteGuard);
 
