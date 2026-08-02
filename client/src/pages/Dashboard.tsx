@@ -53,12 +53,20 @@ function WorkspaceSummarySection() {
         <PanelState query={health} label="Inventory Health">
           {health.data && <section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Inventory Health</h3><p className="text-xs text-ink-muted mb-3">As of {new Date(health.data.asOf).toLocaleString()}</p><div className="grid grid-cols-2 gap-2">
             <StatTile label="Serialized units" value={num(health.data.serializedUnits)} icon={<Boxes className="h-4 w-4"/>}/><StatTile label="Lot-managed units" value={num(health.data.lotManagedUnits)} sub={`${num(health.data.lotManagedRecords)} active records`} icon={<Package className="h-4 w-4"/>}/>
-            <Link to="/inventory/current?needsLocation=true" className="col-span-2"><StatTile label="Records without location" value={num(health.data.withoutLocation)} icon={<MapPin className="h-4 w-4"/>} tone={health.data.withoutLocation ? 'warning' : 'good'}/></Link>
+            <Link to="/inventory/current?needsLocation=1" className="col-span-2"><StatTile label="Records without location" value={num(health.data.withoutLocation)} icon={<MapPin className="h-4 w-4"/>} tone={health.data.withoutLocation ? 'warning' : 'good'}/></Link>
           </div></section>}
         </PanelState>
-        <PanelState query={workflows} label="Workflow Backlogs"><section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Workflow Backlogs</h3><p className="mt-2 text-sm text-ink-secondary">Media readiness and Listing Prep are aggregated on the server. Open the Workbench for the governed queues.</p><Link to="/workbench" className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-accent-strong">Open Daily Workbench <ArrowRight className="h-4 w-4"/></Link></section></PanelState>
+        <PanelState query={workflows} label="Workflow Backlogs">{workflows.data && <section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Workflow Backlogs</h3><p className="text-xs text-ink-muted mb-3">As of {new Date(workflows.data.asOf).toLocaleString()}</p><div className="grid grid-cols-2 gap-2 text-sm">
+          <BacklogLink to="/inventory/current?needsPhotos=1" label="Missing photo work" value={workflows.data.media.counts.missing_required_angle ?? 0}/>
+          <BacklogLink to="/photo-issues" label="Open Photo Issues" value={workflows.data.media.open_issue_count ?? 0}/>
+          <BacklogLink to="/listing-prep?tab=ready" label="Ready to list" value={workflows.data.listingPrep.by_status.ready_to_list ?? 0}/>
+          <BacklogLink to="/listing-prep?tab=queue&readiness=needs_owner_review" label="Needs owner review" value={workflows.data.listingPrep.by_readiness.needs_owner_review ?? 0}/>
+          <BacklogLink to="/listing-prep?tab=queue&readiness=needs_photos" label="Prep needs photos" value={workflows.data.listingPrep.by_readiness.needs_photos ?? 0}/>
+          <BacklogLink to="/listing-prep?tab=queue&readiness=blocked" label="Blocked" value={workflows.data.listingPrep.by_readiness.blocked ?? 0}/>
+          <BacklogLink to="/listing-prep?tab=queue" label="Never started" value={workflows.data.listingPrep.never_started ?? 0}/>
+        </div></section>}</PanelState>
       </div>
-      <PanelState query={activity} label="Recent Activity">{activity.data && <section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Recent Activity</h3><p className="text-xs text-ink-muted">Source: {activity.data.source} · as of {new Date(activity.data.asOf).toLocaleString()}</p><div className="mt-2 divide-y divide-hairline">{activity.data.events.slice(0, 6).map(event => <Link key={event.id} to={event.destination} className="flex justify-between py-2 text-sm hover:underline"><span>Inventory moved · {event.public_id}</span><span>{shortDate(event.moved_at)}</span></Link>)}{!activity.data.events.length && <p className="py-3 text-sm text-ink-muted">No governed movement events yet.</p>}</div></section>}</PanelState>
+      <PanelState query={activity} label="Recent Movements">{activity.data && <section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Recent Movements</h3><p className="text-xs text-ink-muted">Source: {activity.data.source} · as of {new Date(activity.data.asOf).toLocaleString()}</p><div className="mt-2 divide-y divide-hairline">{activity.data.events.slice(0, 6).map(event => <Link key={event.id} to={event.destination} className="flex justify-between py-2 text-sm hover:underline"><span>Inventory moved · {event.public_id}</span><span>{shortDate(event.moved_at)}</span></Link>)}{!activity.data.events.length && <p className="py-3 text-sm text-ink-muted">No governed movement events yet.</p>}</div></section>}</PanelState>
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() => navigate('/quick-add')}
@@ -87,6 +95,10 @@ function WorkspaceSummarySection() {
       </div>
     </div>
   );
+}
+
+function BacklogLink({ to, label, value }: { to: string; label: string; value: number }) {
+  return <Link to={to} className="flex items-center justify-between rounded-lg border border-hairline p-2 hover:bg-surface-2"><span>{label}</span><strong className="tabular-nums">{num(value)}</strong></Link>;
 }
 
 function PanelState({ query, label, children }: { query: { isLoading: boolean; error: Error | null }; label: string; children: ReactNode }) {
@@ -118,13 +130,13 @@ export default function Dashboard() {
     () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
     []
   );
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => get<DashboardData>('/dashboard'),
   });
 
   if (isLoading || !data) {
-    return <div className="p-6 text-ink-muted">Loading dashboard…</div>;
+    return <div className="p-6 flex flex-col gap-6 max-w-[1400px]"><div><h1 className="text-2xl font-semibold">Today at a glance</h1></div>{config && <WorkspaceSummarySection />}<section aria-label="Legacy spreadsheet-imported inventory" className="text-sm text-ink-muted">{error ? 'Legacy dashboard unavailable.' : 'Loading legacy spreadsheet-imported inventory…'}</section></div>;
   }
 
   const maxVerticalValue = Math.max(1, ...data.topVerticals.map((v) => v.value));

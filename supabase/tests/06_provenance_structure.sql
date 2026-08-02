@@ -411,11 +411,12 @@ select is(
 -- + the multi-category / media / movement / read-model additions (5)
 -- + the cycle-count layer (20260729 x4, 20260730 x5, 20260731 x1)
 -- + the media hardening layer (20260801 x4)
--- + the listing prep layer (20260801 x4) ------------------------------------
+-- + the listing prep layer (20260801 x4)
+-- + the operations dashboard contracts (20260801 x1) -----------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  55,
-  'fifty-five migrations are recorded, including the listing prep layer'
+  56,
+  'fifty-six migrations are recorded, including the operations dashboard contracts'
 );
 
 select results_eq(
@@ -475,8 +476,9 @@ select results_eq(
     ('20260801000500_listing_prep_schema'),
     ('20260801000600_listing_prep_readiness'),
     ('20260801000700_listing_prep_lifecycle'),
-    ('20260801000800_listing_prep_bulk_and_presets')$$,
-  'the earlier-phase migrations are unmodified and the listing prep migrations follow them'
+    ('20260801000800_listing_prep_bulk_and_presets'),
+    ('20260801000900_operations_dashboard_contracts')$$,
+  'the earlier-phase migrations are unmodified and the dashboard contracts follow them'
 );
 
 select * from finish();
