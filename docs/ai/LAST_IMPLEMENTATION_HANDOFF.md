@@ -3,59 +3,43 @@
 ## Surrender state
 
 - Repository/canonical branch: `harmonicforce/russellvault2`, `main`
-- Base SHA: `2365b2dcdcb15923b0e58e800e8b80c14b5cc94b`
-- Base provenance limitation: this checkout had no `origin` remote and no local `main` ref; the base is the clean checked-out merge commit described by the repository as canonical main. `git fetch origin main` could not run.
-- Implementation branch: `fix/permanent-label-location`
-- Final branch SHA: head of `fix/permanent-label-location`
-- Pull request: focused draft metadata prepared after commit; not merged
-- Migrations/database/server changes: none
-- Live Supabase: not checked and unchanged
-- Railway/deployment/`/api/version`: not authorized, not checked, and unchanged
-- Hosted acceptance: not run because deployment was not authorized
-- Production data touched: none
-- `docs/ai/CURRENT_STATE.md`: not edited
+- Available base SHA: `a0f47470778cce7cd9a48ff872174871e78bb69d` (`Draft: Correct operational dashboard contracts`); its parent is `fba3ed1`, the local PR #29 merge. On the 2026-08-02 recheck the task checkout still contained no remote refs or PR #31 objects. The configured repository integration was unavailable, so updated remote `main`, PR #30/#31 state, later fixes, and commit `ad3ed0e4c12eb0ebcf5e78658d940b600990e856` could not be independently compared. No Workbench-owned files were modified or reconstructed.
+- Implementation branch: `codex/correct-operational-dashboard-contracts`
+- Final branch SHA: see the draft PR head/final report (this handoff is committed with the implementation).
+- Pull request: draft metadata created after commit; no merge authorized.
+- Migration: `20260801000900_operations_dashboard_contracts.sql`; repository-only, not applied live.
+- Live Supabase, Railway, `/api/version`, hosted acceptance: not authorized and not checked.
+- Production data/configuration/secrets touched: none.
+- `docs/ai/CURRENT_STATE.md`: not edited.
 
-## Implemented owner-visible change
+## Confirmed defects fixed
 
-Permanent item and lot labels no longer accept or render location names or codes. This applies to the shared label model and renderer used by Current Inventory, Item Detail, Lot Detail, Batch Intake, and Bulk Move. Compact (50 × 25 mm), standard/address (89 × 36 mm), and full-page test-sheet formats all use that renderer, so preview and browser print output have identical durable-only content.
+- Governed panels now mount while the legacy dashboard request is pending or failed.
+- Inventory Health uses one membership-checked server aggregate over available current records. It excludes inactive items, inactive/absorbed/zero-quantity lots, and serialized parent lots, and returns exact lot count/unit totals without a PostgREST row response.
+- The work queue now considers active inventory and only `lifecycle = 'active'` media, so soft-deleted/reserved media does not satisfy missing-photo work.
+- Priority candidates are bounded independently to 20 per rule, deduplicated by task key, deterministically sorted, then globally limited to 20.
+- Canonical destinations are `needsLocation=1`, `needsPhotos=1`, `/inventory/current/:itemId`, and `/inventory/lots/:lotId`.
+- Dependency failures are explicit HTTP 503 `panel_unavailable` responses rather than empty successes.
 
-The metadata row now contains only the stable item public ID or the lot quantity and closes to a single right-aligned line. Barcode values, barcode dimensions, printed identifiers, label-size selection, physical dimensions, printer margins, and page-break behavior are unchanged. Inventory location fields, operational location UI, movements, quantity, and cycle-count behavior are unchanged.
+## Bounded incomplete behavior improved
 
-Before examples:
+- Workflow summaries now have a typed client contract and render governed Media/Photo Issues and Listing Prep counts with accepted filters.
+- The movement-only panel is labeled **Recent Movements**.
+- Priority copy identifies age points as inventory-record age, not exception age.
 
-- Lot: `Russell Vault / Evolving Skies Booster Box / SHELF A (S-A) / Qty 6 / [barcode] / RV-C-0000001234`
-- Item: `Russell Vault / Blastoise Base Set 2 / BIN 2 (BIN-2) / RV-ITEM-ABC123 / [barcode] / RV-7K3F9Q2`
+## Validation evidence
 
-After examples:
-
-- Lot: `Russell Vault / Evolving Skies Booster Box / Qty 6 / [barcode] / RV-C-0000001234`
-- Item: `Russell Vault / Blastoise Base Set 2 / RV-ITEM-ABC123 / [barcode] / RV-7K3F9Q2`
-
-## Files changed
-
-- `client/src/lib/labels.ts`: removed location from permanent label contracts and generated label views.
-- `client/src/components/InventoryPanels.tsx`: removed location output and collapsed the metadata row without a blank placeholder.
-- `client/src/pages/BatchIntake.tsx`: stopped passing mutable locations into label generation.
-- `client/src/lib/intakeCategories.test.ts`: proves item/lot label data excludes supplied location text while preserving stable identifiers and lot quantity.
-- `client/src/components/InventoryPanels.test.tsx`: rendered coverage for item and lot labels across compact, standard, and sheet formats, including barcode SVGs and prohibited location text.
-- `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`: this surrender record.
-
-## Verification evidence
-
-Commands run locally with checked exit codes:
-
-- `npm test --prefix client -- --run src/lib/intakeCategories.test.ts src/components/InventoryPanels.test.tsx`: 2 files, 37 tests passed, exit 0.
-- `npm test --prefix client`: 26 files, 367 tests passed, exit 0.
-- `npm run typecheck --prefix client`: passed, exit 0.
-- `npm run lint --prefix client`: exit 0 with seven pre-existing warnings in unrelated files.
-- `npm run build --prefix client`: passed, exit 0; Vite reported the existing large-chunk advisory.
-- `git diff --check`: passed, exit 0.
-
-Server tests were not run because no server-side label code changed. There is no Playwright/browser dependency or installed browser in this checkout, so no screenshot or browser automation was captured; rendered jsdom coverage exercises the shared preview/print DOM for every supported size.
+- PR #32/#33 CI repair: `supabase/tests/49_operations_dashboard.sql` evaluates both view-definition patterns with PostgreSQL's native `~` operator and passes only booleans to pgTAP's portable `ok(boolean, description)` assertion. This avoids the incompatible `like` and `matches` text overloads exposed by the two harnesses. Production SQL was not changed.
+- `npm run typecheck`: passed, server and client.
+- Focused tests: server 3 passed; client transport 2 passed.
+- Rendered Dashboard regression tests: 3 passed, covering legacy pending/failure resilience, governed workflow values, canonical task/activity links, and four-panel refresh.
+- `npm run test`: server 27 files/396 tests, client 27 files/369 tests, guard/audit 23 tests; passed.
+- `npm run lint`: exit 0 with seven pre-existing warnings.
+- `npm run build:ci`: passed; existing Vite large-chunk advisory remains.
+- `npm run db:reset && npm run db:test`: blocked before reset because `psql` is absent (`spawnSync psql ENOENT`). The new migration therefore lacks local pgTAP execution evidence in this container.
+- Exact-head GitHub CI and screenshot/browser validation: not available in this task environment.
+- 2026-08-02 database reproduction limitation: both isolated harness runs were attempted from the exact supplied PR head, but this container has neither `psql` nor Docker. Installing PostgreSQL/pgTAP was blocked by the environment package proxy (HTTP 403). Therefore isolated test-49 runtime, full-suite timing, slowest-query evidence, and Supabase-stack plans must be obtained from PR CI; the 12-minute workflow timeout was deliberately left unchanged pending successful timing evidence.
 
 ## Limitations and next decision
 
-- CI run IDs/conclusions: not available from this checkout because no Git remote is configured.
-- Live schema parity: not checked; no schema changes exist.
-- Rollback: revert the single implementation commit on `fix/permanent-label-location`.
-- Exact next owner decision: review the focused draft PR and, after external CI is green on its exact head, decide whether to merge it to `main`.
+No saved views, configurable priority weights, cost/value intelligence, or broad activity union was added. The Workbench-owned files and behavior were not modified. Rollback is a revert of this corrective commit and its unapplied migration. The owner must decide whether to accept the focused draft for CI/database-tier review; do not merge or deploy until the exact PR head has required CI and migration validation.
