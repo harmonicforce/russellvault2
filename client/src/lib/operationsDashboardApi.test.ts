@@ -13,7 +13,14 @@ describe('operations dashboard transport', () => {
     const fetchMock = vi.fn().mockResolvedValue(json({ asOf: '2026-08-01T00:00:00Z', serializedUnits: 2, lotManagedRecords: 1, lotManagedUnits: 4, withoutLocation: 0 }, 200));
     vi.stubGlobal('fetch', fetchMock);
     await createOperationsDashboardTransport(async () => 'caller-token').health('workspace A');
-    expect(fetchMock).toHaveBeenCalledWith('/api/operations-dashboard/health?workspaceId=workspace%20A', { headers: { authorization: 'Bearer caller-token' } });
+    const [url, init] = fetchMock.mock.calls[0];
+    // Asserted through the parser rather than as a literal: URLSearchParams
+    // encodes a space as '+', which decodes identically server-side, and the
+    // guarantee that matters is the workspace and token that were sent.
+    const parsed = new URL(url as string, 'http://test.local');
+    expect(parsed.pathname).toBe('/api/operations-dashboard/health');
+    expect(parsed.searchParams.get('workspaceId')).toBe('workspace A');
+    expect(init).toEqual({ headers: { authorization: 'Bearer caller-token' } });
   });
 
   // The whole point of the panel contract: a dependency that failed is never
@@ -67,5 +74,25 @@ describe('operations dashboard transport', () => {
   it('still accepts the older detail-only failure shape', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ detail: 'database unavailable' }, 400)));
     await expect(transport().health('workspace')).rejects.toThrow('database unavailable');
+  });
+});
+
+describe('media readiness drill-down', () => {
+  it('sends the requested status so the page matches the tile that linked to it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ asOf: 'now', total: 0, limit: 50, offset: 0, rows: [] }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    await transport().mediaReadiness('ws-1', ['missing_required_angle']);
+    const parsed = new URL(fetchMock.mock.calls[0][0] as string, 'http://test.local');
+    expect(parsed.pathname).toBe('/api/operations-dashboard/media-readiness');
+    expect(parsed.searchParams.get('workspaceId')).toBe('ws-1');
+    expect(parsed.searchParams.get('status')).toBe('missing_required_angle');
+  });
+
+  it('omits the status filter entirely when none is requested', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ asOf: 'now', total: 0, limit: 50, offset: 0, rows: [] }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    await transport().mediaReadiness('ws-1');
+    const parsed = new URL(fetchMock.mock.calls[0][0] as string, 'http://test.local');
+    expect(parsed.searchParams.has('status')).toBe(false);
   });
 });

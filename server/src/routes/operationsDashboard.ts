@@ -91,12 +91,35 @@ router.get('/work', requireMember, run(async (req, res) => {
 
 router.get('/workflows', requireMember, run(async (req, res) => {
   const { client, workspaceId } = caller(req);
+  // get_operations_media_backlog is EXACT: `no_active_photo` counts the whole
+  // work queue rather than the twenty candidates /work returns, so the tile
+  // cannot understate a real backlog.
   const [media, prep] = await Promise.all([
-    client.rpc('get_media_readiness_summary' as never, { p_workspace_id: workspaceId } as never),
+    client.rpc('get_operations_media_backlog' as never, { p_workspace_id: workspaceId } as never),
     client.rpc('get_listing_prep_summary' as never, { p_workspace_id: workspaceId } as never),
   ]);
   if (media.error || prep.error) return fail(res, 'workflows', media.error?.message ?? prep.error!.message);
   res.json({ asOf: new Date().toISOString(), media: media.data, listingPrep: prep.data });
+}));
+
+/**
+ * The destination for "missing required angles". A record can hold a front
+ * photograph and still owe its back, label or condition shot, so this is a
+ * different population from the no-active-photo filter and needs its own page.
+ */
+router.get('/media-readiness', requireMember, run(async (req, res) => {
+  const { client, workspaceId } = caller(req);
+  const statuses = typeof req.query.status === 'string' && req.query.status.length > 0
+    ? req.query.status.split(',').filter(Boolean)
+    : null;
+  const { data, error } = await client.rpc('list_current_media_readiness' as never, {
+    p_workspace_id: workspaceId,
+    p_statuses: statuses,
+    p_limit: Number.parseInt(String(req.query.limit ?? '50'), 10) || 50,
+    p_offset: Number.parseInt(String(req.query.offset ?? '0'), 10) || 0,
+  } as never);
+  if (error) return fail(res, 'media-readiness', error.message);
+  res.json({ asOf: new Date().toISOString(), ...(data as object) });
 }));
 
 router.get('/activity', requireMember, run(async (req, res) => {

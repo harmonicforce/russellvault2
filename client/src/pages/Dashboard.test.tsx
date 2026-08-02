@@ -17,7 +17,7 @@ vi.mock('../lib/operationsDashboardApi', () => ({
   createOperationsDashboardTransport: () => ({
     health: async () => { calls.health++; return { asOf: '2026-08-01T00:00:00Z', serializedUnits: 2, lotManagedRecords: 1, lotManagedUnits: 4, withoutLocation: 1 }; },
     work: async () => { calls.work++; return { asOf: '2026-08-01T00:00:00Z', definition: 'inventory age', tasks: [{ taskType: 'missing_location', subjectKind: 'item', subjectId: 'i1', publicId: 'RV-I1', displayName: 'Charizard', reason: 'No active storage location is recorded.', ageDays: 3, severity: 'high', score: 83, scoreExplanation: '80 rule weight + 3 age points', destination: '/inventory/current?needsLocation=1' }] }; },
-    workflows: async () => { calls.workflows++; return { asOf: '2026-08-01T00:00:00Z', media: { counts: { missing_required_angle: 3 }, open_issue_count: 2 }, listingPrep: { by_status: { ready_to_list: 4 }, by_readiness: { needs_owner_review: 1, needs_photos: 5, blocked: 2 }, never_started: 6 } }; },
+    workflows: async () => { calls.workflows++; return { asOf: '2026-08-01T00:00:00Z', media: { no_active_photo: 7, by_readiness: { missing_required_angle: 3 }, open_issue_count: 2 }, listingPrep: { by_status: { ready_to_list: 4 }, by_readiness: { needs_owner_review: 1, needs_photos: 5, blocked: 2 }, never_started: 6 } }; },
     activity: async () => { calls.activity++; return { asOf: '2026-08-01T00:00:00Z', source: 'immutable inventory_movements', events: [{ id: 'm1', public_id: 'RV-M1', eventType: 'inventory_moved', moved_at: '2026-08-01T00:00:00Z', destination: '/inventory/current/i1' }, { id: 'm2', public_id: 'RV-M2', eventType: 'inventory_moved', moved_at: '2026-08-01T00:00:00Z', destination: '/inventory/lots/l1' }] }; },
   }),
 }));
@@ -53,7 +53,15 @@ describe('operational Dashboard', () => {
     renderDashboard();
     expect(await screen.findByText('Ready to list')).toBeTruthy();
     expect(screen.getByRole('link', { name: /Records without location/ }).getAttribute('href')).toBe('/inventory/current?needsLocation=1');
-    expect(screen.getByRole('link', { name: /Missing photo work/ }).getAttribute('href')).toBe('/inventory/current?needsPhotos=1');
+    // Two populations, two destinations. "No photo yet" is the exact
+    // no-active-photo count and opens the filter that contains exactly those
+    // records; "Missing required angles" is a different, larger question and
+    // must not be sent to the same page.
+    expect(screen.getByRole('link', { name: /No photo yet/ }).getAttribute('href')).toBe('/inventory/current?needsPhotos=1');
+    expect(screen.getByRole('link', { name: /No photo yet/ }).textContent).toContain('7');
+    expect(screen.getByRole('link', { name: /Missing required angles/ }).getAttribute('href'))
+      .toBe('/photo-issues?tab=readiness&status=missing_required_angle');
+    expect(screen.getByRole('link', { name: /Missing required angles/ }).textContent).toContain('3');
     expect(screen.getByRole('link', { name: /Inventory moved · RV-M1/ }).getAttribute('href')).toBe('/inventory/current/i1');
     expect(screen.getByRole('link', { name: /Inventory moved · RV-M2/ }).getAttribute('href')).toBe('/inventory/lots/l1');
     fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));

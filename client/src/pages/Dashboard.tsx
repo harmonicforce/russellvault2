@@ -57,7 +57,11 @@ function WorkspaceSummarySection() {
           </div></section>}
         </PanelState>
         <PanelState query={workflows} label="Workflow Backlogs">{workflows.data && <section className="rounded-xl border border-hairline bg-surface-1 p-4"><h3 className="font-semibold">Workflow Backlogs</h3><p className="text-xs text-ink-muted mb-3">As of {new Date(workflows.data.asOf).toLocaleString()}</p><div className="grid grid-cols-2 gap-2 text-sm">
-          <BacklogLink to="/inventory/current?needsPhotos=1" label="Missing photo work" value={workflows.data.media.counts.missing_required_angle ?? 0}/>
+          {/* Two different populations, two different destinations. A record
+              can hold a front photograph and still owe its back, label or
+              condition shot, so one tile cannot honestly cover both. */}
+          <BacklogLink to="/inventory/current?needsPhotos=1" label="No photo yet" value={workflows.data.media.no_active_photo ?? 0}/>
+          <BacklogLink to="/photo-issues?tab=readiness&status=missing_required_angle" label="Missing required angles" value={workflows.data.media.by_readiness.missing_required_angle ?? 0}/>
           <BacklogLink to="/photo-issues" label="Open Photo Issues" value={workflows.data.media.open_issue_count ?? 0}/>
           <BacklogLink to="/listing-prep?tab=ready" label="Ready to list" value={workflows.data.listingPrep.by_status.ready_to_list ?? 0}/>
           <BacklogLink to="/listing-prep?tab=queue&readiness=needs_owner_review" label="Needs owner review" value={workflows.data.listingPrep.by_readiness.needs_owner_review ?? 0}/>

@@ -91,10 +91,14 @@ select
   -- display and counts every lifecycle; this is the operational fact.
   (select count(*) from public.inventory_media m
     where m.item_id = i.id and m.lifecycle = 'active') as active_media_count,
-  -- THE authoritative no-active-photo predicate, written once per grain
-  -- and identical to inventory_work_queue.needs_photos.
-  not exists (select 1 from public.inventory_media m
-               where m.item_id = i.id and m.lifecycle = 'active') as needs_photos
+  -- THE authoritative no-active-photo predicate, written once per grain and
+  -- identical to inventory_work_queue.needs_photos -- INCLUDING its current-
+  -- stock scope. Without that scope the overviews, which deliberately retain
+  -- historical records so detail pages resolve, would offer a depleted lot or
+  -- a retired item as photo work the dashboard never counted.
+  (i.item_state = 'active'
+   and not exists (select 1 from public.inventory_media m
+                    where m.item_id = i.id and m.lifecycle = 'active')) as needs_photos
 from public.inventory_items i
 join public.inventory_lots l on l.id = i.lot_id
 left join public.inventory_items replacement on replacement.id = i.superseded_by_item_id
@@ -170,10 +174,14 @@ select
   -- display and counts every lifecycle; this is the operational fact.
   (select count(*) from public.inventory_media m
     where m.lot_id = l.id and m.lifecycle = 'active') as active_media_count,
-  -- THE authoritative no-active-photo predicate, written once per grain
-  -- and identical to inventory_work_queue.needs_photos.
-  not exists (select 1 from public.inventory_media m
-               where m.lot_id = l.id and m.lifecycle = 'active') as needs_photos
+  -- THE authoritative no-active-photo predicate, written once per grain and
+  -- identical to inventory_work_queue.needs_photos -- INCLUDING its current-
+  -- stock scope. Without that scope the overviews, which deliberately retain
+  -- historical records so detail pages resolve, would offer a depleted lot or
+  -- a retired item as photo work the dashboard never counted.
+  (l.tracking_mode = 'lot_managed' and l.lot_state = 'active' and l.quantity > 0
+   and not exists (select 1 from public.inventory_media m
+                    where m.lot_id = l.id and m.lifecycle = 'active')) as needs_photos
 from public.inventory_lots l
 left join public.inventory_lots replacement on replacement.id = l.superseded_by_lot_id
 left join public.storage_locations loc on loc.id = l.location_id

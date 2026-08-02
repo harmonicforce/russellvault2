@@ -4,9 +4,37 @@ export interface HealthPanel { asOf: string; serializedUnits: number; lotManaged
 export interface WorkTask { taskType: string; subjectKind: string; subjectId: string; publicId: string; displayName: string; reason: string; ageDays: number; severity: string; score: number; scoreExplanation: string; destination: string }
 export interface WorkPanel { asOf: string; definition: string; tasks: WorkTask[] }
 export interface ActivityPanel { asOf: string; source: string; events: Array<{ id: string; public_id: string; eventType: string; moved_at: string; destination: string }> }
+export type MediaReadinessStatus =
+  'complete' | 'missing_required_angle' | 'missing_defect_photo' | 'media_review_needed' | 'upload_incomplete';
+
+export interface MediaReadinessRow {
+  subject_kind: 'item' | 'lot';
+  subject_id: string;
+  public_id: string;
+  display_name: string | null;
+  detail_line: string | null;
+  subtype: string | null;
+  readiness_status: MediaReadinessStatus;
+  active_count: number;
+  reserved_count: number;
+  open_issue_count: number;
+  missing_required_angles: string[];
+  missing_required_defect_photos: string[];
+}
+
+export interface MediaReadinessPage {
+  asOf: string; total: number; limit: number; offset: number; rows: MediaReadinessRow[];
+}
+
 export interface WorkflowPanel {
   asOf: string;
-  media: { counts: Partial<Record<'complete' | 'missing_required_angle' | 'missing_defect_photo' | 'media_review_needed' | 'upload_incomplete', number>>; open_issue_count: number };
+  media: {
+    /** Exact count of current stock with no live photograph at all. */
+    no_active_photo: number;
+    /** Current-stock readiness breakdown; a record here may already have photos. */
+    by_readiness: Partial<Record<MediaReadinessStatus, number>>;
+    open_issue_count: number;
+  };
   listingPrep: { by_status: Partial<Record<'not_started' | 'in_preparation' | 'blocked' | 'needs_review' | 'ready_to_list' | 'listed' | 'cancelled', number>>; by_readiness: Partial<Record<'ready' | 'needs_photos' | 'needs_condition_review' | 'needs_owner_review' | 'blocked', number>>; never_started: number };
 }
 
@@ -26,10 +54,17 @@ export class PanelError extends Error {
   }
 }
 
-async function request<T>(tokenProvider: TokenProvider, workspaceId: string, panel: string): Promise<T> {
+async function request<T>(
+  tokenProvider: TokenProvider, workspaceId: string, panel: string,
+  query: Record<string, string | undefined> = {},
+): Promise<T> {
   const token = await tokenProvider();
   if (!token) throw new PanelError('Sign in to load this panel.', 401, 'unauthenticated');
-  const res = await fetch(`/api/operations-dashboard/${panel}?workspaceId=${encodeURIComponent(workspaceId)}`, { headers: { authorization: `Bearer ${token}` } });
+  const search = new URLSearchParams({ workspaceId });
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') search.set(key, value);
+  }
+  const res = await fetch(`/api/operations-dashboard/${panel}?${search.toString()}`, { headers: { authorization: `Bearer ${token}` } });
   const body = await res.json().catch(() => ({})) as { message?: string; detail?: string; error?: string; code?: string };
   if (!res.ok) {
     // The route's own contract sends `message` + `code`. Shared middleware
@@ -49,5 +84,8 @@ export const createOperationsDashboardTransport = (token: TokenProvider) => ({
   health: (workspaceId: string) => request<HealthPanel>(token, workspaceId, 'health'),
   work: (workspaceId: string) => request<WorkPanel>(token, workspaceId, 'work'),
   workflows: (workspaceId: string) => request<WorkflowPanel>(token, workspaceId, 'workflows'),
+  mediaReadiness: (workspaceId: string, status?: readonly MediaReadinessStatus[]) =>
+    request<MediaReadinessPage>(token, workspaceId, 'media-readiness',
+      { status: status?.length ? status.join(',') : undefined }),
   activity: (workspaceId: string) => request<ActivityPanel>(token, workspaceId, 'activity'),
 });
