@@ -286,7 +286,9 @@ value as evidence.
 
 ## Files changed
 
-34 files, +3430 / −103 against `ac0441c`.
+As reported by GitHub for PR #36 at head `25c49d6`: **41 files changed,
++5306 / −213** against `ac0441c`, across 9 commits. (These are GitHub's figures,
+not a local diffstat.)
 
 Migrations added (four; no existing migration edited):
 
@@ -325,7 +327,16 @@ reported as passed that did not actually run.
   passed; DB guard 23/23 passed.
 - `npm run db:reset` then `npm run db:test` (**shim tier**) — replayed all 60
   migrations from empty; **54 files, 1625 assertions, all passed.**
+- `npm run build:ci` — exit 0 (Vite emitted its existing chunk-size advisory).
+- `node --test scripts/db/guard.test.mjs` — 9 passed.
+- `node --test scripts/ci/client-audit-gate.test.mjs` — 14 passed.
 - `git diff --check` — clean.
+
+**Exact-head CI, run `30765560756` on `25c49d6`: all four required jobs
+succeeded** — `build-and-verify`, `shadow-db-postgres-shim`,
+`shadow-db-supabase-stack`, `dev-advisory-report`. The Supabase CLI tier passed
+there, which is the only evidence for the tier that cannot be run in this
+environment.
 
 **One honest caveat about the shim run.** On the first attempt,
 `15_acquisition_digest_parity.sql` exceeded the runner's 600s per-file timeout
