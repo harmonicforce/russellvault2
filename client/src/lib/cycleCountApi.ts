@@ -15,6 +15,9 @@ export interface CycleCountTransport {
  attestItemAbsence(id:string,itemPublicId:string,attestation:'not_found'|'unable_to_count',reason:string,key:string):Promise<Record<string,unknown>>;
  observations(id:string):Promise<readonly CurrentObservation[]>;
  voidObservation(id:string,observationId:string,subjectKind:'item'|'lot',reason:string,key:string):Promise<Record<string,unknown>>;
+/** Scope of a new count. Blind unless the operator deliberately says otherwise. */
+ create(scope:CycleCountScope):Promise<{id:string;public_id:string;status:string;outcome?:string}>;
+ start(id:string):Promise<Record<string,unknown>>;
  submit(id:string,confirm:boolean):Promise<Record<string,unknown>>;
  selectRecount(id:string,discrepancyIds:string[],reason:string):Promise<Record<string,unknown>>;
  beginRecount(id:string,reason:string):Promise<Record<string,unknown>>;
@@ -27,6 +30,17 @@ export interface CycleCountTransport {
  complete(id:string,allowDeferred:boolean,note:string):Promise<Record<string,unknown>>;
  cancel(id:string,reason:string):Promise<Record<string,unknown>>;
 }
+export interface CycleCountScope {
+  rootLocationCode:string;
+  /** The database rejects a create without one; a retry must not open a second count. */
+  idempotencyKey:string;
+  includeDescendants?:boolean;
+  subtypeFilter?:string|null;
+  verticalFilter?:string|null;
+  blindCount?:boolean;
+  notes?:string|null;
+}
+
 export function createCycleCountTransport(client:SupabaseClient<never,never,never>,workspaceId:()=>string|null):CycleCountTransport {
  const db=client as unknown as {from(t:string):any;rpc(fn:string,args:Record<string,unknown>):PromiseLike<{data:any;error:{message:string}|null}>};
  const ws=()=>{const id=workspaceId();if(!id)throw new Error('No workspace selected.');return id};
@@ -39,6 +53,19 @@ export function createCycleCountTransport(client:SupabaseClient<never,never,neve
   attestItemAbsence:(id,itemPublicId,attestation,reason,key)=>rpc('attest_cycle_count_item_absence',{p_session_id:id,p_item_public_id:itemPublicId,p_attestation:attestation,p_reason:reason,p_idempotency_key:key}),
   async observations(id){return await rpc('list_current_cycle_count_observations',{p_session_id:id}) as unknown as CurrentObservation[]},
   voidObservation:(id,observationId,subjectKind,reason,key)=>rpc('void_cycle_count_observation',{p_session_id:id,p_observation_id:observationId,p_subject_kind:subjectKind,p_reason:reason,p_idempotency_key:key}),
+  async create(scope){
+    const result = await rpc('create_cycle_count_session',{
+      p_root_location_code:scope.rootLocationCode,
+      p_idempotency_key:scope.idempotencyKey,
+      p_include_descendants:scope.includeDescendants ?? false,
+      p_subtype_filter:scope.subtypeFilter ?? null,
+      p_vertical_filter:scope.verticalFilter ?? null,
+      p_blind_count:scope.blindCount !== false,
+      p_notes:scope.notes ?? null,
+    });
+    return result as unknown as {id:string;public_id:string;status:string;outcome?:string};
+  },
+  start:(id)=>rpc('start_cycle_count',{p_session_id:id}),
   submit:(id,confirm)=>rpc('submit_cycle_count_round',{p_session_id:id,p_confirm_uncounted:confirm}),
   selectRecount:(id,ids,reason)=>rpc('mark_cycle_count_discrepancies_for_recount',{p_session_id:id,p_discrepancy_ids:ids,p_reason:reason}),
   beginRecount:(id,reason)=>rpc('begin_cycle_count_recount',{p_session_id:id,p_reason:reason}),

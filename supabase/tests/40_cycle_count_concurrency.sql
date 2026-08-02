@@ -47,7 +47,8 @@ insert into cc_ids values('parent',(public.stage_inventory_lot('eeee0000-0000-40
 insert into cc_ids values('item',(public.mint_serialized_item('eeee0000-0000-4000-8000-000000000001',(select v from cc_ids where k='parent'),'PSA','EE-CERT',null)->>'id')::uuid);
 insert into cc_ids values('lot',(public.stage_inventory_lot('eeee0000-0000-4000-8000-000000000001','RV-C-9000000002',(select v from cc_ids where k='sku_lot'),'lot_managed',10,'L','test','1.0.0',null)->>'id')::uuid);
 create or replace function pg_temp.new_count(p_code text,p_desc boolean default false) returns uuid language plpgsql as $$declare x uuid;begin
- x:=(public.create_cycle_count('eeee0000-0000-4000-8000-000000000001',p_code,p_desc,null,null,true)->>'id')::uuid;
+ x:=(public.create_cycle_count_session('eeee0000-0000-4000-8000-000000000001',p_code,
+      gen_random_uuid(),p_desc,null,null,true)->>'id')::uuid;
  perform public.start_cycle_count('eeee0000-0000-4000-8000-000000000001',x);return x;end $$;
 reset role;commit;
 

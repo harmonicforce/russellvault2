@@ -416,8 +416,8 @@ select is(
 -- + the operations dashboard contracts (20260801 x1) -----------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  59,
-  'fifty-nine migrations are recorded, including the listing prep destinations repair'
+  60,
+  'sixty migrations are recorded, including the cycle count idempotency repair'
 );
 
 select results_eq(
@@ -481,7 +481,8 @@ select results_eq(
     ('20260801000900_operations_dashboard_contracts'),
     ('20260802000100_active_media_semantics'),
     ('20260802000200_current_media_readiness'),
-    ('20260802000300_listing_prep_candidates')$$,
+    ('20260802000300_listing_prep_candidates'),
+    ('20260802000400_cycle_count_create_idempotency')$$,
   'the earlier-phase migrations are unmodified and the dashboard contracts follow them'
 );
 

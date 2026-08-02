@@ -40,11 +40,21 @@ router.get('/sessions', requireMember, asyncRoute(async (req, res) => {
   if (error) return dbFailure(res, error.message);
   res.json({ sessions: data ?? [] });
 }));
-router.post('/sessions', requireOperator, asyncRoute(async (req, res) => rpc(req, res, 'create_cycle_count', {
-  p_root_location_code: text(body(req).rootLocationCode), p_include_descendants: bool(body(req).includeDescendants),
-  p_subtype_filter: text(body(req).subtypeFilter), p_vertical_filter: text(body(req).verticalFilter),
-  p_blind_count: body(req).blindCount !== false, p_notes: text(body(req).notes),
-})));
+// The idempotency key is required by the database, not merely accepted here:
+// a retry after a lost response would otherwise open a second draft count over
+// the same shelf, and the operator would only find out when two counts
+// disagree.
+router.post('/sessions', requireOperator, asyncRoute(async (req, res) => {
+  const key = uuid(body(req).idempotencyKey);
+  if (!key) { res.status(422).json({ error: 'invalid_request', field: 'idempotencyKey' }); return; }
+  return rpc(req, res, 'create_cycle_count_session', {
+    p_root_location_code: text(body(req).rootLocationCode),
+    p_idempotency_key: key,
+    p_include_descendants: bool(body(req).includeDescendants),
+    p_subtype_filter: text(body(req).subtypeFilter), p_vertical_filter: text(body(req).verticalFilter),
+    p_blind_count: body(req).blindCount !== false, p_notes: text(body(req).notes),
+  });
+}));
 router.post('/:sessionId/start', requireOperator, asyncRoute(async (req, res) => {
   const { client, workspaceId } = ctx(req);
   const { data, error } = await client.rpc('start_cycle_count' as never, { p_workspace_id: workspaceId, p_session_id: req.params.sessionId } as never);
