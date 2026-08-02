@@ -3,7 +3,7 @@ import { NavLink, Route, Routes } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingBag, Link2, Tag, DollarSign, ShieldCheck, Vault,
   FileSearch, Layers, Boxes, PackagePlus, MapPin, ClipboardList, ChevronDown, LogOut,
-  ListChecks, ScanLine, FileWarning, ClipboardCheck, Tags,
+  ListChecks, ScanLine, FileWarning, ClipboardCheck, Tags, Menu,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Inventory from './pages/Inventory';
@@ -154,7 +154,7 @@ function FirstRunGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function ToolsNavGroup() {
+function ToolsNavGroup({ onNavigate }: { onNavigate?: () => void }) {
   const [open, setOpen] = useState(false);
   const items = [...LEGACY_NAV, ...TOOLS_NAV];
   return (
@@ -162,6 +162,7 @@ function ToolsNavGroup() {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
         className="flex w-full items-center justify-between rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-ink-muted hover:text-ink"
       >
         Tools &amp; legacy
@@ -170,7 +171,7 @@ function ToolsNavGroup() {
       {open && (
         <div className="flex flex-col gap-0.5">
           {items.map((item) => (
-            <NavLink key={item.to} to={item.to} className={navLinkClass}>
+            <NavLink key={item.to} to={item.to} className={navLinkClass} onClick={onNavigate}>
               <item.icon className="h-4 w-4 shrink-0" />
               {item.label}
             </NavLink>
@@ -181,32 +182,92 @@ function ToolsNavGroup() {
   );
 }
 
+/**
+ * The navigation itself, rendered identically in the desktop sidebar and in the
+ * tablet drawer. One definition, so the two can never drift apart.
+ */
+function NavigationPanel({ onNavigate }: { onNavigate?: () => void }) {
+  return (
+    <>
+      <div className="flex items-center gap-2 px-4 py-4 border-b border-hairline">
+        <Vault className="h-5 w-5 text-accent" />
+        <div>
+          <div className="font-semibold text-sm leading-tight">The Russell Vault</div>
+          <div className="text-xs text-ink-muted leading-tight">Operations</div>
+        </div>
+      </div>
+      {PROVENANCE_ENABLED && <WorkspaceHeader />}
+      {/* The close handler belongs on each destination, not on the <nav>.
+          Anything else inside the panel — the "Tools & legacy" toggle, the
+          workspace switcher, the sign-out button — would bubble to the nav and
+          shut the drawer before the operator could use what they just opened. */}
+      <nav className="flex-1 py-3 px-2 flex flex-col gap-0.5">
+        {(PROVENANCE_ENABLED ? PRIMARY_NAV : LEGACY_ONLY_NAV).map((item) => (
+          <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass} onClick={onNavigate}>
+            <item.icon className="h-4 w-4 shrink-0" />
+            {item.label}
+          </NavLink>
+        ))}
+        {PROVENANCE_ENABLED && <ToolsNavGroup onNavigate={onNavigate} />}
+      </nav>
+      <div className="px-4 py-3 border-t border-hairline text-xs text-ink-muted">
+        Add inventory → link cost → list → record sale
+      </div>
+    </>
+  );
+}
+
 function AppShell() {
+  // The app is used mostly on an iPad. A permanently docked 240px sidebar left
+  // roughly 528px for Current Inventory in portrait, which is what clipped the
+  // table. Below `lg` the same navigation becomes a drawer instead.
+  const [navOpen, setNavOpen] = useState(false);
+
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-0 text-ink">
       <ReadOnlyBanner provenanceEnabled={PROVENANCE_ENABLED} />
+
+      {/* Tablet and phone: a slim bar carrying the one control that opens the
+          drawer. Hidden once the sidebar is permanently visible. */}
+      <div className="flex items-center gap-2 border-b border-hairline bg-surface-1 px-3 py-2 lg:hidden">
+        <button
+          type="button"
+          onClick={() => setNavOpen(true)}
+          aria-label="Open navigation"
+          aria-expanded={navOpen}
+          className="rounded-lg border border-hairline p-2"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+        <Vault className="h-5 w-5 text-accent" />
+        <span className="text-sm font-semibold">The Russell Vault</span>
+      </div>
+
+      {navOpen && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <button
+            type="button"
+            aria-label="Close navigation"
+            onClick={() => setNavOpen(false)}
+            className="absolute inset-0 bg-black/40"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation"
+            onKeyDown={(e) => { if (e.key === 'Escape') setNavOpen(false); }}
+            className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col overflow-y-auto border-r border-hairline bg-surface-1"
+          >
+            {/* Closing on navigate is what makes a drawer usable one-handed:
+                the operator taps a destination, not a destination and a close. */}
+            <NavigationPanel onNavigate={() => setNavOpen(false)} />
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        <aside className="w-60 shrink-0 border-r border-hairline bg-surface-1 flex flex-col overflow-y-auto">
-          <div className="flex items-center gap-2 px-4 py-4 border-b border-hairline">
-            <Vault className="h-5 w-5 text-accent" />
-            <div>
-              <div className="font-semibold text-sm leading-tight">The Russell Vault</div>
-              <div className="text-xs text-ink-muted leading-tight">Operations</div>
-            </div>
-          </div>
-          {PROVENANCE_ENABLED && <WorkspaceHeader />}
-          <nav className="flex-1 py-3 px-2 flex flex-col gap-0.5">
-            {(PROVENANCE_ENABLED ? PRIMARY_NAV : LEGACY_ONLY_NAV).map((item) => (
-              <NavLink key={item.to} to={item.to} end={item.end} className={navLinkClass}>
-                <item.icon className="h-4 w-4 shrink-0" />
-                {item.label}
-              </NavLink>
-            ))}
-            {PROVENANCE_ENABLED && <ToolsNavGroup />}
-          </nav>
-          <div className="px-4 py-3 border-t border-hairline text-xs text-ink-muted">
-            Add inventory → link cost → list → record sale
-          </div>
+        <aside className="hidden w-60 shrink-0 border-r border-hairline bg-surface-1 lg:flex flex-col overflow-y-auto">
+          <NavigationPanel />
         </aside>
 
         <main className="flex-1 overflow-y-auto">

@@ -108,6 +108,27 @@ router.get('/', requireMember, asyncRoute(async (req, res) => {
   });
 }));
 
+/**
+ * Current inventory with no live preparation — the "No active preparation" tab,
+ * and the exact population `get_listing_prep_summary.no_active_preparation`
+ * counts. Both read the same governed view, so the tile and its destination
+ * cannot disagree.
+ *
+ * Deliberately not "never started": a record whose earlier preparation was
+ * listed or cancelled is here too, because repeat preparation is supported.
+ */
+router.get('/candidates', requireMember, asyncRoute(async (req, res) => {
+  const q = req.query;
+  const subjectKind = q.subjectKind === undefined ? null : asSubjectKind(q.subjectKind);
+  if (q.subjectKind !== undefined && !subjectKind) return invalid(res, 'subjectKind');
+  return rpc(req, res, 'list_listing_prep_candidates', {
+    p_search: asText(q.search, 120),
+    p_subject_kind: subjectKind,
+    p_limit: asPageSize(q.limit, 50, 200),
+    p_offset: asOffset(q.offset),
+  });
+}));
+
 /** Bounded counts for the Workbench: never a second copy of the queue. */
 router.get('/summary', requireMember, asyncRoute(async (req, res) =>
   rpc(req, res, 'get_listing_prep_summary', {})));

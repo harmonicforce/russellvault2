@@ -170,15 +170,17 @@ select pg_temp.put('outside', (public.stage_inventory_lot(
 -- Permissions ---------------------------------------------------------------------
 select pg_temp.login('cc333333-3333-4333-8333-333333333333');
 select throws_ok(
-  $$select public.create_cycle_count('cc000000-0000-4000-8000-000000000001', 'AISLE', true)$$,
+  $$select public.create_cycle_count_session('cc000000-0000-4000-8000-000000000001', 'AISLE',
+       'ccbbbbbb-0001-4000-8000-000000000001'::uuid, true)$$,
   '42501', null,
   'a viewer cannot create a cycle count');
 
 select pg_temp.login('cc111111-1111-4111-8111-111111111111');
 
 -- Create and scope -------------------------------------------------------------------
-select pg_temp.put('cc', (public.create_cycle_count(
-  'cc000000-0000-4000-8000-000000000001', 'AISLE', true, null, null, false,
+select pg_temp.put('cc', (public.create_cycle_count_session(
+  'cc000000-0000-4000-8000-000000000001', 'AISLE',
+  'ccbbbbbb-0002-4000-8000-000000000001'::uuid, true, null, null, false,
   'first count')->>'id')::uuid);
 
 select is(
@@ -187,7 +189,8 @@ select is(
   'a new cycle count starts as a draft');
 
 select throws_ok(
-  $$select public.create_cycle_count('cc000000-0000-4000-8000-000000000001', 'NO-SUCH-BIN')$$,
+  $$select public.create_cycle_count_session('cc000000-0000-4000-8000-000000000001', 'NO-SUCH-BIN',
+       'ccbbbbbb-0003-4000-8000-000000000001'::uuid)$$,
   '23514', null,
   'a count cannot be scoped to a location that does not exist');
 
@@ -507,8 +510,9 @@ select throws_ok(
 select pg_temp.login('cc111111-1111-4111-8111-111111111111');
 
 -- Explicit multi-subject recount -----------------------------------------------------------
-select pg_temp.put('recount_cc',(public.create_cycle_count(
-  'cc000000-0000-4000-8000-000000000001','AISLE',true,null,null,true,'recount fixture')->>'id')::uuid);
+select pg_temp.put('recount_cc',(public.create_cycle_count_session(
+  'cc000000-0000-4000-8000-000000000001','AISLE','ccbbbbbb-0004-4000-8000-000000000001'::uuid,
+  true,null,null,true,'recount fixture')->>'id')::uuid);
 select public.start_cycle_count('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'));
 select public.observe_cycle_count_item('cc000000-0000-4000-8000-000000000001',pg_temp.get('recount_cc'),
   'CC-CERT-1','BIN-A','ccaaaaaa-1001-4000-8000-000000000001'::uuid);
@@ -563,8 +567,9 @@ select is((public.complete_cycle_count_latest('cc000000-0000-4000-8000-000000000
   'session completes after current successor is resolved');
 
 -- Blind counts ---------------------------------------------------------------------------------
-select pg_temp.put('blind', (public.create_cycle_count(
-  'cc000000-0000-4000-8000-000000000001', 'BIN-A', false, null, null, true)->>'id')::uuid);
+select pg_temp.put('blind', (public.create_cycle_count_session(
+  'cc000000-0000-4000-8000-000000000001', 'BIN-A',
+  'ccbbbbbb-0005-4000-8000-000000000001'::uuid, false, null, null, true)->>'id')::uuid);
 select public.start_cycle_count('cc000000-0000-4000-8000-000000000001', pg_temp.get('blind'));
 
 select is(
@@ -626,7 +631,8 @@ select throws_ok(
   'nor record an observation against it');
 
 select throws_ok(
-  $$select public.create_cycle_count('cc000000-0000-4000-8000-000000000001', 'BIN-A')$$,
+  $$select public.create_cycle_count_session('cc000000-0000-4000-8000-000000000001', 'BIN-A',
+       'ccbbbbbb-0006-4000-8000-000000000001'::uuid)$$,
   '42501', null,
   'nor create a count inside a workspace it does not belong to');
 

@@ -39,6 +39,8 @@ function item(over: Partial<ItemOverviewRow> = {}): ItemOverviewRow {
     size_system: null,
     size_label: null,
     media_count: 2,
+    active_media_count: 2,
+    needs_photos: false,
     primary_media_path: 'ws/1.jpg',
     ...over,
   };
@@ -70,6 +72,8 @@ function lot(over: Partial<LotOverviewRow> = {}): LotOverviewRow {
     shoe_size: null,
     serialized_child_count: 0,
     media_count: 0,
+    active_media_count: 0,
+    needs_photos: true,
     primary_media_path: null,
     ...over,
   } as LotOverviewRow;

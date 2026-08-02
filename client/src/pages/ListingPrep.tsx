@@ -15,18 +15,22 @@ import { useWorkspace } from '../lib/workspaceContext';
 import { createShadowClient } from '../lib/supabaseShadow';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
 import {
-  READINESS_LABELS, STATUS_LABELS, createListingPrepTransport, formatMoney,
-  type BulkAction, type PrepPriority, type PrepQueuePage, type PrepQueueRow,
-  type PrepReadiness, type PrepStatus,
+  LIVE_PREP_STATUSES, READINESS_LABELS, STATUS_LABELS, createListingPrepTransport,
+  formatMoney, type BulkAction, type PrepCandidatePage, type PrepPriority,
+  type PrepQueuePage, type PrepQueueRow, type PrepReadiness, type PrepStatus,
 } from '../lib/listingPrepApi';
 
 const PAGE_SIZE = 25;
 
-/** The three views the owner actually works in. */
+/** The four views the owner actually works in. */
 const TABS = [
   { key: 'queue', label: 'To prepare', statuses: ['not_started', 'in_preparation', 'blocked', 'needs_review'] as PrepStatus[] },
   { key: 'ready', label: 'Ready to list', statuses: ['ready_to_list'] as PrepStatus[] },
   { key: 'listed', label: 'Listed', statuses: ['listed'] as PrepStatus[] },
+  // Inventory with no preparation at all. Not backed by listing_prep rows, so
+  // it reads the governed candidate view instead of the queue.
+  // Not "Never started": a record prepared and listed before belongs here too.
+  { key: 'candidates', label: 'No active preparation', statuses: [] as PrepStatus[] },
 ] as const;
 type TabKey = (typeof TABS)[number]['key'];
 
@@ -63,9 +67,15 @@ export default function ListingPrep() {
   const search = params.get('q') ?? '';
   const page = Math.max(1, Number.parseInt(params.get('page') ?? '1', 10) || 1);
   const mine = params.get('assigned') === 'me';
+  // A preparation still holding `ready_to_list` while a live blocker has
+  // appeared. Its own destination, because such a record is genuinely neither
+  // "ready" nor an ordinary queue item.
+  const regressedOnly = params.get('regressed') === '1';
 
   const [searchDraft, setSearchDraft] = useState(search);
   const [data, setData] = useState<PrepQueuePage | null>(null);
+  const [candidates, setCandidates] = useState<PrepCandidatePage | null>(null);
+  const [starting, setStarting] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -88,36 +98,78 @@ export default function ListingPrep() {
     if (!workspaceId) return;
     setLoading(true);
     try {
-      const statuses = TABS.find((t) => t.key === tab)!.statuses;
-      setData(await transport.queue({
-        status: statuses,
-        readiness: readinessFilter ? [readinessFilter] : undefined,
-        assignedTo: mine ? userId ?? undefined : undefined,
-        search: search || undefined,
-        limit: PAGE_SIZE,
-        offset: (page - 1) * PAGE_SIZE,
-      }));
+      if (tab === 'candidates') {
+        setCandidates(await transport.candidates({
+          search: search || undefined,
+          limit: PAGE_SIZE,
+          offset: (page - 1) * PAGE_SIZE,
+        }));
+        setData(null);
+      } else {
+        // A readiness filter must span every live status. A `ready_to_list`
+        // record that has since lost a photograph is counted by the dashboard
+        // under its blocker, so restricting to the tab's statuses would hide
+        // exactly the records the tile counted.
+        const statuses = regressedOnly
+          ? (['ready_to_list'] as PrepStatus[])
+          : readinessFilter
+            ? LIVE_PREP_STATUSES
+            : TABS.find((t) => t.key === tab)!.statuses;
+        // "Regressed" is every readiness EXCEPT ready, over ready_to_list rows.
+        // The Ready tab shows only records whose live readiness still agrees
+        // with their status, so the tab and the dashboard tile match.
+        const readiness = regressedOnly
+          ? (Object.keys(READINESS_LABELS) as PrepReadiness[]).filter((r) => r !== 'ready')
+          : readinessFilter
+            ? [readinessFilter]
+            : tab === 'ready'
+              ? (['ready'] as PrepReadiness[])
+              : undefined;
+        setData(await transport.queue({
+          status: statuses,
+          readiness,
+          assignedTo: mine ? userId ?? undefined : undefined,
+          search: search || undefined,
+          limit: PAGE_SIZE,
+          offset: (page - 1) * PAGE_SIZE,
+        }));
+        setCandidates(null);
+      }
       setError(null);
     } catch (e) {
       // A failure is never rendered as an empty queue.
       setData(null);
+      setCandidates(null);
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [transport, workspaceId, userId, tab, readinessFilter, mine, search, page]);
+  }, [transport, workspaceId, userId, tab, readinessFilter, regressedOnly, mine, search, page]);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { setSelected(new Set()); }, [tab, readinessFilter, search, page, mine]);
+  useEffect(() => { setSelected(new Set()); }, [tab, readinessFilter, regressedOnly, search, page, mine]);
 
   const rows = data?.rows ?? [];
-  const total = data?.total ?? 0;
+  const total = tab === 'candidates' ? (candidates?.total ?? 0) : (data?.total ?? 0);
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const toggle = (id: string) => {
     const next = new Set(selected);
     if (next.has(id)) next.delete(id); else next.add(id);
     setSelected(next);
+  };
+
+  const startPrep = async (kind: 'item' | 'lot', subjectId: string) => {
+    setStarting(subjectId);
+    setError(null);
+    try {
+      const created = await transport.start(kind, subjectId);
+      navigate(`/listing-prep/${created.id}`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setStarting(null);
+    }
   };
 
   const runBulk = async (action: BulkAction, extra: Record<string, unknown> = {}) => {
@@ -270,6 +322,45 @@ export default function ListingPrep() {
 
       {loading ? (
         <p className="text-sm text-ink-muted">Loading…</p>
+      ) : tab === 'candidates' ? (
+        (candidates?.rows.length ?? 0) === 0 && !error ? (
+          <p className="rounded border border-hairline bg-surface-1 p-6 text-center text-sm text-ink-muted">
+            Every current record already has a preparation.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {(candidates?.rows ?? []).map((row) => (
+              <li key={`${row.subject_kind}-${row.subject_id}`} className="rounded-lg border border-hairline bg-surface-1 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => navigate(row.subject_kind === 'item'
+                      ? `/inventory/current/${row.subject_id}`
+                      : `/inventory/lots/${row.subject_id}`)}
+                    className="min-w-0 text-left"
+                  >
+                    <span className="text-sm font-semibold">{row.display_name ?? row.public_id}</span>
+                    <span className="ml-2 text-xs text-ink-muted">{row.public_id}</span>
+                    {row.detail_line && <p className="truncate text-xs text-ink-muted">{row.detail_line}</p>}
+                    {row.needs_photos && (
+                      <p className="text-xs text-warning">No photograph yet</p>
+                    )}
+                  </button>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      disabled={starting === row.subject_id}
+                      onClick={() => void startPrep(row.subject_kind, row.subject_id)}
+                      className="rounded bg-accent px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+                    >
+                      {starting === row.subject_id ? 'Starting…' : 'Prepare for listing'}
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )
       ) : rows.length === 0 && !error ? (
         <p className="rounded border border-hairline bg-surface-1 p-6 text-center text-sm text-ink-muted">
           {tab === 'listed'
@@ -354,6 +445,14 @@ function QueueRow({
             <span className="rounded border border-hairline px-1.5 py-0.5 text-[11px] text-ink-muted">
               {STATUS_LABELS[row.status]}
             </span>
+            {/* Status still says ready but a blocker has appeared since. The
+                status is never silently rewritten to make the record fit a
+                queue, so the regression is named instead. */}
+            {row.status === 'ready_to_list' && row.blocker_count > 0 && (
+              <span className="rounded border border-bad/50 bg-bad/10 px-1.5 py-0.5 text-[11px] font-semibold text-bad">
+                Regressed from ready
+              </span>
+            )}
             {row.priority !== 'normal' && (
               <span className={`rounded border px-1.5 py-0.5 text-[11px] capitalize ${PRIORITY_STYLE[row.priority]}`}>
                 {row.priority}
