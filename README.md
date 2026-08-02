@@ -1,21 +1,31 @@
 # The Russell Vault — Operations
 
-A working operations app for the Russell Vault resale business (Pokemon TCG,
-sneakers, apparel, electronics resold via Whatnot → eBay), replacing the
-"Easy Operator" / "Operations" spreadsheets with a real UI backed by a local
-database.
+An operations app for the Russell Vault resale business (Pokemon TCG, sneakers,
+apparel, electronics resold via Whatnot → eBay).
 
-Seeded with the real data from `Russell_Vault_Operationsmost_capable.xlsx`:
-1,487 inventory lots, 2,149 Whatnot purchase lines, 287 cost-basis link
-candidates, and 20 eBay listings.
+It contains **two systems that must not be confused with each other**:
+
+| | Legacy SQLite app | Governed Supabase inventory |
+|---|---|---|
+| Lives in | `server/` + `client/` legacy pages | `supabase/` + the workspace-scoped client pages |
+| Seeded from | `Russell_Vault_Operationsmost_capable.xlsx` (1,487 lots, 2,149 Whatnot purchase lines, 287 cost-basis candidates, 20 eBay listings) | nothing — operators enter inventory through governed intake |
+| Authority | **none.** A prototype and a spreadsheet replacement | authoritative for inventory identity, readiness, movement and history |
+| Money | SQLite `REAL` | `amount_minor` integers with an explicit currency |
+| Visible when | always | only when the shadow flag *and* shadow auth configuration are both set |
+
+Totals from the two systems are **never** added together. Anywhere the legacy
+numbers appear they are labelled as legacy, spreadsheet-imported inventory.
 
 ## ⚠️ Project status & safety
 
-This is a **working prototype, not the authoritative system of record.**
+The legacy SQLite app is **a working prototype, not the authoritative system of
+record.** The governed Supabase model is authoritative for the inventory
+workflows described under "What it does", and is reached only through
+`SECURITY DEFINER` functions under RLS.
 
 - **The SQLite app is non-authoritative.** Financial facts must not be trusted
-  from it; the approved target model (a separate PostgreSQL model) is built in
-  later phases.
+  from it. It is not being migrated into the governed model by anything in this
+  repository.
 - **Startup data deletion is fixed going forward** — `server/src/db.ts` no
   longer deletes imported source rows. Food/candy purchases are flagged
   (`is_excluded`), not removed. Note: the repository seed has 2,149
@@ -31,19 +41,15 @@ This is a **working prototype, not the authoritative system of record.**
 - **Unsafe financial writes remain a concern for later target-model phases**,
   and money/quantities are stored as SQLite `REAL` rather than integer cents
   (though request-level validation now rejects non-integer quantities).
-- **`main` is the stable branch and the source of truth.** The GitHub default
-  branch is now `main` (the old empty `Beginner` branch has been deleted), and the
-  former deployment branch `claude/ui-better-spreadsheet-cjhwjb` has been merged
-  into `main` and now sits behind it. All work lands on `main`.
-
-  **One owner action remains, and it cannot be done from a build session:**
-
-  1. **Verify the Railway service source is `main`** (Service → Settings → Source →
-     Branch). Because `claude/ui-better-spreadsheet-cjhwjb` is now *behind* `main`,
-     if Railway still points at it the live app is serving stale code. Confirm the
-     served commit with `GET /api/version` (see "Verify the deployed commit" below),
-     and switch the source to `main` if it is not already. Only after that is
-     confirmed should `claude/ui-better-spreadsheet-cjhwjb` be deleted.
+- **`main` is the stable branch and the source of truth.** It is the GitHub
+  default branch and the Railway source branch. All work lands on `main` through
+  a pull request with the four required CI jobs green.
+- **A green CI run is not evidence that the hosted app works.** CI never touches
+  Railway or the hosted Supabase project. Repository migration state and *hosted*
+  migration state are separate facts, and this repository can only prove the
+  first. See
+  [`docs/runbooks/hosted-migration-parity.md`](docs/runbooks/hosted-migration-parity.md)
+  for how an owner checks the second.
 
 See [`docs/architecture.md`](docs/architecture.md) for repository/branch reality
 and data paths, and
@@ -52,17 +58,47 @@ for the Gate G0A backup/deploy preflight.
 
 ## What it does
 
-- **Dashboard** — daily-glance KPIs, inventory value by vertical, reconciliation health.
-- **Inventory** — search/filter/sort 1,487+ lots, inline edit, add new intake.
-- **Whatnot Purchases** — browse the 2,149-line purchase source of truth.
-- **Cost Basis Links** — guided two-pane search to link inventory lots to purchases,
-  confirm/reject candidate matches, with automatic rollup of cost basis and
-  remaining purchase balances.
-- **eBay Listings** — quick-list costed inventory, track draft → active → sold.
-- **Sales** — record proceeds/fees/shipping, auto-computed net proceeds and
-  profit against confirmed cost basis, fulfillment tracking.
-- **Health Checks** — live data-integrity checks (unique IDs, no oversold lots,
-  no orphaned links, no over-allocated purchases) plus the imported baseline checks.
+### Governed inventory operations (Supabase-backed)
+
+Visible only when the shadow surfaces are configured (see "Feature flags"):
+
+- **Dashboard** — inventory health, an explainable bounded work queue, media and
+  Listing Prep backlogs, and recent governed movement. Every number links to a
+  destination containing exactly the records it counted. When a dependency is
+  unavailable the panel says so; it never substitutes a zero.
+- **Daily Workbench** — the day's exceptions across intake, location, media and
+  corrections.
+- **Add Inventory / Batch Intake / Intake Sessions** — multi-category single and
+  batch intake with draft recovery, over the governed Product → SKU → Lot → Item
+  hierarchy.
+- **Current Inventory** — server-side paging, sorting and filtering with
+  URL-held state, plus printable labels and bulk move.
+- **Scan or Find**, **Locations**, **Corrections** — governed movement,
+  workspace-scoped locations, and correction request/review/supersession.
+- **Cycle Counts** — location-scoped, blind by default, with frozen snapshots,
+  immutable round evidence and a governed resolution matrix.
+- **Listing Prep** — the queue between "in inventory" and "listed elsewhere":
+  blockers, readiness, a not-started candidate list, and bulk operations.
+- **Photo Issues** — the media backlog: records with no active photo, records
+  missing a required angle, and open photo issues.
+
+### Legacy spreadsheet surfaces (SQLite, non-authoritative)
+
+- **Legacy Inventory** — search/filter/sort the imported 1,487+ lots, inline edit.
+- **Whatnot Purchases** — browse the 2,149-line imported purchase file.
+- **Cost Basis Links** — guided two-pane search linking imported lots to
+  purchases, with rollup of cost basis and remaining purchase balances.
+- **eBay Listings** — quick-list costed legacy inventory, draft → active → sold.
+- **Sales** — proceeds/fees/shipping and computed net against confirmed cost basis.
+- **Health Checks** — data-integrity checks over the imported data.
+
+### Feature flags
+
+The Supabase-backed surfaces require **both** `VITE_SHADOW_IMPORT=repository-fixtures`
+and a complete shadow auth configuration. With either absent there is no nav
+entry, no route and no Supabase traffic, and the app is the legacy SQLite
+experience exactly as it was. Which flags a given deployment sets is a hosted
+fact this repository cannot verify — read it from the running service.
 
 ## Stack
 
@@ -70,12 +106,34 @@ for the Gate G0A backup/deploy preflight.
   lives at `server/data/vault.db` and is seeded once from `server/seed/*.json`.
 - `client/` — Vite + React + TypeScript + Tailwind v4, TanStack Query for data
   fetching, react-router for navigation.
-- `supabase/` + `scripts/db/` — Phase 2 **local shadow foundation**: a newly
-  created, non-authoritative PostgreSQL/Supabase schema (workspaces, RLS,
-  SECURITY DEFINER functions, private storage policies) with pgTAP tests
-  (`npm run db:reset` / `npm run db:test`). Local-only; the deployed app still
-  runs entirely on SQLite, and the client auth shell is off unless explicitly
-  flagged on. See `docs/supabase-shadow-foundation.md`.
+- `supabase/` + `scripts/db/` — the **governed inventory model**: a
+  PostgreSQL/Supabase schema (workspaces, RLS, `SECURITY DEFINER` functions,
+  append-only history, private storage policies) covered by pgTAP
+  (`npm run db:reset` / `npm run db:test`). This is where inventory identity,
+  readiness, movement and history actually live. Every multi-row invariant is
+  enforced in the database, not in the browser; the client holds no service-role
+  key and performs no direct writes that bypass a governed function. Started as
+  the Phase 2 shadow foundation described in
+  `docs/supabase-shadow-foundation.md`, which remains accurate about the
+  foundation but predates the operational surfaces built on top of it.
+
+  The schema is applied forward only. Each migration's final statement appends
+  its own name to `public.schema_migrations_log`, which is what makes hosted
+  parity checkable.
+
+### Migration state
+
+Two different facts, never conflated:
+
+- **Repository migration state** — count it, do not read it from a document:
+  ```bash
+  ls supabase/migrations/*.sql | wc -l
+  ```
+  `supabase/tests/06_provenance_structure.sql` asserts the same number, so a
+  migration added without updating that assertion fails CI.
+- **Hosted migration state** — *unverified by this repository.* Nothing in CI or
+  in a build session can see the hosted project. Follow
+  [`docs/runbooks/hosted-migration-parity.md`](docs/runbooks/hosted-migration-parity.md).
 
 ## Running it
 
@@ -109,8 +167,26 @@ npm audit --prefix server --omit=dev --audit-level=high
 npm audit --audit-level=low                        # full (dev advisories, reported)
 ```
 
-CI (`.github/workflows/ci.yml`, Node 20) runs all of the above on push/PR. It
-never deploys, touches Railway/Supabase, or writes to a database.
+The governed schema has its own suite, which CI runs on **two independent
+tiers** — a plain-PostgreSQL shim and the local Supabase CLI stack — because the
+two ship incompatible pgTAP overloads and a contract that passes on only one of
+them is not portable:
+
+```bash
+npm run db:reset && npm run db:test                              # shim tier
+SHADOW_DB_RUNNER=supabase-cli npm run db:reset                   # Supabase tier (needs Docker)
+SHADOW_DB_RUNNER=supabase-cli npm run db:test
+```
+
+`db:reset` replays every migration from empty, so it is the real test of a
+corrective migration.
+
+CI (`.github/workflows/ci.yml`, Node 20) runs all of the above on push/PR across
+four required jobs — `build-and-verify`, `shadow-db-postgres-shim`,
+`shadow-db-supabase-stack`, `dev-advisory-report`. It never deploys, touches
+Railway or the hosted Supabase project, or writes to a hosted database. **CI
+proves the repository is internally consistent. It proves nothing about the
+hosted app.**
 
 ### Verify the deployed commit
 
