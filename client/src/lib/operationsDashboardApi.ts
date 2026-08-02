@@ -35,7 +35,16 @@ export interface WorkflowPanel {
     by_readiness: Partial<Record<MediaReadinessStatus, number>>;
     open_issue_count: number;
   };
-  listingPrep: { by_status: Partial<Record<'not_started' | 'in_preparation' | 'blocked' | 'needs_review' | 'ready_to_list' | 'listed' | 'cancelled', number>>; by_readiness: Partial<Record<'ready' | 'needs_photos' | 'needs_condition_review' | 'needs_owner_review' | 'blocked', number>>; never_started: number };
+  listingPrep: {
+    /** Raw lifecycle tally, unchanged. */
+    by_status: Partial<Record<'not_started' | 'in_preparation' | 'blocked' | 'needs_review' | 'ready_to_list' | 'listed' | 'cancelled', number>>;
+    by_readiness: Partial<Record<'ready' | 'needs_photos' | 'needs_condition_review' | 'needs_owner_review' | 'blocked', number>>;
+    never_started: number;
+    /** Status says ready AND live readiness agrees. */
+    ready_now: number;
+    /** Status still says ready, but a blocker has appeared since. */
+    regressed_ready: number;
+  };
 }
 
 /**

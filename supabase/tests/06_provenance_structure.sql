@@ -402,7 +402,8 @@ select is(
      and table_name ~ '(cost_basis|costbasis|cogs|listing|sale|marketplace|purchase)'
      and table_name not in ('listing_prep', 'listing_prep_requirements',
                             'listing_prep_checks', 'listing_prep_events',
-                            'listing_prep_readiness', 'listing_package_presets')),
+                            'listing_prep_readiness', 'listing_prep_candidates',
+                            'listing_package_presets')),
   0,
   'no COGS, cost-basis, marketplace listing, sale, or purchase table exists yet (Phase 6+)'
 );
@@ -415,8 +416,8 @@ select is(
 -- + the operations dashboard contracts (20260801 x1) -----------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  58,
-  'fifty-eight migrations are recorded, including the current-stock media repair'
+  59,
+  'fifty-nine migrations are recorded, including the listing prep destinations repair'
 );
 
 select results_eq(
@@ -479,7 +480,8 @@ select results_eq(
     ('20260801000800_listing_prep_bulk_and_presets'),
     ('20260801000900_operations_dashboard_contracts'),
     ('20260802000100_active_media_semantics'),
-    ('20260802000200_current_media_readiness')$$,
+    ('20260802000200_current_media_readiness'),
+    ('20260802000300_listing_prep_candidates')$$,
   'the earlier-phase migrations are unmodified and the dashboard contracts follow them'
 );
 

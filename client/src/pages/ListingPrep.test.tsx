@@ -22,7 +22,17 @@ vi.mock('../lib/workspaceContext', () => ({
 vi.mock('../lib/supabaseShadow', () => ({ createShadowClient: () => ({}) }));
 vi.mock('../lib/tokenProvider', () => ({ tokenProviderFromClient: () => async () => 'jwt' }));
 
+let candidatePage = { total: 0, limit: 25, offset: 0, rows: [] as unknown[] };
+
 const transport = {
+  candidates: (...args: unknown[]) => {
+    calls.push({ fn: 'candidates', args });
+    return Promise.resolve(candidatePage);
+  },
+  start: (...args: unknown[]) => {
+    calls.push({ fn: 'start', args });
+    return Promise.resolve({ id: 'new-prep' });
+  },
   queue: (...args: unknown[]) => {
     calls.push({ fn: 'queue', args });
     if (queueError) return Promise.reject(new Error(queueError));
@@ -59,6 +69,7 @@ beforeEach(() => {
   calls = [];
   queueError = null;
   page = { total: 1, limit: 25, offset: 0, rows: [row({ id: 'p1' })] };
+  candidatePage = { total: 0, limit: 25, offset: 0, rows: [] };
 });
 afterEach(() => cleanup());
 
@@ -182,5 +193,99 @@ describe('listing prep queue', () => {
     };
     renderQueue();
     expect(await screen.findByText(/waiting on the grading return/)).toBeTruthy();
+  });
+});
+
+describe('readiness drill-downs span live statuses', () => {
+  // The defect: a ready_to_list record that later lost a photograph was counted
+  // by the dashboard under needs_photos, but the link forced the queue tab,
+  // whose statuses exclude ready_to_list. It inflated the tile and was absent
+  // from the page.
+  it('asks for every live status when a readiness filter is applied', async () => {
+    renderQueue('/listing-prep?readiness=needs_photos');
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    const filters = calls[0].args[0] as Record<string, unknown>;
+    expect(filters.status).toEqual([
+      'not_started', 'in_preparation', 'blocked', 'needs_review', 'ready_to_list',
+    ]);
+    expect(filters.readiness).toEqual(['needs_photos']);
+  });
+
+  it('shows only genuinely-ready records on the Ready tab', async () => {
+    renderQueue('/listing-prep?tab=ready');
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    const filters = calls[0].args[0] as Record<string, unknown>;
+    expect(filters.status).toEqual(['ready_to_list']);
+    // Without this the tab would include regressed records the dashboard
+    // deliberately counts elsewhere.
+    expect(filters.readiness).toEqual(['ready']);
+  });
+
+  it('asks for the complement of ready on the regressed destination', async () => {
+    renderQueue('/listing-prep?tab=ready&regressed=1');
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    const filters = calls[0].args[0] as Record<string, unknown>;
+    expect(filters.status).toEqual(['ready_to_list']);
+    expect(filters.readiness).not.toContain('ready');
+    expect(filters.readiness).toContain('needs_photos');
+  });
+
+  it('names a regressed record instead of rewriting its status', async () => {
+    page = {
+      total: 1, limit: 25, offset: 0,
+      rows: [row({ id: 'p1', status: 'ready_to_list', readiness_status: 'needs_photos', blocker_count: 2 })],
+    };
+    renderQueue('/listing-prep?tab=ready&regressed=1');
+    expect(await screen.findByText('Regressed from ready')).toBeTruthy();
+    // Its real status is still shown; nothing was silently mutated.
+    expect(screen.getByText('Ready to list', { selector: 'span' })).toBeTruthy();
+  });
+});
+
+describe('never-started candidates', () => {
+  it('reads the candidate view rather than the preparation queue', async () => {
+    renderQueue('/listing-prep?tab=candidates');
+    await waitFor(() => expect(calls.find((c) => c.fn === 'candidates')).toBeTruthy());
+    // The queue is populated from listing_prep rows, and a never-started
+    // record has none by definition.
+    expect(calls.find((c) => c.fn === 'queue')).toBeUndefined();
+  });
+
+  it('lists each candidate and offers to start a preparation inline', async () => {
+    candidatePage = {
+      total: 1, limit: 25, offset: 0,
+      rows: [{
+        subject_kind: 'item', subject_id: 'subject-9', public_id: 'RV-ITEM-9',
+        display_name: 'Blastoise', detail_line: 'RAW-9', subtype: 'raw_card',
+        quantity: 1, tracking_mode: 'serialized', needs_photos: true,
+        created_at: '2026-08-01T00:00:00Z',
+      }],
+    };
+    renderQueue('/listing-prep?tab=candidates');
+    expect(await screen.findByText('Blastoise')).toBeTruthy();
+    fireEvent.click(screen.getByText('Prepare for listing'));
+    await waitFor(() => expect(calls.find((c) => c.fn === 'start')).toBeTruthy());
+    expect(calls.find((c) => c.fn === 'start')!.args).toEqual(['item', 'subject-9']);
+  });
+
+  it('says so plainly when every record already has a preparation', async () => {
+    renderQueue('/listing-prep?tab=candidates');
+    expect(await screen.findByText(/Every current record already has a preparation/)).toBeTruthy();
+  });
+
+  it('does not offer a viewer the start action', async () => {
+    role = 'viewer';
+    candidatePage = {
+      total: 1, limit: 25, offset: 0,
+      rows: [{
+        subject_kind: 'item', subject_id: 'subject-9', public_id: 'RV-ITEM-9',
+        display_name: 'Blastoise', detail_line: null, subtype: 'raw_card',
+        quantity: 1, tracking_mode: 'serialized', needs_photos: false,
+        created_at: '2026-08-01T00:00:00Z',
+      }],
+    };
+    renderQueue('/listing-prep?tab=candidates');
+    expect(await screen.findByText('Blastoise')).toBeTruthy();
+    expect(screen.queryByText('Prepare for listing')).toBeNull();
   });
 });

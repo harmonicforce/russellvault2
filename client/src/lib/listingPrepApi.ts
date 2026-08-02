@@ -148,12 +148,48 @@ export interface PrepQueuePage {
 }
 
 export interface PrepSummary {
+  /** Raw lifecycle tally: how many rows hold each status, unchanged. */
   readonly by_status: Partial<Record<PrepStatus, number>>;
   readonly by_readiness: Partial<Record<PrepReadiness, number>>;
   readonly unassigned: number;
   readonly listed_last_7_days: number;
   readonly never_started: number;
+  /** Status says ready AND live readiness agrees. */
+  readonly ready_now: number;
+  /** Status still says ready, but a blocker has appeared since. */
+  readonly regressed_ready: number;
 }
+
+/** Current inventory carrying no live preparation. */
+export interface PrepCandidate {
+  readonly subject_kind: SubjectKind;
+  readonly subject_id: string;
+  readonly public_id: string;
+  readonly display_name: string | null;
+  readonly detail_line: string | null;
+  readonly subtype: string | null;
+  readonly quantity: number | null;
+  readonly tracking_mode: string | null;
+  readonly needs_photos: boolean;
+  readonly created_at: string;
+}
+
+export interface PrepCandidatePage {
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+  readonly rows: readonly PrepCandidate[];
+}
+
+/**
+ * Every status a preparation can hold while it is still live work. A readiness
+ * filter must span all of these: a `ready_to_list` record that has since
+ * regressed is counted under its blocker, so restricting the drill-down to the
+ * queue tab's statuses would hide exactly the records the tile counted.
+ */
+export const LIVE_PREP_STATUSES: readonly PrepStatus[] = [
+  'not_started', 'in_preparation', 'blocked', 'needs_review', 'ready_to_list',
+];
 
 export interface PackagePreset {
   readonly id: string;
@@ -194,6 +230,7 @@ export interface BulkOutcome {
 
 export interface ListingPrepTransport {
   queue(filters?: QueueFilters): Promise<PrepQueuePage>;
+  candidates(filters?: { search?: string | null; subjectKind?: SubjectKind | null; limit?: number; offset?: number }): Promise<PrepCandidatePage>;
   summary(): Promise<PrepSummary>;
   get(prepId: string): Promise<PrepRecord>;
   forSubject(kind: SubjectKind, subjectId: string): Promise<{ exists: boolean; prep?: PrepRecord }>;
@@ -325,6 +362,12 @@ export function createListingPrepTransport(
       unassigned: filters.unassigned ? 'true' : undefined,
       subjectKind: filters.subjectKind ?? undefined,
       search: filters.search ?? undefined,
+      limit: filters.limit === undefined ? undefined : String(filters.limit),
+      offset: filters.offset === undefined ? undefined : String(filters.offset),
+    }),
+    candidates: (filters = {}) => request<PrepCandidatePage>('GET', '/candidates', undefined, {
+      search: filters.search ?? undefined,
+      subjectKind: filters.subjectKind ?? undefined,
       limit: filters.limit === undefined ? undefined : String(filters.limit),
       offset: filters.offset === undefined ? undefined : String(filters.offset),
     }),

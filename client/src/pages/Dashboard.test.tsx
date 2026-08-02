@@ -17,7 +17,7 @@ vi.mock('../lib/operationsDashboardApi', () => ({
   createOperationsDashboardTransport: () => ({
     health: async () => { calls.health++; return { asOf: '2026-08-01T00:00:00Z', serializedUnits: 2, lotManagedRecords: 1, lotManagedUnits: 4, withoutLocation: 1 }; },
     work: async () => { calls.work++; return { asOf: '2026-08-01T00:00:00Z', definition: 'inventory age', tasks: [{ taskType: 'missing_location', subjectKind: 'item', subjectId: 'i1', publicId: 'RV-I1', displayName: 'Charizard', reason: 'No active storage location is recorded.', ageDays: 3, severity: 'high', score: 83, scoreExplanation: '80 rule weight + 3 age points', destination: '/inventory/current?needsLocation=1' }] }; },
-    workflows: async () => { calls.workflows++; return { asOf: '2026-08-01T00:00:00Z', media: { no_active_photo: 7, by_readiness: { missing_required_angle: 3 }, open_issue_count: 2 }, listingPrep: { by_status: { ready_to_list: 4 }, by_readiness: { needs_owner_review: 1, needs_photos: 5, blocked: 2 }, never_started: 6 } }; },
+    workflows: async () => { calls.workflows++; return { asOf: '2026-08-01T00:00:00Z', media: { no_active_photo: 7, by_readiness: { missing_required_angle: 3 }, open_issue_count: 2 }, listingPrep: { by_status: { ready_to_list: 4 }, by_readiness: { needs_owner_review: 1, needs_photos: 5, blocked: 2 }, never_started: 6, ready_now: 3, regressed_ready: 1 } }; },
     activity: async () => { calls.activity++; return { asOf: '2026-08-01T00:00:00Z', source: 'immutable inventory_movements', events: [{ id: 'm1', public_id: 'RV-M1', eventType: 'inventory_moved', moved_at: '2026-08-01T00:00:00Z', destination: '/inventory/current/i1' }, { id: 'm2', public_id: 'RV-M2', eventType: 'inventory_moved', moved_at: '2026-08-01T00:00:00Z', destination: '/inventory/lots/l1' }] }; },
   }),
 }));
@@ -66,5 +66,48 @@ describe('operational Dashboard', () => {
     expect(screen.getByRole('link', { name: /Inventory moved · RV-M2/ }).getAttribute('href')).toBe('/inventory/lots/l1');
     fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
     await waitFor(() => expect(calls).toEqual({ health: 2, work: 2, workflows: 2, activity: 2 }));
+  });
+});
+
+describe('backlog tiles open exactly what they counted', () => {
+  const href = (name: RegExp) => screen.getByRole('link', { name }).getAttribute('href');
+
+  it('sends every Listing Prep readiness tile to a destination spanning live statuses', async () => {
+    renderDashboard();
+    await screen.findByText('Ready to list');
+    // No tab=queue. That filter excluded ready_to_list, which is exactly where
+    // a regressed record lives, so the tile counted records the page could not
+    // show.
+    for (const [label, readiness] of [
+      [/Needs owner review/, 'needs_owner_review'],
+      [/Prep needs photos/, 'needs_photos'],
+      [/^Blocked/, 'blocked'],
+    ] as const) {
+      expect(href(label)).toBe(`/listing-prep?readiness=${readiness}`);
+      expect(href(label)).not.toContain('tab=queue');
+    }
+  });
+
+  it('counts genuinely-ready records, not the raw ready_to_list status', async () => {
+    renderDashboard();
+    await screen.findByText('Ready to list');
+    // by_status.ready_to_list is 4; only 3 are still actually ready.
+    expect(screen.getByRole('link', { name: /Ready to list/ }).textContent).toContain('3');
+    expect(href(/Ready to list/)).toBe('/listing-prep?tab=ready');
+  });
+
+  it('gives regressed-from-ready records their own honest destination', async () => {
+    renderDashboard();
+    await screen.findByText('Regressed from ready');
+    expect(screen.getByRole('link', { name: /Regressed from ready/ }).textContent).toContain('1');
+    expect(href(/Regressed from ready/)).toBe('/listing-prep?tab=ready&regressed=1');
+  });
+
+  it('sends never-started inventory to a queue that can actually contain it', async () => {
+    renderDashboard();
+    await screen.findByText('Never started');
+    // The old link was tab=queue, which reads listing_prep rows — and a
+    // never-started record has none by definition.
+    expect(href(/Never started/)).toBe('/listing-prep?tab=candidates');
   });
 });
