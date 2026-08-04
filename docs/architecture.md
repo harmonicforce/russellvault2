@@ -425,3 +425,11 @@ curl -s https://<your-app-host>/api/version
 Do not infer the deployed branch/SHA from GitHub's default branch or
 `railway.json` — confirm it from the running service and, for G0A, from Railway's
 own build/deploy evidence.
+
+### Governed acquisition classification foundation (S1.1)
+
+Acquisition classification taxonomy is governed workspace reference data, not a PostgreSQL enum and not only a TypeScript constant. Each workspace receives the ten D-6 default options (`slab`, `single`, `sealed`, `sneakers`, `apparel`, `accessories`, `electronics`, `collectibles`, `other`, `unreviewed`) through `acquisition_classification_options`, while owners can add future options without a deployment.
+
+Classification rules are workspace-scoped, versioned rows in `classification_rules`. Initial `legacy_classifier_v5` seed data records the business-vertical mappings, delivered-item/full-title pattern families, strong mystery handling, explicit-evidence placeholder, and owner-confirmed seller-specialization fallbacks for `topshelfcollects`, `loosepacks`, and `findsfordays`. Rule-version changes insert new rows; existing rule history is not rewritten.
+
+Governed acquisition line decisions are append-only rows in `acquisition_line_classifications`. A newer decision points at the prior decision through `supersedes_classification_id`; the prior row is retired exactly once by setting `superseded_at`, and current classification means `superseded_at IS NULL`, so current and historical rows remain queryable without mutating semantic evidence. Until later S1 cutover work, `server/src/classify.ts` remains the active classifier for the legacy SQLite path only; no Express endpoint or React page reads the governed classification tables yet.
