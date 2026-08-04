@@ -225,6 +225,28 @@ start. Exact-head GitHub CI is the evidence for that tier. Since `supabase/` is
 byte-identical to `main`, the database tiers re-prove `main` rather than
 anything this PR changed.
 
+### `15_acquisition_digest_parity.sql` recurred, for the third recorded time
+
+On the first PR-triggered run, `shadow-db-supabase-stack` failed: the step timed
+out after 12 minutes with the suite sitting on
+`supabase/tests/15_acquisition_digest_parity.sql`. Every preceding file passed.
+It is green on re-run (4m20s) and was green first-time on the
+push-triggered run of the **same commit**.
+
+This is the same intermittent slowdown already recorded against that file — it
+has previously exceeded a 600s per-file timeout in one run while completing in
+6.7s standalone and passing on a second run. Four things establish that this
+occurrence is not a regression from S0.2:
+
+1. `git diff --name-only origin/main -- supabase` is **empty** — this PR cannot
+   change the behaviour of a pgTAP file it does not touch.
+2. The push-triggered run on the identical SHA passed that job first time.
+3. The local postgres-shim tier passed all 54 files including that one.
+4. The PR run's own `shadow-db-postgres-shim` passed.
+
+It remains an open flake in the suite, not an S0.2 finding, and it is worth the
+steward's attention as a recurring pattern rather than a one-off.
+
 ## Limitations
 
 - **Repository verification only.** Nothing here proves hosted behaviour.
@@ -307,6 +329,10 @@ and PR #38 have both merged.
 > - Repository migration count: **60**
 > - pgTAP files: **54**
 > - Exact PR-head CI run: *(steward to record for PR #38 and the S0.2 PR)*
+> - Known flake: `supabase/tests/15_acquisition_digest_parity.sql` has now timed
+>   out in three separate runs while passing standalone, on re-run, and on the
+>   sibling run of the same commit. It is unrelated to the changes in the PRs it
+>   has failed on.
 > - Required jobs: build-and-verify, shadow-db-postgres-shim,
 >   shadow-db-supabase-stack, dev-advisory-report
 > - Railway deployment status on the reviewed merge: *(steward to record)*
