@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { getDb } from '../db.js';
 import { PRODUCT_TYPES } from '../classify.js';
 
 const router = Router();
@@ -10,6 +10,7 @@ const SORTABLE = new Set([
 ]);
 
 router.get('/', (req, res) => {
+  const db = getDb();
   const {
     q, seller, reconciliationStatus, businessVertical, productType, includeExcluded,
     sort = 'processed_date', order = 'desc', page = '1', pageSize = '50',
@@ -54,6 +55,7 @@ router.get('/', (req, res) => {
 
 // Settled cost-by-type rollup — the numbers we worked out, live from the data.
 router.get('/type-summary', (_req, res) => {
+  const db = getDb();
   const rows = db.prepare(
     `SELECT COALESCE(product_type, 'Unreviewed') AS product_type,
             COUNT(*) AS lines, COALESCE(SUM(total_paid), 0) AS total
@@ -74,6 +76,7 @@ router.get('/type-summary', (_req, res) => {
 // lots once they know what they were). Persists; the startup backfill never
 // overwrites a value that's already set.
 router.patch('/:id', (req, res) => {
+  const db = getDb();
   const { product_type } = req.body as { product_type?: string };
   if (!product_type || !PRODUCT_TYPES.includes(product_type as any)) {
     return res.status(400).json({ error: `product_type must be one of: ${PRODUCT_TYPES.join(', ')}` });
@@ -85,6 +88,7 @@ router.patch('/:id', (req, res) => {
 });
 
 router.get('/facets', (_req, res) => {
+  const db = getDb();
   const facet = (col: string) =>
     (db.prepare(`SELECT ${col} as value, COUNT(*) as n FROM whatnot_purchases WHERE ${col} IS NOT NULL AND ${col} != '' AND COALESCE(is_excluded, 0) = 0 GROUP BY ${col} ORDER BY n DESC LIMIT 200`).all() as any[]);
   res.json({
@@ -95,6 +99,7 @@ router.get('/facets', (_req, res) => {
 });
 
 router.get('/:id', (req, res) => {
+  const db = getDb();
   const row = db.prepare('SELECT * FROM whatnot_purchases WHERE acquisition_line_id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'not found' });
   const links = db.prepare('SELECT * FROM cost_links WHERE acquisition_line_id = ? ORDER BY created_at DESC').all(req.params.id);

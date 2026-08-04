@@ -1,9 +1,10 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { getDb } from '../db.js';
 
 const router = Router();
 
 function liveChecks() {
+  const db = getDb();
   const results: any[] = [];
 
   const invCount = (db.prepare('SELECT COUNT(*) as n FROM inventory_lots').get() as any).n;
@@ -67,6 +68,7 @@ function liveChecks() {
 }
 
 router.get('/', (_req, res) => {
+  const db = getDb();
   const stored = db.prepare('SELECT * FROM checks ORDER BY check_id').all();
   const live = liveChecks();
   res.json({ stored, live });

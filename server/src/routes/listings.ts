@@ -1,17 +1,19 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { getDb } from '../db.js';
 import { nextId } from '../ids.js';
 import { ValidationError, requirePositiveInteger, sendValidationError } from '../validation.js';
 
 const router = Router();
 
 router.get('/:id', (req, res) => {
+  const db = getDb();
   const row = db.prepare('SELECT * FROM ebay_listings WHERE listing_id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'not found' });
   res.json(row);
 });
 
 router.get('/', (req, res) => {
+  const db = getDb();
   const { q, status, page = '1', pageSize = '50', sort = 'created_at', order = 'desc' } = req.query as Record<string, string>;
   const where: string[] = [];
   const params: Record<string, any> = {};
@@ -34,6 +36,7 @@ router.get('/', (req, res) => {
 
 // Core creation logic, exported so regression tests can exercise it directly.
 export function createListing(body: any) {
+  const db = getDb();
   const b = body || {};
   if (!b.inventory_lot_id) throw new ValidationError('inventory_lot_id is required');
   const lot = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(b.inventory_lot_id) as any;
@@ -102,6 +105,7 @@ const EDITABLE = [
 ];
 
 export function updateListing(id: string, body: any) {
+  const db = getDb();
   const existing = db.prepare('SELECT * FROM ebay_listings WHERE listing_id = ?').get(id) as any;
   if (!existing) throw new ValidationError('not found', 404);
   const updates: Record<string, any> = {};

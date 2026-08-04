@@ -3,8 +3,8 @@ import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { seedIfEmpty } from './seed.js';
-import { migrateProductType } from './db.js';
+import { prepareLegacyDatabase } from './legacyBootstrap.js';
+import { buildHealthResponse, checkLegacyDatabaseHealth } from './legacyDatabaseHealth.js';
 import { legacyWriteGuard, legacyWritesEnabled } from './legacyWriteGuard.js';
 import { ValidationError } from './validation.js';
 import inventoryRouter from './routes/inventory.js';
@@ -25,8 +25,14 @@ import mediaRouter from './routes/media.js';
 import listingPrepRouter from './routes/listingPrep.js';
 import operationsDashboardRouter from './routes/operationsDashboard.js';
 
-seedIfEmpty();
-migrateProductType();
+// The ONE startup boundary for legacy-database writes. This used to be an
+// unconditional `seedIfEmpty(); migrateProductType();` pair, which ran before
+// the legacy write guard below was installed and which `ALLOW_LEGACY_WRITES`
+// could not reach. It now evaluates SEED_LEGACY_ON_EMPTY before anything
+// mutating is reachable, and does nothing at all unless that flag authorizes it.
+// See server/src/legacyBootstrapPolicy.ts for why the two permissions are
+// separate.
+prepareLegacyDatabase();
 
 const app = express();
 app.use(cors());
@@ -91,9 +97,27 @@ app.use('/api/dashboard', dashboardRouter);
 app.use('/api/checks', checksRouter);
 app.use('/api/lookups', lookupsRouter);
 
-// readOnly reflects the legacy-write guard's live state — never a secret,
-// just the boolean the client needs to render its read-only banner.
-app.get('/api/health', (_req, res) => res.json({ ok: true, readOnly: !legacyWritesEnabled }));
+// `ok` and `readOnly` are unchanged and still carry what the client reads:
+// `readOnly` reflects the legacy-write guard's live state and is never a secret.
+//
+// The legacy-database fields are new. Before S0.1 this endpoint answered
+// `{ ok: true }` even when the legacy volume was missing, because startup had
+// already rebuilt the database from repository fixtures and made the failure
+// invisible. Startup no longer does that, so the failure has to be reported
+// here instead — and reported as a failure, not as a reassuring 200.
+//
+// A genuinely unusable legacy database returns 503. That is deliberate: Railway
+// health-checks this path, so an unusable database stops a bad deployment from
+// being promoted and leaves the previous good one serving. `reason` is a bounded
+// code (see legacyDatabaseHealth.ts) and never carries a path, SQL, a driver
+// message or a stack trace.
+app.get('/api/health', (_req, res) => {
+  const { status, body } = buildHealthResponse({
+    legacy: checkLegacyDatabaseHealth(),
+    readOnly: !legacyWritesEnabled,
+  });
+  res.status(status).json(body);
+});
 
 // Read-only build/version info to confirm which commit is actually deployed.
 // Reports only a git SHA + Node version — never any secret. Railway provides

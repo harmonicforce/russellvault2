@@ -36,8 +36,12 @@ workflows described under "What it does", and is reached only through
   30 food/candy rows. No restoration is performed here; see
   `docs/architecture.md` for the exact reconciliation procedure required
   before any restoration.
-- **Production writes are read-only by default** — set `ALLOW_LEGACY_WRITES=true`
-  on the server to re-enable them; see `docs/architecture.md`.
+- **Two separate legacy permissions, neither implying the other.**
+  `ALLOW_LEGACY_WRITES=true` re-enables legacy HTTP mutation routes.
+  `SEED_LEGACY_ON_EMPTY=true` is what allows the process to create, migrate or
+  seed the legacy SQLite database at startup. Both are off in production by
+  default, and the startup one is what stops a missing or mispointed volume from
+  being silently rebuilt from `server/seed/*.json`. See `docs/architecture.md`.
 - **Unsafe financial writes remain a concern for later target-model phases**,
   and money/quantities are stored as SQLite `REAL` rather than integer cents
   (though request-level validation now rejects non-integer quantities).
@@ -103,7 +107,9 @@ fact this repository cannot verify — read it from the running service.
 ## Stack
 
 - `server/` — Express + better-sqlite3 (TypeScript, runs with `tsx`). SQLite file
-  lives at `server/data/vault.db` and is seeded once from `server/seed/*.json`.
+  lives at `server/data/vault.db`. It is created and seeded from
+  `server/seed/*.json` only when `SEED_LEGACY_ON_EMPTY=true`, which `npm run dev`
+  and `npm run seed` set for you and production does not set.
 - `client/` — Vite + React + TypeScript + Tailwind v4, TanStack Query for data
   fetching, react-router for navigation.
 - `supabase/` + `scripts/db/` — the **governed inventory model**: a
@@ -143,9 +149,14 @@ npm run dev            # runs the API on :4000 and the Vite dev server on :5173
 ```
 
 Open http://localhost:5173. The Vite dev server proxies `/api` to the Express
-backend. The SQLite database is created and seeded automatically on first run
-of the server (`server/data/vault.db`, gitignored) — delete it to reseed
-from scratch.
+backend. `npm run dev` sets `SEED_LEGACY_ON_EMPTY=true`, so the SQLite database
+is created and seeded on first run (`server/data/vault.db`, gitignored) — delete
+it to reseed from scratch, or run `npm run seed`.
+
+Without that flag the server does **not** create or seed anything: it reports the
+missing database through `GET /api/health` and returns 503. That is deliberate,
+and it is what production runs. If you start the server some other way and see
+`legacy_database_missing`, set the flag or run `npm run seed`.
 
 ## Development, CI, and the three dependency roots
 
@@ -250,11 +261,17 @@ API on one port. `railway.json` already wires this up.
    - Build: `npm run build` (installs server + client deps, builds the client).
    - Start: `npm run start` (runs the API, which also serves the client).
    - Health check: `/api/health`.
-2. **Add a volume for the database (recommended).** SQLite lives on disk, and
-   Railway containers have an ephemeral filesystem — without a volume the
-   database resets on every redeploy. It would re-seed the original workbook
-   data automatically, but any inventory/sales you entered in the app would be
-   lost. To persist:
+2. **Add a volume for the database (required).** SQLite lives on disk and
+   Railway containers have an ephemeral filesystem, so without a volume the
+   database is gone on every redeploy.
+
+   It no longer re-seeds itself. A deployment that boots without its database
+   reports `GET /api/health` as 503 with
+   `{ "reason": "legacy_database_missing" }` and Railway's health check fails,
+   which keeps the previous good deployment serving instead of promoting one
+   backed by a counterfeit database rebuilt from the original workbook import.
+   Restoring is a deliberate act — see
+   `docs/runbooks/railway-backup-deploy-preflight.md`.
    - Add a Volume to the service and mount it at e.g. `/data`.
    - Set the environment variable `DATA_DIR=/data`.
 
@@ -267,5 +284,9 @@ generated domain. No `.env` is required for a default deploy.
 ### Notes
 - `better-sqlite3` is a native module; Railway's Nixpacks Node build compiles
   or fetches a prebuilt binary automatically.
-- To reseed a deployed instance from scratch, delete `vault.db` from the volume
-  (or detach/reattach the volume) and redeploy.
+- Reseeding a deployed instance from scratch is now an explicit, two-part act:
+  remove `vault.db` from the volume **and** set `SEED_LEGACY_ON_EMPTY=true` for
+  that boot. Unset it again afterwards. `server/seed/*.json` is the original
+  workbook import, not a backup — in particular it contains no `sales` rows, so
+  seeding over a lost production database would silently discard every recorded
+  sale. Restore from a verified backup instead.

@@ -4,7 +4,11 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // database at module load time), so this uses a dynamic import instead of a
 // static one — static imports are hoisted and would run before this line.
 process.env.DATABASE_PATH = ':memory:';
-const { db, initSchema, migrateProductType } = await import('./db.js');
+// These suites drive the bootstrap path itself, so they authorize it explicitly.
+// Production does not set this; see server/src/legacyBootstrapPolicy.ts.
+process.env.SEED_LEGACY_ON_EMPTY = 'true';
+const { getDb, initSchema, migrateProductType } = await import('./db.js');
+const db = getDb();
 
 function insertPurchase(row: Partial<Record<string, any>> & { acquisition_line_id: string }) {
   db.prepare(

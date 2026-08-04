@@ -1,6 +1,7 @@
-import { db } from './db.js';
+import { getDb } from './db.js';
 
 export function nextId(table: string, column: string, prefix: string, width = 6): string {
+  const db = getDb();
   const row = db
     .prepare(
       `SELECT ${column} as id FROM ${table} WHERE ${column} LIKE @pattern ORDER BY LENGTH(${column}) DESC, ${column} DESC`

@@ -1,17 +1,19 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { getDb } from '../db.js';
 import { nextId } from '../ids.js';
 import { ValidationError, requirePositiveInteger, sendValidationError } from '../validation.js';
 
 const router = Router();
 
 router.get('/:id', (req, res) => {
+  const db = getDb();
   const row = db.prepare('SELECT * FROM sales WHERE sale_id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'not found' });
   res.json(row);
 });
 
 router.get('/', (req, res) => {
+  const db = getDb();
   const { q, status, page = '1', pageSize = '50', sort = 'sold_date', order = 'desc' } = req.query as Record<string, string>;
   const where: string[] = [];
   const params: Record<string, any> = {};
@@ -34,6 +36,7 @@ router.get('/', (req, res) => {
 
 // Core creation logic, exported so regression tests can exercise it directly.
 export function createSale(body: any) {
+  const db = getDb();
   const b = body || {};
   if (!b.inventory_lot_id) throw new ValidationError('inventory_lot_id is required');
 
@@ -142,6 +145,7 @@ router.post('/', (req, res) => {
 const EDITABLE = ['payment_status', 'fulfillment_status', 'tracking_number', 'delivered_date', 'return_status', 'owner_notes', 'ebay_order_id'];
 
 router.patch('/:id', (req, res) => {
+  const db = getDb();
   const existing = db.prepare('SELECT * FROM sales WHERE sale_id = ?').get(req.params.id) as any;
   if (!existing) return res.status(404).json({ error: 'not found' });
   const updates: Record<string, any> = {};

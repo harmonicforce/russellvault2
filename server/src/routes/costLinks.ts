@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { getDb } from '../db.js';
 import { nextId } from '../ids.js';
 import { ValidationError, requirePositiveInteger, requireNonNegativeNumber, sendValidationError } from '../validation.js';
 
 const router = Router();
 
 function recomputeInventoryRollup(inventoryLotId: string) {
+  const db = getDb();
   const agg = db
     .prepare(`SELECT COALESCE(SUM(allocated_quantity),0) as qty, COALESCE(SUM(allocated_cost),0) as cost
                FROM cost_links WHERE inventory_lot_id = ? AND allocation_status = 'Confirmed'`)
@@ -19,6 +20,7 @@ function recomputeInventoryRollup(inventoryLotId: string) {
 }
 
 function recomputePurchaseRollup(acquisitionLineId: string) {
+  const db = getDb();
   const agg = db
     .prepare(`SELECT COALESCE(SUM(allocated_quantity),0) as qty, COALESCE(SUM(allocated_cost),0) as cost
                FROM cost_links WHERE acquisition_line_id = ? AND allocation_status = 'Confirmed'`)
@@ -93,6 +95,7 @@ function assertConfirmWithinCapacity(params: {
   excludeAllocationId?: string;
 }) {
   const { lot, purchase, allocatedQuantity, allocatedCost, excludeAllocationId } = params;
+  const db = getDb();
 
   const confirmedForPurchase = db
     .prepare(
@@ -133,6 +136,7 @@ function assertConfirmWithinCapacity(params: {
 }
 
 function assertNoDuplicateActivePair(inventoryLotId: string, acquisitionLineId: string, excludeAllocationId?: string) {
+  const db = getDb();
   const dup = db
     .prepare(
       `SELECT allocation_id FROM cost_links
@@ -148,6 +152,7 @@ function assertNoDuplicateActivePair(inventoryLotId: string, acquisitionLineId: 
 }
 
 router.get('/', (req, res) => {
+  const db = getDb();
   const { status, inventoryLotId, acquisitionLineId, q, page = '1', pageSize = '50' } = req.query as Record<string, string>;
   const where: string[] = [];
   const params: Record<string, any> = {};
@@ -170,6 +175,7 @@ router.get('/', (req, res) => {
 // Core creation logic, exported so regression tests can exercise it directly
 // against an in-memory database without going through HTTP.
 export function createCostLink(body: any) {
+  const db = getDb();
   const b = body || {};
   if (!b.inventory_lot_id || !b.acquisition_line_id) {
     throw new ValidationError('inventory_lot_id and acquisition_line_id are required');
@@ -256,6 +262,7 @@ router.post('/', (req, res) => {
 const EDITABLE_FIELDS = ['allocation_status', 'allocated_quantity', 'allocated_cost', 'owner_notes', 'physical_reference', 'supporting_evidence'];
 
 export function updateCostLink(id: string, body: any) {
+  const db = getDb();
   const b = body || {};
 
   return db.transaction(() => {

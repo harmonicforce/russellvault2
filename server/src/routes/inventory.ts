@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { getDb } from '../db.js';
 import { nextId } from '../ids.js';
 import { ValidationError, requirePositiveInteger, sendValidationError } from '../validation.js';
 
@@ -12,6 +12,7 @@ const SORTABLE = new Set([
 ]);
 
 router.get('/', (req, res) => {
+  const db = getDb();
   const {
     q, vertical, category, costStatus, listingStatus, trackingMode, recordOrigin,
     sort = 'inventory_lot_id', order = 'asc', page = '1', pageSize = '50',
@@ -49,6 +50,7 @@ router.get('/', (req, res) => {
 });
 
 router.get('/facets', (_req, res) => {
+  const db = getDb();
   const facet = (col: string) =>
     (db.prepare(`SELECT ${col} as value, COUNT(*) as n FROM inventory_lots WHERE ${col} IS NOT NULL AND ${col} != '' GROUP BY ${col} ORDER BY n DESC`).all() as any[]);
   res.json({
@@ -62,6 +64,7 @@ router.get('/facets', (_req, res) => {
 });
 
 router.get('/:id', (req, res) => {
+  const db = getDb();
   const row = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'not found' });
   const links = db.prepare('SELECT * FROM cost_links WHERE inventory_lot_id = ? ORDER BY created_at DESC').all(req.params.id);
@@ -72,6 +75,7 @@ router.get('/:id', (req, res) => {
 
 // Core creation logic, exported so regression tests can exercise it directly.
 export function createInventoryLot(body: any) {
+  const db = getDb();
   const b = body || {};
   // Previously `Number(b.quantity) || 0`: a missing, zero, negative, or
   // fractional quantity was silently accepted as 0 (or, for a negative
@@ -157,6 +161,7 @@ const EDITABLE_FIELDS = [
 ];
 
 export function updateInventoryLot(id: string, body: any) {
+  const db = getDb();
   const existing = db.prepare('SELECT * FROM inventory_lots WHERE inventory_lot_id = ?').get(id) as any;
   if (!existing) throw new ValidationError('not found', 404);
 
