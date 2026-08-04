@@ -16,9 +16,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 vi.mock('./lib/provenanceConfig', () => ({
   isProvenanceUiEnabled: () => true,
   getProvenanceUiConfig: () => ({ mode: 'repository-fixtures', url: 'http://supabase.test', anonKey: 'anon' }),
+  SHADOW_IMPORT_FLAG: 'VITE_SHADOW_IMPORT',
   STAGING_NOTICE: '',
 }));
+// Fully governed configuration — the mode the operator actually runs.
+vi.mock('./lib/appConfig', () => ({
+  resolveAppConfig: () => ({ mode: 'governed', url: 'http://supabase.test', anonKey: 'anon' }),
+}));
 vi.mock('./lib/api', () => ({ get: () => new Promise(() => undefined) }));
+vi.mock('./lib/healthApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/healthApi')>()),
+  fetchSystemHealth: () => new Promise(() => undefined),
+}));
 // AuthShell would demand a real shadow session; the navigation under test sits
 // inside it and does not depend on it.
 vi.mock('./components/AuthShell', () => ({

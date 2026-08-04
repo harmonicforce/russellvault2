@@ -1,9 +1,14 @@
-// Feature-flag resolution for the Phase 2 Supabase shadow auth shell.
+// Supabase connection configuration for the governed application.
 //
-// The shadow integration is OFF unless BOTH the explicit flag and the full
-// Supabase configuration are present. Missing or partial configuration always
-// resolves to null, which keeps the deployed legacy SQLite behavior untouched.
-// No URL, key, or secret is ever committed; values come from the environment.
+// Resolves only when BOTH the explicit flag and the full Supabase
+// configuration are present; anything else returns null. Note that null here
+// means "cannot construct a client", not "run the legacy app instead" —
+// `appConfig.ts` decides which application runs, and a partial configuration
+// fails closed there. No URL, key, or secret is ever committed; values come
+// from the environment.
+//
+// The variable names retain the historical "shadow" prefix because the
+// deployed service already sets them. Renaming them is a separate change.
 
 export interface ShadowAuthConfig {
   url: string;

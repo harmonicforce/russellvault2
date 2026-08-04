@@ -18,18 +18,27 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 vi.mock('./lib/provenanceConfig', () => ({
   isProvenanceUiEnabled: () => false,
   getProvenanceUiConfig: () => null,
+  SHADOW_IMPORT_FLAG: 'VITE_SHADOW_IMPORT',
   STAGING_NOTICE: '',
 }));
+// Legacy-only: no governed configuration at all. This is the shape the shell
+// must stay navigable in, and it is now an explicit mode rather than the
+// fall-through that any partial configuration used to produce.
+vi.mock('./lib/appConfig', () => ({ resolveAppConfig: () => ({ mode: 'legacy-only' }) }));
 vi.mock('./lib/api', () => ({ get: () => new Promise(() => undefined) }));
+// Health never settles, which is the state these tests want: the chrome must
+// be navigable before any backend answers.
+vi.mock('./lib/healthApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/healthApi')>()),
+  fetchSystemHealth: () => new Promise(() => undefined),
+}));
 
 const { default: App } = await import('./App');
 
 afterEach(() => cleanup());
 
-// `ReadOnlyBanner` reads deployment health through react-query, so the shell
-// needs a client even though nothing here asserts on the banner. The request
-// never settles, which is the state these tests want anyway: the chrome must be
-// navigable before any backend answers.
+// `SystemStatusBanner` reads deployment health through react-query, so the
+// shell needs a client even though nothing here asserts on the banner.
 const renderApp = () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(

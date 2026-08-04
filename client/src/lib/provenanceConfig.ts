@@ -1,13 +1,16 @@
-// Feature-flag resolution for the Phase 3 import-review interface.
+// Feature-flag resolution for the import-review interface.
 //
 // The review UI requires BOTH:
-//   * a working shadow auth configuration (Phase 2), because every stored
-//     provenance row is read under the caller's own JWT with RLS applied; and
-//   * the explicit Phase 3 review flag.
+//   * a working Supabase auth configuration, because every stored provenance
+//     row is read under the caller's own JWT with RLS applied; and
+//   * the explicit review flag.
 //
-// Missing or partial configuration always resolves to null, which keeps the
-// deployed legacy SQLite experience completely untouched: no nav entry, no
-// route, no query, no Supabase traffic. There is no default-on path.
+// This resolver answers one narrow question — may the import-review surface
+// mount? — and returns null when it may not. It is NOT the application's
+// configuration gate: a PARTIAL governed configuration must fail closed rather
+// than fall through to the unauthenticated legacy app, and that decision lives
+// in `appConfig.ts`, which AuthShell consults first. There is no default-on
+// path here either way.
 
 import { getShadowAuthConfig, type EnvLike } from './shadowConfig';
 

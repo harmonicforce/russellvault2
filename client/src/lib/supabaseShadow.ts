@@ -1,8 +1,10 @@
-// Supabase client factory for the shadow auth shell.
+// Supabase client factory for the governed application.
 //
 // Returns null unless the explicit feature flag AND full configuration are
-// present (see shadowConfig.ts), so the deployed default remains the legacy
-// SQLite app with no Supabase traffic at all.
+// present (see shadowConfig.ts). Callers must not read null as "fall back to
+// legacy": AuthShell resolves the application mode first and refuses to render
+// anything at all when the governed configuration is partial, so no client is
+// ever constructed in that case.
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from './database.types';

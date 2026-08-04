@@ -11,7 +11,7 @@ It contains **two systems that must not be confused with each other**:
 | Seeded from | `Russell_Vault_Operationsmost_capable.xlsx` (1,487 lots, 2,149 Whatnot purchase lines, 287 cost-basis candidates, 20 eBay listings) | nothing — operators enter inventory through governed intake |
 | Authority | **none.** A prototype and a spreadsheet replacement | authoritative for inventory identity, readiness, movement and history |
 | Money | SQLite `REAL` | `amount_minor` integers with an explicit currency |
-| Visible when | always | only when the shadow flag *and* shadow auth configuration are both set |
+| Visible when | always | only in `governed` mode — all four client variables set and exact; a partial configuration fails closed instead of falling back here |
 
 Totals from the two systems are **never** added together. Anywhere the legacy
 numbers appear they are labelled as legacy, spreadsheet-imported inventory.
@@ -96,13 +96,24 @@ Visible only when the shadow surfaces are configured (see "Feature flags"):
 - **Sales** — proceeds/fees/shipping and computed net against confirmed cost basis.
 - **Health Checks** — data-integrity checks over the imported data.
 
-### Feature flags
+### Client configuration modes
 
-The Supabase-backed surfaces require **both** `VITE_SHADOW_IMPORT=repository-fixtures`
-and a complete shadow auth configuration. With either absent there is no nav
-entry, no route and no Supabase traffic, and the app is the legacy SQLite
-experience exactly as it was. Which flags a given deployment sets is a hosted
-fact this repository cannot verify — read it from the running service.
+The browser resolves one of three modes before it constructs any client or
+issues any request. See `client/src/lib/appConfig.ts`.
+
+| Mode | Condition | Behaviour |
+|---|---|---|
+| `governed` | `VITE_SHADOW_AUTH=supabase`, `VITE_SHADOW_IMPORT=repository-fixtures`, plus non-empty `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` | Sign-in, workspace gating, governed routes |
+| `legacy-only` | **none** of those four present | The legacy app renders, with a persistent banner saying it is legacy-only and non-authoritative |
+| `misconfigured` | anything in between — one missing, a wrong flag value, a whitespace-only URL or key | **Fails closed**: a configuration-error screen naming the offending variables. It does not fall back to the legacy app |
+
+That last row changed in S0.2. A partial configuration used to resolve to
+"disabled" and silently serve the unauthenticated legacy application, so one
+dropped variable could downgrade a governed deployment without any visible
+signal. The error screen names variables only and never prints a value.
+
+Which variables a given deployment sets is a hosted fact this repository cannot
+verify — read it from the running service.
 
 ## Stack
 

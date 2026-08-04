@@ -15,12 +15,60 @@ Reading anything below without this distinction will produce wrong conclusions.
 | Authority | **none** | authoritative for inventory identity, readiness, duplicate detection, serialization, movement and immutable history |
 | Access control | none beyond the legacy-write guard (HTTP only) and the boot-write policy | RLS + workspace membership + role checks, on every read and mutation |
 | Money | SQLite `REAL` | `amount_minor` integers plus an explicit currency |
-| Reachable | always | only when the shadow flag and shadow auth configuration are both present |
+| Reachable | always | only in `governed` mode — all four client variables present and exact. A PARTIAL governed configuration now fails closed rather than falling back here (see "Application configuration modes") |
 
 **The two are never summed.** A legacy total that appears anywhere is labelled as
 legacy, spreadsheet-imported inventory. Nothing in this repository migrates
 legacy rows into the governed model, and the SQLite system does not become
 authoritative by being present.
+
+### The client knows which system owns which fact
+
+`client/src/lib/dataTopology.ts` is the map, and it is the client's own copy of
+the table above rather than a second opinion. Two facts about it are
+load-bearing:
+
+- **There are two business-data backends, and authority is per DOMAIN.** There
+  is deliberately no zero-argument function naming one global active backend,
+  because no honest answer exists — `backendForDomain(domain)` requires the
+  domain. Governed Supabase owns and is authoritative for inventory identity,
+  intake, current inventory, locations, movement, media, corrections, cycle
+  counts, Listing Prep, readiness and the operations dashboard. Legacy SQLite
+  REST owns legacy inventory, purchases, cost links, listings, sales, checks and
+  the legacy dashboard section, and is authoritative for none of them.
+- **Runtime availability is separate from authority.** Losing the governed
+  configuration makes the governed backend unreachable; it does not make legacy
+  authoritative for anything. `DUAL_WRITES_ENABLED` is `false` and
+  `domainsWithMultipleAuthoritativeWriters()` is required by test to be empty,
+  so no fact is ever written to both systems.
+
+This replaced `dataAdapter.ts`, which asserted that legacy SQLite REST was "the
+ONLY read and write path for business data" and that Supabase was touched
+"solely for authentication and workspace-membership checks". Both had been false
+since governed intake shipped, and two client tests were pinning the false
+version in place.
+
+## Application configuration modes
+
+Which application the browser runs is resolved once, by
+`client/src/lib/appConfig.ts`, before any client is constructed or any request
+is made. There are three outcomes and `AuthShell` acts on them:
+
+| Mode | Condition | Behaviour |
+|---|---|---|
+| `governed` | `VITE_SHADOW_AUTH=supabase`, `VITE_SHADOW_IMPORT=repository-fixtures`, and a non-empty `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` | Supabase Auth, workspace gating, first-run setup, governed routes. No legacy-only warning. |
+| `legacy-only` | **none** of those four variables present | The legacy application renders, and the status banner says so: legacy-only, non-authoritative, governed workflows unavailable, totals must not be combined. |
+| `misconfigured` | any other combination — one missing, a wrong flag value, a whitespace-only URL or key | **Fails closed.** A full-screen configuration error naming the offending variables. No routes, no sign-in form, no Supabase client constructed, no request issued. |
+
+The third row is the point. Before S0.2, every one of those partial states
+resolved to `null` and fell through to the unauthenticated legacy application,
+so a single dropped environment variable silently downgraded a governed
+deployment into the legacy one with nothing on screen to say so. The error
+screen names FIELDS only and never a value, because two of the four carry a
+project URL and an anon key.
+
+The variable names keep their historical `SHADOW_` prefix because the deployed
+service already sets them; renaming them is a separate change.
 
 ## ⚠️ Safety notices (read first)
 
@@ -160,6 +208,28 @@ and a bounded `reason` from a closed set: `legacy_database_missing`,
 `legacy_health_check_failed`. No path, SQL, driver message or stack trace is
 ever included. Railway health-checks this path, so an unusable database now
 fails the check and keeps the previous good deployment serving.
+
+#### How the client consumes it
+
+`client/src/lib/healthApi.ts` is a dedicated transport, because the generic
+`request()` helper in `api.ts` turns every non-2xx into an `Error` and would
+discard the 503 body — which is exactly what made the old banner vanish at the
+moment it had something to say. The health transport treats **200 and the
+defined 503 as two successful parses** and everything else as a transport
+error: an unexpected status, a body that is not the documented shape, or a
+network failure. A reason code the client does not recognize is dropped rather
+than displayed, and no server text, path, SQL or stack trace can reach the
+screen. The generic `get()` is unchanged, so no other endpoint gains permission
+to return 503.
+
+`client/src/components/SystemStatusBanner.tsx` renders one banner with a fixed
+precedence — structured failure, then unverifiable health, then legacy-only,
+then read-only — so the operator never sees two banners contradicting each
+other. A structured failure is `role="alert"`, is shown on every route
+including governed ones, and says that legacy data is untrusted while stating
+plainly that governed inventory workflows are unaffected.
+
+#### The predicate
 
 `legacySeeded` requires `inventory_lots` and `whatnot_purchases` each to hold at
 least one row. It deliberately does **not** compare against the repository seed

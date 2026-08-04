@@ -194,9 +194,14 @@ Coverage comes in three distinct tiers — do not conflate them:
   the migrations (regenerate with
   `npx supabase@$(cat supabase/cli-version) gen types typescript --local`
   when a local stack is available).
-- `client/src/lib/dataAdapter.ts` records that `legacy-sqlite-rest` is the
-  only data backend and that shadow writes are disabled; client tests assert
-  both, plus every shell state.
+- `client/src/lib/dataTopology.ts` records which system owns which business
+  domain. It replaced `dataAdapter.ts`, whose claim that `legacy-sqlite-rest`
+  was the only data backend stopped being true once governed intake, movement,
+  media, corrections, cycle counts and Listing Prep shipped. Governed Supabase
+  is authoritative for its domains and its writes are implemented; legacy
+  SQLite is authoritative for none. Dual writes remain disabled, and client
+  tests assert the domain map, the no-dual-write invariant, and every shell
+  state.
 
 ## Future backfill contract (not implemented)
 

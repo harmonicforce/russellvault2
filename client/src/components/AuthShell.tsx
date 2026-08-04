@@ -1,21 +1,86 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
-import { Loader2, Lock, Mail, ShieldX, UserPlus, Vault } from 'lucide-react';
+import { Loader2, Lock, Mail, ServerCrash, ShieldX, UserPlus, Vault } from 'lucide-react';
 import { createAuthShellController, type AuthShellController, type AuthShellState } from '../lib/authShell';
 import { createShadowClient, createShadowSupabaseClient } from '../lib/supabaseShadow';
 import { WorkspaceProvider } from '../lib/workspaceContext';
+import { describeMisconfiguration, resolveAppConfig, type AppConfigState, type EnvLike } from '../lib/appConfig';
 
-// Phase 2 shadow auth shell. With no Supabase configuration (the deployed
-// default) it renders its children untouched — the legacy SQLite app. With
-// VITE_SHADOW_AUTH=supabase plus URL and anon key it gates the UI behind
-// Supabase Auth and a workspace-membership check. It never reads or writes
-// business data.
-export default function AuthShell({ children }: { children: ReactNode }) {
+/**
+ * The gate in front of the whole application.
+ *
+ * Three outcomes, resolved from configuration BEFORE any client is constructed
+ * or any request is made:
+ *
+ *   governed       Supabase Auth plus a workspace-membership check, then the
+ *                  governed application.
+ *   legacy-only    No governed configuration at all. Renders the legacy app,
+ *                  which the status banner labels as legacy-only and
+ *                  non-authoritative.
+ *   misconfigured  Some governed configuration present, contract unsatisfied.
+ *                  Fails closed with a configuration-error screen.
+ *
+ * The last one is the point of this component's rewrite. A partial governed
+ * configuration used to resolve to `null` and fall through to the legacy
+ * application — so one dropped variable silently downgraded a governed
+ * deployment into an unauthenticated legacy one. It no longer can.
+ */
+export default function AuthShell({
+  children,
+  env = import.meta.env as unknown as EnvLike,
+}: {
+  children: ReactNode;
+  /** Injectable so tests can drive each configuration state. */
+  env?: EnvLike;
+}) {
+  const config = useMemo(() => resolveAppConfig(env), [env]);
+
+  // Resolved before the governed shell mounts, so a misconfigured deployment
+  // constructs no Supabase client and issues no request of any kind.
+  if (config.mode === 'misconfigured') {
+    return <ConfigurationErrorPanel state={config} />;
+  }
+  if (config.mode === 'legacy-only') {
+    return <>{children}</>;
+  }
+  return <GovernedAuthShell env={env}>{children}</GovernedAuthShell>;
+}
+
+function ConfigurationErrorPanel({
+  state,
+}: {
+  state: Extract<AppConfigState, { mode: 'misconfigured' }>;
+}) {
+  // Field NAMES only. Two of the four carry a project URL and an anon key, so
+  // no value is ever rendered here.
+  return (
+    <div
+      role="alert"
+      className="flex h-screen w-screen flex-col items-center justify-center gap-3 bg-surface-0 px-6 text-ink"
+    >
+      <ServerCrash className="h-8 w-8 text-critical" />
+      <p className="text-sm font-semibold">Configuration incomplete</p>
+      <p className="max-w-md text-center text-xs text-ink-secondary">
+        This deployment has partial governed configuration, so it cannot reach governed inventory
+        data. It will not fall back to the legacy application, because that would silently serve
+        unauthenticated, non-authoritative data instead.
+      </p>
+      <p className="max-w-md text-center text-xs text-ink-muted">
+        Set the variables below and redeploy. Values are never shown here.
+      </p>
+      <code className="max-w-md rounded border border-hairline bg-surface-1 px-3 py-2 text-center text-xs">
+        {describeMisconfiguration(state)}
+      </code>
+    </div>
+  );
+}
+
+function GovernedAuthShell({ children, env }: { children: ReactNode; env: EnvLike }) {
   const [state, setState] = useState<AuthShellState>({ kind: 'loading' });
   const controller = useMemo(
-    () => createAuthShellController(createShadowClient(import.meta.env), setState),
-    []
+    () => createAuthShellController(createShadowClient(env), setState),
+    [env]
   );
-  const wideClient = useMemo(() => createShadowSupabaseClient(import.meta.env), []);
+  const wideClient = useMemo(() => createShadowSupabaseClient(env), [env]);
 
   useEffect(() => {
     controller.initialize();
@@ -37,6 +102,9 @@ export default function AuthShell({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Unreachable in governed mode — the resolver already established that the
+  // configuration is complete — but the controller's state machine still models
+  // it, so it is handled rather than falling through to a sign-in form.
   if (state.kind === 'config-absent') {
     return <>{children}</>;
   }
