@@ -9,6 +9,8 @@
 - Work order: Commercial Core & Legacy Retirement Program — **Phase 0**
   (census, architecture, planning)
 - Implementation branch: `claude/legacy-retirement-phase0-census-niq78j`
+- Deliverables commit: `de32f53762c83351a30f92076b6e05d7f2480a45`. This
+  document's own head SHA is the commit that records that line.
 - Pull request: **draft**, into `main`. Not to be merged.
 - Repository migration count: **60 → 60.** No migration was added, edited,
   replayed, or removed. Count it from the directory, not from this line:
