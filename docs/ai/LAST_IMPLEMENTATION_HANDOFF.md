@@ -3,367 +3,320 @@
 ## Surrender state
 
 - Repository / canonical branch: `harmonicforce/russellvault2`, `main`
-- **Actual base SHA: `1a3e27ba818c4b3a0150f1b99ac6d83dd865b794`** (`origin/main`,
-  fetched this session). This matches the SHA named in the work order exactly;
-  `main` had not moved. PR #37 (Phase 0) is merged.
-- Work order: Commercial Core & Legacy Retirement Program — **S0.1, Legacy
-  Boot-Write Gating and Health Signal**
-- Implementation branch: `claude/s0-1-legacy-boot-write-safety`
+- **Actual base SHA: `f96d51d4a7d5b53f32d890704d60778de18f819e`** (`origin/main`,
+  fetched this session).
+- **Not stacked.** The work order anticipated stacking on PR #38, but **PR #38
+  merged before this task started**: `main` moved from `1a3e27b` to `f96d51d`,
+  which is the merge commit for `claude/s0-1-legacy-boot-write-safety`, and the
+  S0.1 head `6083cbf94b927aa16ac0b001df3deb7ad4f110f4` is contained in it
+  (`git merge-base --is-ancestor` confirms). So this branch is cut from current
+  `main` and the PR targets `main` directly.
+- Work order: Commercial Core & Legacy Retirement Program — **S0.2, Client
+  Data-Path Truth, Health Failure Visibility, and Fail-Closed Configuration**
+- Implementation branch: `claude/s0-2-client-data-path-truth`
 - Pull request: **draft**, into `main`. Not to be merged.
-- Repository migration count: **60 → 60.** No Supabase migration was added,
-  edited, replayed or removed; `supabase/` is byte-identical to `main`. Count it
-  from the directory, not from this line: `ls supabase/migrations/*.sql | wc -l`
-- pgTAP files: 54 → 54. `supabase/tests/06_provenance_structure.sql` unchanged.
-- Hosted Supabase parity: **not checked and not claimed.** No hosted database
+- Repository migration count: **60 → 60.** `supabase/` is byte-identical to
+  `main`; `supabase/tests/06_provenance_structure.sql` unchanged.
+- pgTAP files: 54 → 54.
+- **`server/` is byte-identical to `main`.** No S0.1 server behaviour, no
+  `/api/health` field and no status code was changed by this PR.
+- Hosted Supabase parity: not checked and not claimed. No hosted project
   contacted.
-- Railway: not deployed, not restarted, not reconfigured; no variable changed;
-  no volume touched; `/api/version` not queried.
-- Hosted acceptance: **not run.** The owner checklist is at the end of this
-  document.
+- Railway: not deployed, not restarted, not reconfigured; no variable changed.
+- Hosted acceptance: **not run**, for S0.1 or S0.2. No acceptance evidence for
+  S0.1 exists in the repository at the time of writing, so the hosted checklist
+  below is recorded rather than performed.
 - Production data, configuration and secrets: untouched. **No production
-  database was accessed and no production backup was captured** — the S0.3 owner
-  backup action remains outstanding.
+  database was accessed and no backup was captured — S0.3 remains outstanding.**
 - `docs/ai/CURRENT_STATE.md`: **not edited.** Proposed replacement text is at the
   end of this document.
-- **S0.2 was not implemented.** `client/src/lib/dataAdapter.ts` is untouched.
-  S1 was not started.
+- **S1 was not started.**
 
-## The exact startup hazard
+## Previous false client claims
 
-`server/src/index.ts` called two functions at module scope, on line 28 and line
-29, before `legacyWriteGuard` was installed on line 83:
+`client/src/lib/dataAdapter.ts` stated, in a comment and in three exports:
+
+> The legacy SQLite REST adapter (lib/api.ts → /api → server/src) is the ONLY
+> read and write path for business data. The Supabase shadow database is
+> non-authoritative: the client touches it solely for authentication and
+> workspace-membership checks inside the auth shell. There is deliberately no
+> shadow data adapter and no dual-write path.
 
 ```ts
-seedIfEmpty();
-migrateProductType();
+export const DATA_BACKENDS = ['legacy-sqlite-rest'] as const;
+export function activeDataBackend(): DataBackend { return 'legacy-sqlite-rest'; }
+export const SHADOW_WRITES_ENABLED = false as const;
 ```
 
-Between them, those two functions performed **every one of the following** on
-every boot, and `ALLOW_LEGACY_WRITES=false` stopped none of it, because Express
-middleware cannot govern module initialization:
+Every one of those was false by the time governed intake, current inventory,
+locations, movement, media, corrections, cycle counts and Listing Prep shipped.
+Worse, they were **CI-enforced**: `client/src/lib/authShell.test.ts` and
+`client/src/lib/provenanceConfig.test.ts` both asserted them, so correcting the
+architecture would have failed the build.
 
-| # | Write | Source |
-|---|---|---|
-| 1 | `fs.mkdirSync` of the database directory | `db.ts` module scope |
-| 2 | Creation of the database **file** if absent | `new Database(DB_PATH)`, module scope |
-| 3 | `journal_mode = WAL` (writes the file header) | `db.ts` module scope |
-| 4 | `CREATE TABLE IF NOT EXISTS` × 7 | `initSchema` via `seedIfEmpty` |
-| 5 | `CREATE INDEX IF NOT EXISTS` × 12 | `initSchema` |
-| 6 | `INSERT OR IGNORE` of up to 3,950 fixture rows across 5 tables | `seedIfEmpty` → `insertMany` |
-| 7 | `CREATE TABLE IF NOT EXISTS app_meta` | `migrateProductType` |
-| 8 | `ALTER TABLE whatnot_purchases ADD COLUMN product_type` | `migrateProductType` |
-| 9 | `CREATE INDEX idx_purchases_type` | `migrateProductType` |
-| 10 | `ALTER TABLE … ADD COLUMN product_type_source` | `migrateProductType` |
-| 11 | `ALTER TABLE … ADD COLUMN is_excluded` | `migrateProductType` |
-| 12 | `ALTER TABLE … ADD COLUMN exclusion_reason` | `migrateProductType` |
-| 13 | `UPDATE whatnot_purchases SET is_excluded = 1, exclusion_reason = …` | `flagFoodPurchases` |
-| 14 | Mass `UPDATE … SET product_type, product_type_source='auto'` on every non-manual row when `CLASSIFIER_VERSION` changes | classifier backfill |
-| 15 | `INSERT … ON CONFLICT DO UPDATE` of `classifier_version` | `setMeta` |
+Four further comments repeated the same claim and were corrected:
+`client/src/lib/authShell.ts` ("the legacy SQLite REST adapter remains the only
+data path"), `client/src/lib/supabaseShadow.ts` and
+`client/src/lib/shadowConfig.ts` ("the deployed default remains the legacy
+SQLite app"), `client/src/lib/provenanceApi.ts` ("those remain exclusively on
+the legacy SQLite REST path"), and `docs/supabase-shadow-foundation.md:197`.
 
-Writes 1–3 were **import-time side effects**: merely importing any of the ten
-files that consumed the `db` handle triggered them.
+## Corrected data topology
 
-The consequence that mattered: `seedIfEmpty()` refilled any table it found
-empty. A container booting against a missing, empty, remounted or mispointed
-volume rebuilt the schema and repopulated five tables from `server/seed/*.json`
-— the original workbook import, not a backup. The result looked like a
-recovered production database, while `sales`, which has no fixture at all,
-was simply gone. Most tables plausibly restored and one silently missing is the
-worst available failure mode, because it does not look like a failure.
+`client/src/lib/dataTopology.ts` replaces `dataAdapter.ts`. Two backends, and
+authority is a property of a **domain**:
 
-## Implementation approach
-
-**One policy, evaluated before anything mutating is reachable.**
-
-New `server/src/legacyBootstrapPolicy.ts` is pure environment parsing with no
-side effects. New `server/src/legacyBootstrap.ts` exposes
-`prepareLegacyDatabase()`, the single startup boundary; `index.ts` calls it in
-place of the two bare calls. It reads the policy and returns
-`skipped_not_authorized` **before** it consults the database at all — a test
-injects an `openState` that throws, and proves it is never called.
-
-**Import-time side effects removed.** `server/src/db.ts` no longer opens a
-connection at module scope. `openLegacyDatabase({ path, bootstrapAuthorized,
-requestWritesEnabled })` is an explicit factory with no module state;
-`legacyDatabaseState()` memoizes one process connection from the live
-environment, and `getDb()` returns it or throws a typed
-`LegacyDatabaseUnavailableError` carrying a bounded reason code. The ten
-consumer files bind `const db = getDb();` at the top of each function that uses
-it, so every existing query body is unchanged.
-
-Rejected alternative: falling back to an empty in-memory database when the file
-is missing. That would let every legacy read return "no rows" and look healthy —
-the same counterfeit-recovery failure in a different costume.
-
-**`seedIfEmpty`, `initSchema` and `migrateProductType`** now accept an optional
-`Database` handle (defaulting to `getDb()`), which is what makes the safety
-properties testable against temporary databases without module-state juggling.
-Their internals are otherwise unchanged, and seed counts and semantics are
-identical.
-
-## Environment-variable contract
-
-Two permissions. **Neither implies the other**, and they are never merged.
-
-| Variable | Governs | Production default | Enabled by |
+| Backend | Domains | Authoritative | Writes implemented |
 |---|---|---|---|
-| `ALLOW_LEGACY_WRITES` | legacy HTTP mutation routes | off | exactly `'true'` (unchanged) |
-| `SEED_LEGACY_ON_EMPTY` | creating, migrating or seeding the legacy database at startup | off | exactly `'true'` |
+| `governed-supabase` | inventory-identity, intake, current-inventory, locations, movement, media, corrections, cycle-counts, listing-prep, readiness, operations-dashboard | **yes** | yes |
+| `legacy-sqlite-rest` | legacy-inventory, legacy-purchases, legacy-cost-links, legacy-listings, legacy-sales, legacy-checks, legacy-dashboard | **no** | yes |
 
-`SEED_LEGACY_ON_EMPTY` is fail-closed. Missing, empty, `'false'`, `'1'`,
-`'TRUE'`, `'True'`, `'yes'`, `'on'`, `'enabled'`, `' true'` and `'true '` are all
-disabled — asserted individually by test. Permission is **never** inferred from
-`NODE_ENV`, `DATA_DIR`, `DATABASE_PATH`, a writable filesystem, or
-`ALLOW_LEGACY_WRITES`. Each of those would have authorized exactly the accident
-the flag prevents.
+- **There is no zero-argument global-backend function.** `activeDataBackend()`
+  is gone and a test asserts the module does not export it, because no honest
+  answer exists without a domain. `backendForDomain(domain)` requires one.
+- **No third backend was invented.** Routing between the two is a property of
+  this application; a test asserts no backend name matches
+  `/hybrid|both|routed|mixed/i`.
+- **`SHADOW_WRITES_ENABLED` was not flipped to `true`.** It conflated "does the
+  client write to Supabase" (it does) with "does the client write the same fact
+  to both systems" (it does not). It is replaced by two separate facts:
+  `GOVERNED_WRITES_IMPLEMENTED = true` and `DUAL_WRITES_ENABLED = false`.
+- **The no-dual-write invariant is computed, not asserted.**
+  `domainsWithMultipleAuthoritativeWriters()` derives from the map and is
+  required by test to be `[]`.
+- **Authority does not depend on configuration.** A test snapshots the map,
+  resolves availability for all three modes, and requires the map unchanged.
+  `backendAvailability(mode)` is the separate, configuration-dependent answer.
+- **Permission coupling is `false` in both directions**
+  (`PERMISSIONS_ARE_COUPLED`): a governed write never requires
+  `ALLOW_LEGACY_WRITES`, and a legacy HTTP write never implies a governed write.
 
-`resolveLegacyWritesEnabled(env)` was extracted from `legacyWriteGuard.ts` as a
-pure function so `db.ts` can evaluate it lazily against an explicit environment.
-`legacyWritesEnabled` still exists with the same value and the HTTP semantics
-are unchanged, which the existing guard tests confirm.
+## Configuration-state contract
 
-**Local ergonomics, preserved without weakening the production rule:** the
-policy has no `NODE_ENV` escape hatch at all. Instead `server/package.json` sets
-the flag in the two scripts whose purpose is bootstrap:
+`client/src/lib/appConfig.ts`, resolved before any client is constructed:
 
-- `dev`: `SEED_LEGACY_ON_EMPTY=true tsx watch src/index.ts`
-- `seed`: `SEED_LEGACY_ON_EMPTY=true tsx src/seed.ts`
-- `start` (what Railway runs): **unchanged**, sets nothing.
+| Mode | Condition |
+|---|---|
+| `governed` | `VITE_SHADOW_AUTH=supabase`, `VITE_SHADOW_IMPORT=repository-fixtures`, non-empty `VITE_SUPABASE_URL`, non-empty `VITE_SUPABASE_ANON_KEY` |
+| `legacy-only` | **none** of the four present (`undefined` or `''`) |
+| `misconfigured` | anything else |
 
-`server/src/seed.ts`'s CLI entry refuses and exits 1 without the flag, so there
-is exactly one rule rather than a second looser path.
+Whitespace-only URL or key is **present-but-invalid**, not absent. The
+misconfigured state carries `missing[]` and `invalid[]` as **field names only**;
+two tests assert that neither the URL value nor the anon-key value nor a
+rejected flag value appears in the serialized state or the rendered screen.
 
-## Database opening behavior
+Environment variables were **not renamed** and no feature flag was removed, per
+the work order.
 
-| Bootstrap | HTTP writes | `fileMustExist` | `query_only` | `journal_mode` set |
-|---|---|---|---|---|
-| off | off *(production default)* | **yes** | **yes** | no |
-| off | on | yes | no | yes |
-| on | off | no | no | yes |
-| on | on | no | no | yes |
+### Fail-closed behaviour
 
-The directory is created only when bootstrap is authorized, so a mispointed
-volume path does not gain a directory either — asserted by test.
+`AuthShell` now resolves the mode first and branches before the governed shell
+mounts:
 
-**The guarantee, stated exactly.** With both permissions withheld, no schema
-object and no business row can change through this connection. That is **not**
-the same as "SQLite performs no writes": the file is opened read-write, so the
-engine may still perform WAL and `-shm` bookkeeping, journal state and locking
-against an existing database. `journal_mode` is deliberately not set on a
-query-only connection because setting it is itself a write; an existing
-production database already records WAL mode in its own header, so nothing is
-lost. A test proves the narrower claim directly by asserting that `CREATE
-TABLE`, `ALTER TABLE`, `UPDATE`, `INSERT` and `DELETE` all throw on that
-connection while `SELECT` still returns 1,487 rows.
+- `misconfigured` → full-screen `role="alert"` configuration error. **No routes
+  render, no sign-in form appears, no Supabase client is constructed, and no
+  request of any kind is issued** — asserted with spies on
+  `createShadowClient`, `createShadowSupabaseClient`, `api.get` and global
+  `fetch`, across six distinct partial configurations.
+- `legacy-only` → children render, no Supabase client is constructed at all.
+- `governed` → the existing auth flow, unchanged.
 
-## Health contract
+The previously reachable path — complete auth configuration but missing
+`VITE_SHADOW_IMPORT` — used to construct a real Supabase client and then serve
+the legacy application. It is now the headline misconfiguration case.
 
-`GET /api/health` keeps `ok` and `readOnly` in place and with their existing
-meanings, and adds four typed fields plus an optional bounded reason.
+## Health transport behaviour
 
-Healthy — HTTP 200:
+`client/src/lib/healthApi.ts`:
 
-```json
-{ "ok": true, "readOnly": true,
-  "legacyDatabaseAvailable": true, "legacySchemaPresent": true,
-  "legacySeeded": true, "legacyBootWritesEnabled": false }
-```
+| Response | Outcome |
+|---|---|
+| 200 + valid body + `ok: true` | `{ status: 'healthy', health }` |
+| 200 + valid body + `ok: false` | `{ status: 'unhealthy', health }` — resolved in the safe direction |
+| 503 + valid body | `{ status: 'unhealthy', health }` |
+| 503 + malformed body, HTML, or `{ error }` envelope | `HealthTransportError('protocol')` |
+| any other status | `HealthTransportError('protocol')` |
+| network failure | `HealthTransportError('network')` |
 
-Unhealthy — HTTP **503**:
+Every declared boolean must actually be a boolean. An unrecognized `reason`
+string is **dropped** rather than passed through, so no unvalidated server text
+can be rendered as an explanation — the unhealthy state is still reported. The
+error type carries no server text at all.
 
-```json
-{ "ok": false, "readOnly": true,
-  "legacyDatabaseAvailable": false, "legacySchemaPresent": false,
-  "legacySeeded": false, "legacyBootWritesEnabled": false,
-  "reason": "legacy_database_missing" }
-```
+`get()` in `api.ts` is **unchanged**, so no other endpoint gained permission to
+return 503; a test proves an ordinary 503 still rejects.
 
-Reason codes are a closed set: `legacy_database_missing`,
-`legacy_database_unreadable`, `legacy_schema_missing`, `legacy_baseline_empty`,
-`legacy_health_check_failed`. No path, SQL, driver message or stack trace is
-ever included; a test feeds an error containing `/data/vault.db`,
-`SELECT * FROM secrets` and `SQLITE_CANTOPEN` and asserts none of it appears in
-the serialized response.
+One shared `SYSTEM_HEALTH_QUERY_KEY` and one transport, so multiple consumers
+cannot issue duplicate requests.
 
-503 is deliberate. Railway health-checks this path, so an unusable legacy
-database now fails the check and keeps the previous good deployment serving
-rather than promoting one backed by a counterfeit database. `railway.json` is
-unchanged and the health-check path is unchanged.
+## System-status states
 
-### How `legacySeeded` is defined, and why it is safe
+`client/src/components/SystemStatusBanner.tsx` replaces `ReadOnlyBanner.tsx`.
+One banner, fixed precedence, never two contradicting each other:
 
-`legacySeeded` is true when **`inventory_lots` and `whatnot_purchases` each hold
-at least one row.**
+1. **Structured legacy failure** (503) — `role="alert"`, critical, **shown on
+   every route including governed ones**. Bounded reason mapped to fixed safe
+   copy. On a legacy route: "this page cannot show reliable legacy data … do not
+   read an empty list or a zero total as a real value." On a governed route: the
+   same unavailability plus "Governed inventory workflows are unaffected."
+2. **Unverifiable health** (network or protocol error) — `role="alert"`,
+   warning, with a **Retry** button wired to the React Query refetch. Never
+   reinterpreted as `readOnly: false`, and never blank.
+3. **Legacy-only mode** — persistent notice: non-authoritative, governed
+   workflows unavailable, totals must not be combined. When `readOnly` is also
+   true the read-only sentence is folded into the **same** banner.
+4. **Governed + healthy + `readOnly` + legacy write route** — the existing
+   read-only warning, unchanged in meaning.
 
-- **Why those two.** No legacy route can delete from either. The legacy API has
-  no `DELETE` endpoint at all and issues no `DELETE FROM` anywhere in production
-  code — verified by grep across all eight legacy routers. Zero rows therefore
-  means loss from outside the application, which is exactly the condition this
-  signal exists to catch.
-- **Why "at least one" and not a count match.** A live database legitimately
-  diverges from the fixtures: the owner adds lots, and the verified production
-  backup already holds 2,119 purchase rows against the seed's 2,149. A test
-  deletes one row in seven and adds a new lot, and asserts health stays green.
-- **Why `cost_links` and `ebay_listings` are inspected but excluded from the
-  verdict.** They are working tables rather than source imports, and any event
-  capable of emptying them empties `inventory_lots` too, so including them adds
-  false-alarm surface without adding detection. A test empties both and asserts
-  health stays green.
-- **Why `sales` is not the sentinel.** It has no repository fixture and is
-  legitimately empty on a fresh database. Using it would report a healthy
-  production database as broken.
-
-`legacySchemaPresent` additionally requires the four columns
-`migrateProductType` adds to `whatnot_purchases`, because `/api/purchases` and
-`/api/dashboard` query `is_excluded` and `product_type`. Now that the migration
-is gated, a database restored from a pre-migration backup will no longer migrate
-itself — so health has to say so, and does, with `legacy_schema_missing`.
+Otherwise nothing renders. Nothing is dismissible; meaning is carried in text,
+not colour alone.
 
 ## Tests
 
-Three new files, **48 focused tests**, all passing:
+**Focused S0.2 — 117 tests across 5 files, all passing:**
 
 | File | Tests | Covers |
 |---|---|---|
-| `server/src/legacyBootstrapPolicy.test.ts` | 19 | fail-closed parsing including 8 near-miss values; no inference from `NODE_ENV`/`DATA_DIR`/`DATABASE_PATH`; the two permissions are independent in both directions; `ALLOW_LEGACY_WRITES` semantics unchanged; the startup log line names the flag and leaks no path |
-| `server/src/legacyBootstrap.test.ts` | 12 | the no-mutation proof; `query_only` enforcement; missing database not created; directory not created; emptied baseline not reseeded; missing tables not created; pre-migration database not migrated; authorized bootstrap still produces 1,487/2,149/287/20/7 and **0 sales**; idempotent rerun; populated table not overwritten; authorized-bootstrap logging with no path |
-| `server/src/legacyDatabaseHealth.test.ts` | 17 | healthy verdict; divergent counts stay healthy; empty working tables stay healthy; empty `sales` stays healthy; each bounded reason code; no leakage of path/SQL/driver text; health checks do not mutate; the full 200/503 response contract including `ok` and `readOnly` |
+| `client/src/lib/dataTopology.test.ts` | 39 | both backends represented; no invented third backend; per-domain authority for all 18 domains; governed writes implemented; dual writes disabled; no domain with two authoritative writers; authority unchanged by any flag; availability separate from authority; `activeDataBackend`/`SHADOW_WRITES_ENABLED` absent from the module |
+| `client/src/lib/appConfig.test.ts` | 20 | legacy-only; governed; every one-variable-missing permutation; wrong flag values; whitespace-only URL and key; URL+key without flags; flags without URL+key; no value ever leaked |
+| `client/src/lib/healthApi.test.ts` | 24 | 200 healthy; defined 503 structured; all five bounded reasons; unknown reason dropped; malformed 503, HTML 503, non-boolean fields, unexpected status all rejected; network vs protocol distinct; no server text on the error; generic `get()` still rejects an ordinary 503 |
+| `client/src/components/SystemStatusBanner.test.tsx` | 24 | rendered: read-only on legacy vs governed routes; legacy-only notice; one coherent notice when legacy-only + read-only; structured 503 on both route kinds; each reason's copy; no raw text; network/protocol warning; retry refetch; never silently blank; `role="alert"`; no dismiss control; plus the legacy write-path scope rules carried over |
+| `client/src/components/AuthShell.render.test.tsx` | 10 | rendered: legacy-only renders children with no client constructed; governed gates behind auth and constructs clients; six misconfigurations each render the error and construct no client; no `api.get` and no `fetch`; no auth form; field names only; explains the no-fallback rule; `role="alert"` |
 
-**The central test does not mock anything.** It bootstraps a real SQLite
-database on disk, snapshots its complete `sqlite_master` catalog, its
-`PRAGMA table_info(whatnot_purchases)`, row counts for all six tables, **all
-2,149 rows of `(acquisition_line_id, product_type, product_type_source,
-is_excluded, exclusion_reason)`**, and the full `app_meta` table; runs startup
-again with bootstrap disabled; and requires every one of those to be identical.
-Field values are compared, not only aggregates, because a re-tag or a re-flag
-would leave counts unchanged.
+**Rewritten rather than deleted:** `authShell.test.ts` and
+`provenanceConfig.test.ts` had their false assertions replaced with stronger
+truthful ones — per-domain ownership, governed-vs-legacy authority, governed
+writes implemented, dual writes disabled, no domain with two authoritative
+writers, and that toggling the review flag moves no domain's owner.
 
-Existing tests: `server/src/seed.test.ts` and `server/src/db.test.ts` now set
-`SEED_LEGACY_ON_EMPTY = 'true'` explicitly, with a comment stating that
-production does not. The legacy write-guard tests are unchanged and pass.
+**Updated mocks:** `App.responsive.test.tsx` (legacy-only) and
+`App.governedNav.test.tsx` (governed) now mock `./lib/appConfig` and
+`./lib/healthApi`, because `App.tsx` derives `PROVENANCE_ENABLED` from the
+single config resolver rather than from `isProvenanceUiEnabled`. Both suites
+remain green.
 
 ## Verification
 
-All commands run at `1a3e27b` + this branch, with all three dependency roots
-installed (`npm ci`, `npm ci --prefix client`, `npm ci --prefix server`, all
-exit 0).
+All three dependency roots installed (`npm ci`, `npm ci --prefix client`,
+`npm ci --prefix server`).
 
 | Command | Result | Exit |
 |---|---|---|
-| `npm run lint` | pass (pre-existing warnings only, unchanged) | 0 |
+| `npm run lint` | pass (pre-existing warnings only) | 0 |
 | `npm run typecheck` | pass (server + client) | 0 |
-| `npm run build:ci` | pass (client build + server strict typecheck) | 0 |
-| `npm test` | **server 461 tests / 30 files, client 441 tests / 33 files, guard suites** all pass | 0 |
-| focused S0.1 suites | **48 passed / 3 files** | 0 |
-| `node --test scripts/db/guard.test.mjs` | 23 pass | 0 |
+| `npm run build:ci` | pass | 0 |
+| `npm test` | **server 461 / 30 files, client 554 / 37 files**, guard suites — all pass | 0 |
+| focused S0.2 suites | **117 passed / 5 files** | 0 |
+| rewritten + updated suites | 49 passed / 4 files | 0 |
+| `node --test scripts/db/guard.test.mjs` | pass | 0 |
 | `node --test scripts/ci/client-audit-gate.test.mjs` | pass | 0 |
 | `git diff --check` | clean | 0 |
 | `npm run db:reset` (postgres-shim tier) | 60 migrations replayed from empty | 0 |
-| `npm run db:test` (postgres-shim tier) | 54 files, **1,625 assertions**, all pass | 0 |
+| `npm run db:test` (postgres-shim tier) | 54 files, **1,625 assertions** | 0 |
 | `ls supabase/migrations/*.sql \| wc -l` | 60, unchanged | — |
-| `git status --porcelain supabase/` | empty — `supabase/` untouched | — |
+| `git diff --name-only origin/main -- supabase server` | empty | — |
 
-**The `shadow-db-supabase-stack` tier was NOT run locally** and is not claimed
-to have passed locally: it needs a Docker-local Supabase stack this environment
-cannot start. Exact-head GitHub CI is the evidence for that tier.
+Client tests grew 441 → 554 (+113).
 
-### End-to-end production boot checks
+**`shadow-db-supabase-stack` was NOT run locally** and is not claimed to have
+passed locally — it needs a Docker-local Supabase stack this environment cannot
+start. Exact-head GitHub CI is the evidence for that tier. Since `supabase/` is
+byte-identical to `main`, the database tiers re-prove `main` rather than
+anything this PR changed.
 
-Beyond the unit and integration suites, the real server was started with
-`NODE_ENV=production` against temporary databases:
+### `15_acquisition_digest_parity.sql` recurred, for the third recorded time
 
-- **Missing database:** `GET /api/health` returned **503** with
-  `reason: "legacy_database_missing"`; the database file and its parent
-  directory were confirmed absent afterwards; the process stayed up and served;
-  the startup log printed the DISABLED policy line.
-- **Healthy database, two consecutive production restarts:** `GET /api/health`
-  returned **200** both times with all four legacy fields correct, and a
-  before/after snapshot of row counts (1,487 / 2,149 / 287 / 20 / 0 / 7),
-  excluded count (30), classified count (2,149), `app_meta`
-  (`classifier_version=5`) and full table catalog was **identical**.
+On the first PR-triggered run, `shadow-db-supabase-stack` failed: the step timed
+out after 12 minutes with the suite sitting on
+`supabase/tests/15_acquisition_digest_parity.sql`. Every preceding file passed.
+It is green on re-run (4m20s) and was green first-time on the
+push-triggered run of the **same commit**.
+
+This is the same intermittent slowdown already recorded against that file — it
+has previously exceeded a 600s per-file timeout in one run while completing in
+6.7s standalone and passing on a second run. Four things establish that this
+occurrence is not a regression from S0.2:
+
+1. `git diff --name-only origin/main -- supabase` is **empty** — this PR cannot
+   change the behaviour of a pgTAP file it does not touch.
+2. The push-triggered run on the identical SHA passed that job first time.
+3. The local postgres-shim tier passed all 54 files including that one.
+4. The PR run's own `shadow-db-postgres-shim` passed.
+
+It remains an open flake in the suite, not an S0.2 finding, and it is worth the
+steward's attention as a recurring pattern rather than a one-off.
 
 ## Limitations
 
-- **This is repository verification, not hosted verification.** Nothing here
-  proves how the deployed Railway service behaves. Hosted acceptance is
-  outstanding and is listed below.
-- The `shadow-db-supabase-stack` tier was not run locally (see above).
-- `query_only` is not the same as opening the file read-only. Engine-level WAL,
-  `-shm`, journal and locking writes may still occur against an existing
-  database. The verified claim is narrower: no schema change and no business-row
-  change. This is stated in `docs/architecture.md` rather than glossed.
-- **Client behaviour on 503 is deliberately unchanged and slightly degraded.**
-  `client/src/lib/api.ts` throws on a non-2xx, so `ReadOnlyBanner`'s health query
-  errors and the banner renders nothing when the legacy database is unusable.
-  It does not crash (`if (!data?.readOnly) return null;`). Teaching the client
-  about the new fields belongs to S0.2, which owns `client/src/lib/`; the
-  `HealthStatus` interface still declares only `{ ok, readOnly }` and simply
-  ignores the additions.
-- A pre-migration database now reports `legacy_schema_missing` instead of
-  migrating itself. That is the intended trade, but it means restoring an older
-  backup requires one deliberate authorized bootstrap.
-- The dead `meta` table and the double declaration of
-  `is_excluded`/`exclusion_reason` (inline in `initSchema` **and** as `ALTER`s in
-  `migrateProductType`) were found again during this work and left alone — both
-  are outside S0.1's scope and are already recorded in the Phase 0 census.
+- **Repository verification only.** Nothing here proves hosted behaviour.
+- **S0.1 hosted acceptance has not been recorded**, so the S0.2 hosted checklist
+  cannot begin. S0.1 merged on CI evidence alone.
+- The `misconfigured` screen is deliberately not reachable in production without
+  breaking a variable, and the work order forbids testing it that way. It is
+  covered locally and in CI only.
+- The banner's precedence is fixed rather than configurable. A structured legacy
+  failure outranks the legacy-only notice, which is correct but means the
+  legacy-only framing is temporarily hidden during an outage.
+- `isProvenanceUiEnabled` still exists and is still used by four pages
+  (`ImportReview`, `InventoryIdentity`, `Dashboard`, `Workbench`) for their own
+  Supabase configuration. It is no longer the application's configuration gate.
+- The `SHADOW_` variable-name prefix survives; renaming is out of scope because
+  the deployed service sets those names.
+- No business mutation path was added anywhere. There is no synchronization
+  layer, no mirrored write, no fallback write and no repository abstraction that
+  conceals authority.
 
-## Rollout
+## Rollout sequencing
 
-One deploy. The behaviour change is confined to the boot path and the health
-response; no route, page, table, migration or dependency was added or removed.
-On a healthy production volume with `SEED_LEGACY_ON_EMPTY` absent, the only
-observable differences are the new fields on `/api/health` and one extra
-startup log line.
+S0.2 is client-only and depends on the S0.1 server contract already merged in
+`main`. It must not deploy before S0.1 hosted acceptance is recorded, because
+the 503 handling it adds is only meaningful against the S0.1 server, and because
+S0.3's backup should exist before any further production change.
 
 ## Rollback
 
-Repository and deployment rollback only.
+Client and repository only.
 
-1. Revert the merge commit.
-2. Redeploy the prior known-good commit if needed.
-3. Do **not** edit SQLite rows.
-4. Do **not** set `SEED_LEGACY_ON_EMPTY=true` as a casual rollback. It is an
-   emergency explicit-bootstrap path, not a repair: `server/seed/*.json` is the
-   original workbook import, contains **no** `sales` rows, and is not
-   automatically valid production restoration data.
-5. Restore from a verified backup only if the database was actually damaged, and
-   only by following `docs/runbooks/railway-backup-deploy-preflight.md`.
+1. Revert the S0.2 merge.
+2. Redeploy the previous accepted commit.
+3. Do **not** change SQLite. Do **not** change Supabase.
+4. Do **not** alter Railway environment variables as a rollback shortcut — in
+   particular, do not remove a governed variable to force legacy-only mode.
+5. Do **not** enable automatic seeding. Do **not** restore data.
 
-Reverting is safe at any point because nothing in this change writes to,
-migrates, or reshapes an existing database.
+Reverting is safe: nothing in this change writes to any database.
 
-## Hosted acceptance checklist (owner, after review and merge)
+## Hosted acceptance checklist (owner — not performed)
 
-**Not performed. Do not record any of these as passed until they are.**
+Do not begin until S0.1 hosted acceptance is recorded and the S0.3 backup exists.
 
-1. Confirm a fresh verified Railway SQLite backup exists **before** deploying.
-2. Record its SHA-256, size, `integrity_check` result and per-table row counts
-   (`node scripts/verify-sqlite-backup.mjs <path> --json`).
-3. Confirm the production volume is mounted and holds the expected database.
-4. Confirm `SEED_LEGACY_ON_EMPTY` is absent or `false` in Railway.
-5. Deploy the reviewed merge.
-6. Confirm `/api/version` reports the expected merge SHA.
-7. Confirm `/api/health` returns **200** with `legacyDatabaseAvailable: true`,
-   `legacySchemaPresent: true`, `legacySeeded: true`,
-   `legacyBootWritesEnabled: false`, and `readOnly` still reflecting the intended
-   `ALLOW_LEGACY_WRITES` state.
-8. Confirm legacy Inventory, Purchases, Cost Links, Listings, Sales, Health
-   Checks and the Dashboard still load.
-9. Restart the service once and confirm row counts and representative records
-   are unchanged.
-10. Confirm Railway health stays green.
-11. Record the acceptance evidence **before** beginning S0.2 or S1.
+1. Confirm PR #38 hosted acceptance is recorded.
+2. Confirm the fresh verified S0.3 production backup exists.
+3. Merge or rebase S0.2 onto accepted `main`.
+4. Confirm the final S0.2-only diff.
+5. Confirm all four required CI jobs green on the final exact head.
+6. Deploy the reviewed merge.
+7. Confirm `/api/version` reports the merge SHA.
+8. With full governed configuration: sign-in required, workspace loads, governed
+   routes visible, **no legacy-only warning**.
+9. With `/api/health` 200: read-only warning appears on a legacy write route and
+   **not** on Current Inventory or Listing Prep.
+10. Confirm legacy pages still load existing data.
+11. Confirm governed pages still read and write through Supabase.
+12. Confirm no write is duplicated into both systems.
+13. Confirm Railway remains healthy.
+14. Record acceptance evidence before S1.
 
-If step 7 returns 503, do **not** set `SEED_LEGACY_ON_EMPTY`. Investigate the
-volume first; the 503 is the signal working.
+**Do not deliberately break a production environment variable to test the
+misconfigured path.** That is covered locally and in CI.
 
 ## Proposed `CURRENT_STATE.md` replacement text
 
-Not applied. `AGENTS.md` reserves that file for the state steward and this work
-order did not grant an exception. `CURRENT_STATE.md` remains stale in two
-checkable ways carried over from the Phase 0 handoff: it records a repository
-migration count of **47** when the directory holds **60**, and a last-reviewed
-merge of PR #25 when PR #37 has merged.
+Not applied. `AGENTS.md` reserves that file for the state steward. It remains
+stale in two checkable ways: it records a repository migration count of **47**
+when the directory holds **60**, and a last-reviewed merge of PR #25 when PR #37
+and PR #38 have both merged.
 
 **Replace "Deployment and verification" with:**
 
@@ -372,75 +325,55 @@ merge of PR #25 when PR #37 has merged.
 > - Railway source branch: `main`
 > - Live app: `https://russellvault2-production.up.railway.app`
 > - Supabase project: `ykdyqnvmwpxhowbwhzqz`
-> - Last reviewed merge: `1a3e27ba818c4b3a0150f1b99ac6d83dd865b794` (PR #37,
->   Commercial Core & Legacy Retirement Phase 0)
+> - Last reviewed merge: `f96d51d4a7d5b53f32d890704d60778de18f819e` (PR #38, S0.1)
 > - Repository migration count: **60**
 > - pgTAP files: **54**
-> - Exact PR-head CI run: *(steward to record for PR #37 and for the S0.1 PR)*
+> - Exact PR-head CI run: *(steward to record for PR #38 and the S0.2 PR)*
+> - Known flake: `supabase/tests/15_acquisition_digest_parity.sql` has now timed
+>   out in three separate runs while passing standalone, on re-run, and on the
+>   sibling run of the same commit. It is unrelated to the changes in the PRs it
+>   has failed on.
 > - Required jobs: build-and-verify, shadow-db-postgres-shim,
 >   shadow-db-supabase-stack, dev-advisory-report
 > - Railway deployment status on the reviewed merge: *(steward to record)*
-> - Hosted acceptance: *(steward to record)*
->
-> The repository documents do not independently prove the live Supabase
-> migration ledger, and a green CI run proves nothing about the hosted app. Each
-> migration-bearing release must verify live parity before acceptance, using
-> `docs/runbooks/hosted-migration-parity.md`.
+> - Hosted acceptance: **not recorded for S0.1.** It merged on CI evidence
+>   alone; the hosted checklist in `LAST_IMPLEMENTATION_HANDOFF.md` is
+>   outstanding.
 
-**Add a new section, "Legacy retirement program":**
+**Add to the "Legacy retirement program" section:**
 
-> Phase 0 (census, architecture, plan) is merged as PR #37 and lives in
-> `docs/programs/commercial-core-legacy-retirement/`.
+> **S0.1 is merged (PR #38).** Legacy boot writes are gated behind
+> `SEED_LEGACY_ON_EMPTY`, separate from `ALLOW_LEGACY_WRITES`; the connection
+> opens `fileMustExist` and `PRAGMA query_only` when neither permission is
+> granted; `GET /api/health` returns 503 with a bounded reason code when the
+> legacy database is unusable. **Hosted acceptance is not yet recorded.**
 >
-> **S0.1 is implemented on a draft PR and is not merged.** It gates legacy
-> boot writes and makes legacy database health explicit. Once merged and
+> **S0.2 is implemented on a draft PR and is not merged.** Once merged and
 > accepted:
 >
-> - Legacy SQLite writes are governed by **two independent permissions**.
->   `ALLOW_LEGACY_WRITES` governs legacy HTTP mutation routes;
->   `SEED_LEGACY_ON_EMPTY` governs whether startup may create, migrate or seed
->   the database. Both are off in production by default and neither implies the
->   other.
-> - Startup no longer creates schema, seeds fixtures, adds columns, flags
->   exclusions, re-tags classifications or writes classifier metadata unless
->   explicitly authorized. The previous unconditional
->   `seedIfEmpty(); migrateProductType();` pair ran before the HTTP guard
->   existed, so the guard alone never made production read-only.
-> - With both permissions withheld the connection is opened `fileMustExist` and
->   `PRAGMA query_only`, so a missing database is reported rather than created
->   and no schema or business row can change. Engine-level WAL and journal
->   activity against an existing file is not prevented and is not claimed to be.
-> - `GET /api/health` returns 503 with a bounded reason code
->   (`legacy_database_missing`, `legacy_database_unreadable`,
->   `legacy_schema_missing`, `legacy_baseline_empty`,
->   `legacy_health_check_failed`) when the legacy database is unusable. `ok` and
->   `readOnly` are unchanged.
+> - The client no longer claims legacy SQLite is the only business-data
+>   backend. `client/src/lib/dataTopology.ts` maps 18 domains to two backends,
+>   with governed Supabase authoritative for its eleven and legacy SQLite
+>   authoritative for none. There is no global "active backend" function.
+> - A **partial** governed client configuration fails closed with a
+>   configuration-error screen instead of silently serving the unauthenticated
+>   legacy application. Legacy-only operation is still permitted but is labelled
+>   on screen as non-authoritative.
+> - The client consumes the S0.1 503 as structured data rather than discarding
+>   it, and a legacy-database failure now produces a persistent critical alert
+>   on every route instead of a banner that disappeared.
 >
-> **Still outstanding, in order:** S0.3 — the owner has not yet captured a fresh
-> verified production backup, and that remains the highest-priority action in
-> the program. S0.2 — `client/src/lib/dataAdapter.ts` still asserts that legacy
-> SQLite is the only read and write path for business data, which is false and
-> CI-enforced by two client tests.
-
-**Amend "Current known incomplete or weak areas" → "Acquisition and cost" to
-add:**
-
-> - There is no governed inventory cost basis and no COGS entity anywhere in the
->   model, so no governed realized profit is computable.
-> - There is no governed receiving step linking an acquisition line to the
->   inventory it produced.
+> **Still outstanding, in order:** S0.1 hosted acceptance; **S0.3 — the owner has
+> still not captured a fresh verified production backup**, which remains the
+> highest-priority action in the program; then S0.2 review, merge and acceptance.
+> S0 is not complete until all three are done.
 
 ## Owner actions carried forward
 
 1. **S0.3 — capture and verify a SQLite export, `sales` included.** Still not
-   done, and still the highest-priority action in the program. `sales` exists in
-   no repository artifact. S0.1 makes a lost volume visible; it does not make it
-   recoverable.
-2. Review and merge the S0.1 draft PR, then run the hosted acceptance checklist
-   above before starting S0.2 or S1.
-3. Note that `docs/ai/CURRENT_STATE.md` is stale in two checkable ways;
-   proposed replacement text is above.
-4. `06_OWNER_DECISIONS.md` D-17 (gate reseed-on-empty) is answered by this PR in
-   the recommended direction. The remaining eleven blocking decisions are
-   untouched; D-8 (cost basis method) and D-1/D-2 (the 30-row adjudication) have
-   the longest lead time.
+   done. Still the highest-priority action in the program.
+2. Record S0.1 hosted acceptance for PR #38.
+3. Review and merge the S0.2 draft PR, then run its hosted checklist.
+4. `docs/ai/CURRENT_STATE.md` is stale; proposed replacement text is above.
+5. Blocking owner decisions D-1, D-2, D-4, D-5, D-7, D-8, D-9, D-10, D-12, D-16
+   and D-19 remain open. D-17 was answered by S0.1.

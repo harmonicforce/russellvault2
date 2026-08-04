@@ -12,7 +12,7 @@ import CostLinks from './pages/CostLinks';
 import Listings from './pages/Listings';
 import Sales from './pages/Sales';
 import Checks from './pages/Checks';
-import ReadOnlyBanner from './components/ReadOnlyBanner';
+import SystemStatusBanner from './components/SystemStatusBanner';
 import AuthShell from './components/AuthShell';
 import ImportReview from './pages/ImportReview';
 import AcquisitionReview from './pages/AcquisitionReview';
@@ -33,17 +33,19 @@ import MediaIssues from './pages/MediaIssues';
 import ListingPrep from './pages/ListingPrep';
 import ListingPrepDetail from './pages/ListingPrepDetail';
 import FirstRunSetup from './components/FirstRunSetup';
-import { isProvenanceUiEnabled } from './lib/provenanceConfig';
+import { resolveAppConfig, type EnvLike } from './lib/appConfig';
 import { useWorkspace } from './lib/workspaceContext';
 
-// The staging import-review surface, and every other Supabase-backed page,
-// appears only when the shadow flag AND the shadow auth configuration are
-// both present. With either absent — the deployed default — there is no nav
-// entry and no route, so the legacy SQLite experience is byte-for-byte what
-// it was before these surfaces existed.
-const PROVENANCE_ENABLED = isProvenanceUiEnabled(
-  import.meta.env as unknown as Record<string, string | undefined>
-);
+// One source of configuration truth for the whole shell.
+//
+// `governed` mounts the governed routes and navigation. `legacy-only` mounts
+// the legacy application, which SystemStatusBanner labels as non-authoritative
+// so it is never mistaken for governed operation. `misconfigured` never gets
+// this far: AuthShell fails closed before any route renders, rather than
+// quietly serving the unauthenticated legacy app because one variable was
+// dropped.
+const APP_CONFIG = resolveAppConfig(import.meta.env as unknown as EnvLike);
+const PROVENANCE_ENABLED = APP_CONFIG.mode === 'governed';
 
 const PRIMARY_NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -225,7 +227,7 @@ function AppShell() {
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-0 text-ink">
-      <ReadOnlyBanner provenanceEnabled={PROVENANCE_ENABLED} />
+      <SystemStatusBanner provenanceEnabled={PROVENANCE_ENABLED} appMode={APP_CONFIG.mode} />
 
       {/* Tablet and phone: a slim bar carrying the one control that opens the
           drawer. Hidden once the sidebar is permanently visible. */}

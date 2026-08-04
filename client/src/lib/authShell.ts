@@ -1,9 +1,12 @@
-// Auth-shell state machine for the Phase 2 Supabase shadow pilot.
+// Auth-shell state machine for the governed application.
 //
-// Framework-agnostic so every state transition is unit-testable. The shell
-// only authenticates and checks workspace membership; it never reads or
-// writes business data (the legacy SQLite REST adapter remains the only data
-// path — see dataAdapter.ts).
+// Framework-agnostic so every state transition is unit-testable. This state
+// machine itself only authenticates and checks workspace membership; it reads
+// and writes no business data. That is a statement about THIS module, not
+// about the application: governed Supabase is authoritative for inventory,
+// intake, movement, media, corrections, cycle counts and Listing Prep, and
+// those surfaces write to it under the caller's own JWT. See dataTopology.ts
+// for which system owns which domain.
 
 import type { WorkspaceRole } from './database.types';
 

@@ -6,7 +6,13 @@ import {
   type Membership,
 } from './authShell';
 import { getShadowAuthConfig } from './shadowConfig';
-import { activeDataBackend, DATA_BACKENDS, SHADOW_WRITES_ENABLED } from './dataAdapter';
+import {
+  DUAL_WRITES_ENABLED,
+  GOVERNED_WRITES_IMPLEMENTED,
+  backendForDomain,
+  domainsWithMultipleAuthoritativeWriters,
+  isAuthoritative,
+} from './dataTopology';
 
 type RosterRow = Membership & { user_id: string };
 
@@ -347,13 +353,25 @@ describe('auth shell states', () => {
   });
 });
 
-describe('legacy adapter and no-dual-write guarantees', () => {
-  it('the legacy SQLite REST adapter remains the active data backend', () => {
-    expect(activeDataBackend()).toBe('legacy-sqlite-rest');
+describe('data ownership and the no-dual-write guarantee', () => {
+  // This block previously asserted that legacy SQLite was the active backend
+  // and that no Supabase write path existed. Both were false. The replacement
+  // asserts the facts that are true and that actually protect the data.
+  it('gives governed inventory to Supabase and legacy history to SQLite', () => {
+    expect(backendForDomain('current-inventory')).toBe('governed-supabase');
+    expect(backendForDomain('intake')).toBe('governed-supabase');
+    expect(backendForDomain('legacy-purchases')).toBe('legacy-sqlite-rest');
+    expect(backendForDomain('legacy-sales')).toBe('legacy-sqlite-rest');
   });
 
-  it('no shadow data backend or dual-write path exists', () => {
-    expect(DATA_BACKENDS).toEqual(['legacy-sqlite-rest']);
-    expect(SHADOW_WRITES_ENABLED).toBe(false);
+  it('treats governed Supabase as authoritative and legacy SQLite as not', () => {
+    expect(isAuthoritative('current-inventory')).toBe(true);
+    expect(isAuthoritative('legacy-inventory')).toBe(false);
+  });
+
+  it('records that governed writes exist while dual writes do not', () => {
+    expect(GOVERNED_WRITES_IMPLEMENTED).toBe(true);
+    expect(DUAL_WRITES_ENABLED).toBe(false);
+    expect(domainsWithMultipleAuthoritativeWriters()).toEqual([]);
   });
 });

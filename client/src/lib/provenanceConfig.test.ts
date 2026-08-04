@@ -10,7 +10,11 @@ import {
   getProvenanceUiConfig,
   isProvenanceUiEnabled,
 } from './provenanceConfig';
-import { DATA_BACKENDS, SHADOW_WRITES_ENABLED, activeDataBackend } from './dataAdapter';
+import {
+  DUAL_WRITES_ENABLED,
+  backendForDomain,
+  domainsWithMultipleAuthoritativeWriters,
+} from './dataTopology';
 
 const FULL_AUTH = {
   VITE_SHADOW_AUTH: 'supabase',
@@ -71,22 +75,24 @@ describe('staging labelling', () => {
   });
 });
 
-describe('the legacy SQLite path is unchanged by Phase 3', () => {
-  it('keeps the legacy REST adapter as the only data backend', () => {
-    expect(activeDataBackend()).toBe('legacy-sqlite-rest');
-    expect(DATA_BACKENDS).toEqual(['legacy-sqlite-rest']);
-  });
-
-  it('still has no shadow write path', () => {
-    expect(SHADOW_WRITES_ENABLED).toBe(false);
-  });
-
-  it('reports the same backend whether or not the review UI is enabled', () => {
-    // Enabling the staging review surface must not switch, duplicate, or
-    // fork the business data path: there is no dual-write.
+describe('enabling the review UI does not move any business fact', () => {
+  // These assertions used to claim legacy SQLite was the only data backend.
+  // That stopped being true several releases ago. What is still true, and what
+  // actually matters here, is that toggling this UI flag changes no domain's
+  // owner and creates no second writer.
+  it('leaves each domain owned by the same backend when the flag is on', () => {
+    const before = {
+      governedInventory: backendForDomain('current-inventory'),
+      legacyPurchases: backendForDomain('legacy-purchases'),
+    };
     expect(isProvenanceUiEnabled({ ...FULL_AUTH, [SHADOW_IMPORT_FLAG]: 'repository-fixtures' }))
       .toBe(true);
-    expect(activeDataBackend()).toBe('legacy-sqlite-rest');
-    expect(DATA_BACKENDS).toHaveLength(1);
+    expect(backendForDomain('current-inventory')).toBe(before.governedInventory);
+    expect(backendForDomain('legacy-purchases')).toBe(before.legacyPurchases);
+  });
+
+  it('never forks a domain into two authoritative writers', () => {
+    expect(DUAL_WRITES_ENABLED).toBe(false);
+    expect(domainsWithMultipleAuthoritativeWriters()).toEqual([]);
   });
 });

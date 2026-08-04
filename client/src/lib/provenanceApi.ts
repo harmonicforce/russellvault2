@@ -6,9 +6,11 @@
 // JWT; the database then enforces RLS and the governed RPCs. There is no
 // service-role key anywhere in this path and no privileged bypass.
 //
-// This module is NOT a data adapter for business records. It never reads or
-// writes inventory, purchases, listings, or sales; those remain exclusively on
-// the legacy SQLite REST path (see dataAdapter.ts). No dual-write exists.
+// This module handles import PROVENANCE only. It never reads or writes the
+// governed inventory domains, and it never touches the legacy SQLite domains
+// (legacy inventory, purchases, cost links, listings, sales) — those remain on
+// the legacy REST path. See dataTopology.ts for which system owns which
+// domain. No dual-write exists in either direction.
 
 import type {
   AuditEventRow,
