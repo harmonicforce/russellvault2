@@ -8,9 +8,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "SEED_LEGACY_ON_EMPTY=true tsx watch src/index.ts",
     "start": "NODE_ENV=production tsx src/index.ts",
-    "seed": "tsx src/seed.ts",
+    "seed": "SEED_LEGACY_ON_EMPTY=true tsx src/seed.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
     "test": "vitest run",

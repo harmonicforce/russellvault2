@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { getDb } from '../db.js';
 
 const router = Router();
 
 // Core query logic, exported so a regression test can exercise it directly
 // against an in-memory database without going through HTTP.
 export function getDashboard() {
+  const db = getDb();
   const inv = db.prepare(`
     SELECT
       COUNT(*) as lotCount,

@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 process.env.DATABASE_PATH = ':memory:';
-const { db, initSchema } = await import('../db.js');
+// These suites drive the bootstrap path itself, so they authorize it explicitly.
+// Production does not set this; see server/src/legacyBootstrapPolicy.ts.
+process.env.SEED_LEGACY_ON_EMPTY = 'true';
+const { getDb, initSchema } = await import('../db.js');
+const db = getDb();
 const { createListing, updateListing } = await import('./listings.js');
 
 function seedLot(id: string, available: number) {

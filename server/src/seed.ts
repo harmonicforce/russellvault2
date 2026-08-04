@@ -1,7 +1,9 @@
+import type Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { db, initSchema } from './db.js';
+import { getDb, initSchema } from './db.js';
+import { legacyBootWritesEnabled, LEGACY_BOOTSTRAP_FLAG } from './legacyBootstrapPolicy.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SEED_DIR = path.join(__dirname, '..', 'seed');
@@ -10,7 +12,7 @@ function loadJson<T = any>(file: string): T {
   return JSON.parse(fs.readFileSync(path.join(SEED_DIR, file), 'utf-8'));
 }
 
-function insertMany(table: string, columns: string[], rows: Record<string, any>[]) {
+function insertMany(db: Database.Database, table: string, columns: string[], rows: Record<string, any>[]) {
   if (rows.length === 0) return;
   const placeholders = columns.map((c) => `@${c}`).join(', ');
   const stmt = db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`);
@@ -24,8 +26,20 @@ function insertMany(table: string, columns: string[], rows: Record<string, any>[
   tx(rows);
 }
 
-export function seedIfEmpty() {
-  initSchema();
+/**
+ * Creates the legacy schema and fills any EMPTY table from the repository
+ * fixtures. Only ever called through an authorized bootstrap — see
+ * legacyBootstrap.ts. It is not, and must not become, a startup default.
+ *
+ * `INSERT OR IGNORE` into empty tables only: a populated table is never
+ * overwritten, and re-running is a no-op. Note that `sales` has no fixture and
+ * is deliberately not seeded here — production sales exist in no repository
+ * artifact, so this path cannot recreate them and must never be mistaken for a
+ * restore.
+ */
+export function seedIfEmpty(target: Database.Database = getDb()) {
+  const db = target;
+  initSchema(db);
 
   const count = (table: string) => (db.prepare(`SELECT COUNT(*) as n FROM ${table}`).get() as any).n as number;
 
@@ -42,7 +56,7 @@ export function seedIfEmpty() {
       'confirmed_cost_basis', 'cost_status', 'confirmed_allocated_quantity', 'listing_status',
       'sold_quantity', 'available_quantity', 'row_readiness',
     ];
-    insertMany('inventory_lots', cols, inventory);
+    insertMany(db, 'inventory_lots', cols, inventory);
     console.log(`seeded inventory_lots: ${inventory.length}`);
   }
 
@@ -54,7 +68,7 @@ export function seedIfEmpty() {
       'confirmed_allocated_quantity', 'remaining_quantity', 'confirmed_allocated_cost', 'remaining_cost',
       'reconciliation_status',
     ];
-    insertMany('whatnot_purchases', cols, purchases);
+    insertMany(db, 'whatnot_purchases', cols, purchases);
     console.log(`seeded whatnot_purchases: ${purchases.length}`);
   }
 
@@ -66,7 +80,7 @@ export function seedIfEmpty() {
       'allocated_cost', 'allocation_status', 'match_confidence', 'match_method', 'physical_reference',
       'supporting_evidence', 'owner_notes', 'row_status',
     ];
-    insertMany('cost_links', cols, links);
+    insertMany(db, 'cost_links', cols, links);
     console.log(`seeded cost_links: ${links.length}`);
   }
 
@@ -79,19 +93,29 @@ export function seedIfEmpty() {
       'listing_format', 'best_offer', 'promotion_rate_percent', 'ebay_category_id', 'ebay_item_id',
       'listing_url', 'listed_date', 'listing_status', 'owner_notes', 'row_status',
     ];
-    insertMany('ebay_listings', cols, listings);
+    insertMany(db, 'ebay_listings', cols, listings);
     console.log(`seeded ebay_listings: ${listings.length}`);
   }
 
   if (count('checks') === 0) {
     const checks = loadJson<any[]>('checks.json');
     const cols = ['check_id', 'test', 'actual', 'expected', 'difference', 'status', 'notes'];
-    insertMany('checks', cols, checks);
+    insertMany(db, 'checks', cols, checks);
     console.log(`seeded checks: ${checks.length}`);
   }
 }
 
+// `npm run seed` is an explicit operator action, so it runs the same authorized
+// bootstrap path rather than a second, looser one. The npm script sets the flag;
+// invoking this file directly without it refuses, so there is exactly one rule.
 if (import.meta.url === `file://${process.argv[1]}`) {
+  if (!legacyBootWritesEnabled()) {
+    console.error(
+      `refusing to seed: legacy bootstrap is not authorized. Set ${LEGACY_BOOTSTRAP_FLAG}=true to run this deliberately. ` +
+      'Repository fixtures are the original import, not a backup, and are not a valid production restoration source.',
+    );
+    process.exit(1);
+  }
   seedIfEmpty();
   console.log('done');
 }

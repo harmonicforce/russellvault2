@@ -3,20 +3,159 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { classifyPurchase, CLASSIFIER_VERSION } from './classify.js';
+import { legacyBootWritesEnabled, type EnvLike } from './legacyBootstrapPolicy.js';
+import { resolveLegacyWritesEnabled } from './legacyWriteGuard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// DATA_DIR lets a hosting platform (e.g. a Railway volume) point the SQLite
-// file at persistent storage. Falls back to a local ./data directory.
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
-const DB_PATH = process.env.DATABASE_PATH || path.join(DATA_DIR, 'vault.db');
 
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+/**
+ * DATA_DIR lets a hosting platform (e.g. a Railway volume) point the SQLite
+ * file at persistent storage; DATABASE_PATH overrides the whole path. Resolved
+ * in a function rather than at module scope so tests can evaluate it against an
+ * explicit environment.
+ */
+export function legacyDatabasePath(env: EnvLike = process.env): string {
+  const dataDir = env.DATA_DIR || path.join(__dirname, '..', 'data');
+  return env.DATABASE_PATH || path.join(dataDir, 'vault.db');
+}
 
-export const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+/** SQLite's two non-file targets. Neither can be "missing" on disk. */
+function isEphemeralTarget(dbPath: string): boolean {
+  return dbPath === ':memory:' || dbPath === '';
+}
 
-export function initSchema() {
+export type LegacyDatabaseUnavailableReason =
+  | 'legacy_database_missing'
+  | 'legacy_database_unreadable';
+
+/**
+ * Thrown when a caller needs the legacy database and it is not usable. Carries
+ * a bounded reason code and deliberately never carries the path or the driver's
+ * message, so nothing that reaches an HTTP response can leak either.
+ */
+export class LegacyDatabaseUnavailableError extends Error {
+  readonly reason: LegacyDatabaseUnavailableReason;
+  constructor(reason: LegacyDatabaseUnavailableReason) {
+    super(`legacy database unavailable: ${reason}`);
+    this.name = 'LegacyDatabaseUnavailableError';
+    this.reason = reason;
+  }
+}
+
+export type LegacyDatabaseOpenState =
+  | {
+      status: 'open';
+      db: Database.Database;
+      /** True when SQL-level writes are rejected by `PRAGMA query_only`. */
+      queryOnly: boolean;
+    }
+  | { status: 'unavailable'; reason: LegacyDatabaseUnavailableReason };
+
+export interface OpenLegacyDatabaseOptions {
+  path: string;
+  /** May the process create or alter the database? (SEED_LEGACY_ON_EMPTY) */
+  bootstrapAuthorized: boolean;
+  /** May HTTP requests write? (ALLOW_LEGACY_WRITES / NODE_ENV) */
+  requestWritesEnabled: boolean;
+}
+
+/**
+ * Opens the legacy database under an explicit policy. No module state, no
+ * defaults read from the environment — the caller supplies everything, which is
+ * what makes the safety properties testable against temporary databases.
+ *
+ * Two policy effects, and the honest limits of each:
+ *
+ *   * `fileMustExist` is set whenever bootstrap is NOT authorized. A missing
+ *     database is then reported as `legacy_database_missing` instead of being
+ *     created. This is what stops a lost or mispointed volume from producing a
+ *     brand-new database that startup would then fill from repository fixtures.
+ *
+ *   * `PRAGMA query_only` is set whenever NEITHER permission is granted. That
+ *     makes the connection reject every INSERT, UPDATE, DELETE and DDL
+ *     statement at the SQL layer, so no schema object and no business row can
+ *     change through this handle.
+ *
+ * `query_only` is not the same as opening the file read-only. SQLite may still
+ * perform engine-level writes — WAL and `-shm` bookkeeping, journal state,
+ * locking — against an existing database, and this code does not prevent that.
+ * The guarantee being claimed is the narrower one: no schema change and no
+ * business-data change. `journal_mode` is deliberately not set when the
+ * connection is query-only, because setting it is itself a write; an existing
+ * production database already records WAL mode in its own header, so nothing is
+ * lost by leaving it alone.
+ */
+export function openLegacyDatabase(options: OpenLegacyDatabaseOptions): LegacyDatabaseOpenState {
+  const { path: dbPath, bootstrapAuthorized, requestWritesEnabled } = options;
+  const ephemeral = isEphemeralTarget(dbPath);
+  const queryOnly = !bootstrapAuthorized && !requestWritesEnabled;
+
+  // Creating the parent directory is itself a filesystem write, so it happens
+  // only when bootstrap is authorized. Without authorization a missing
+  // directory is a missing database, which is exactly what we want to report.
+  if (bootstrapAuthorized && !ephemeral) {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  }
+
+  let connection: Database.Database;
+  try {
+    connection = new Database(dbPath, {
+      fileMustExist: !bootstrapAuthorized && !ephemeral,
+    });
+  } catch {
+    // better-sqlite3 reports "unable to open database file" for both a missing
+    // file under fileMustExist and an unreadable one. Distinguish them by
+    // asking the filesystem rather than by parsing a driver message.
+    const missing = !ephemeral && !fs.existsSync(dbPath);
+    return { status: 'unavailable', reason: missing ? 'legacy_database_missing' : 'legacy_database_unreadable' };
+  }
+
+  try {
+    if (queryOnly) {
+      // Order matters: foreign_keys is a connection-level setting and writes
+      // nothing, but it cannot be changed once query_only is on.
+      connection.pragma('foreign_keys = ON');
+      connection.pragma('query_only = true');
+    } else {
+      connection.pragma('journal_mode = WAL');
+      connection.pragma('foreign_keys = ON');
+    }
+  } catch {
+    connection.close();
+    return { status: 'unavailable', reason: 'legacy_database_unreadable' };
+  }
+
+  return { status: 'open', db: connection, queryOnly };
+}
+
+/** Opens under the live process environment. Memoized: one connection per process. */
+let processState: LegacyDatabaseOpenState | null = null;
+
+export function legacyDatabaseState(env: EnvLike = process.env): LegacyDatabaseOpenState {
+  if (processState === null) {
+    processState = openLegacyDatabase({
+      path: legacyDatabasePath(env),
+      bootstrapAuthorized: legacyBootWritesEnabled(env),
+      requestWritesEnabled: resolveLegacyWritesEnabled(env),
+    });
+  }
+  return processState;
+}
+
+/**
+ * The legacy connection. Throws `LegacyDatabaseUnavailableError` when the
+ * database is missing or unreadable, rather than silently substituting an empty
+ * one — an empty stand-in would let every legacy read return "no rows" and look
+ * healthy, which is the counterfeit-recovery failure this slice exists to stop.
+ */
+export function getDb(): Database.Database {
+  const state = legacyDatabaseState();
+  if (state.status === 'open') return state.db;
+  throw new LegacyDatabaseUnavailableError(state.reason);
+}
+
+export function initSchema(target: Database.Database = getDb()) {
+  const db = target;
   db.exec(`
     CREATE TABLE IF NOT EXISTS inventory_lots (
       inventory_lot_id TEXT PRIMARY KEY,
@@ -202,14 +341,14 @@ export function initSchema() {
   `);
 }
 
-function hasColumn(table: string, col: string): boolean {
+function hasColumn(db: Database.Database, table: string, col: string): boolean {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some((c) => c.name === col);
 }
-function meta(key: string): string | undefined {
+function meta(db: Database.Database, key: string): string | undefined {
   const row = db.prepare(`SELECT value FROM app_meta WHERE key = ?`).get(key) as any;
   return row?.value;
 }
-function setMeta(key: string, value: string) {
+function setMeta(db: Database.Database, key: string, value: string) {
   db.prepare(`INSERT INTO app_meta (key, value) VALUES (?, ?)
               ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, value);
 }
@@ -227,7 +366,7 @@ function setMeta(key: string, value: string) {
 // Idempotent and safe to run every boot: it only ever flags rows that are
 // food and not yet flagged, so it also catches food rows from a future
 // import without needing a one-time guard.
-function flagFoodPurchases() {
+function flagFoodPurchases(db: Database.Database) {
   const info = db.prepare(
     `UPDATE whatnot_purchases
         SET is_excluded = 1,
@@ -245,25 +384,26 @@ function flagFoodPurchases() {
 //     row the owner edited by hand (product_type_source = 'manual') is never
 //     touched;
 //   - cost-link approvals are never touched.
-export function migrateProductType() {
+export function migrateProductType(target: Database.Database = getDb()) {
+  const db = target;
   db.exec(`CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)`);
-  if (!hasColumn('whatnot_purchases', 'product_type')) {
+  if (!hasColumn(db, 'whatnot_purchases', 'product_type')) {
     db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN product_type TEXT`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_purchases_type ON whatnot_purchases(product_type)`);
   }
-  if (!hasColumn('whatnot_purchases', 'product_type_source')) {
+  if (!hasColumn(db, 'whatnot_purchases', 'product_type_source')) {
     db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN product_type_source TEXT`);
   }
-  if (!hasColumn('whatnot_purchases', 'is_excluded')) {
+  if (!hasColumn(db, 'whatnot_purchases', 'is_excluded')) {
     db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN is_excluded INTEGER DEFAULT 0`);
   }
-  if (!hasColumn('whatnot_purchases', 'exclusion_reason')) {
+  if (!hasColumn(db, 'whatnot_purchases', 'exclusion_reason')) {
     db.exec(`ALTER TABLE whatnot_purchases ADD COLUMN exclusion_reason TEXT`);
   }
 
-  flagFoodPurchases();
+  flagFoodPurchases(db);
 
-  const versionChanged = meta('classifier_version') !== String(CLASSIFIER_VERSION);
+  const versionChanged = meta(db, 'classifier_version') !== String(CLASSIFIER_VERSION);
   // On a version bump re-tag everything except owner-edited rows; otherwise just
   // fill in rows that were never classified.
   const rows = db.prepare(
@@ -289,5 +429,5 @@ export function migrateProductType() {
     run(rows);
     console.log(`classified product_type for ${rows.length} purchases (v${CLASSIFIER_VERSION}${versionChanged ? ', re-tag' : ''})`);
   }
-  setMeta('classifier_version', String(CLASSIFIER_VERSION));
+  setMeta(db, 'classifier_version', String(CLASSIFIER_VERSION));
 }

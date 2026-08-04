@@ -13,7 +13,7 @@ Reading anything below without this distinction will produce wrong conclusions.
 | Code | `server/` (Express + better-sqlite3), the legacy client pages | `supabase/migrations/`, `scripts/db/`, the workspace-scoped client pages, `server/src/routes/` for the governed proxies |
 | Data | `server/data/vault.db`, seeded from the imported workbook | the hosted Supabase project (and a local replica for tests) |
 | Authority | **none** | authoritative for inventory identity, readiness, duplicate detection, serialization, movement and immutable history |
-| Access control | none beyond the legacy-write guard | RLS + workspace membership + role checks, on every read and mutation |
+| Access control | none beyond the legacy-write guard (HTTP only) and the boot-write policy | RLS + workspace membership + role checks, on every read and mutation |
 | Money | SQLite `REAL` | `amount_minor` integers plus an explicit currency |
 | Reachable | always | only when the shadow flag and shadow auth configuration are both present |
 
@@ -57,8 +57,12 @@ authoritative by being present.
   backup, carried out as a separate, backup-protected, idempotent,
   owner-reviewed procedure. No restoration is performed in this repository
   work, and none is performed against a live database.
-- **Legacy writes are disabled by default in production.** See "Legacy-write
-  guard" below. This does not change local development.
+- **Legacy writes are disabled by default in production, and there are TWO
+  permissions, not one.** `ALLOW_LEGACY_WRITES` governs legacy HTTP mutation
+  routes; `SEED_LEGACY_ON_EMPTY` governs whether startup may create, migrate or
+  seed the SQLite database. The HTTP guard alone never made production
+  read-only — startup writes ran before it existed. See "The two legacy write
+  permissions" below. Neither changes local development.
 - **Unsafe financial writes remain a concern for later target-model phases.**
   Cost-basis and related writes now reject invalid quantities/costs and run
   allocation creation/confirmation + rollup recomputation in a single
@@ -70,18 +74,104 @@ authoritative by being present.
   *quantities* (inventory, allocation, listing, sale), but stored money fields
   are still `REAL`.
 
-## Legacy-write guard
+## The two legacy write permissions
+
+Legacy SQLite writes arrive by two completely different routes, and they are
+governed by two different, independent switches. Neither implies the other.
+
+### 1. Legacy HTTP writes — `ALLOW_LEGACY_WRITES`
 
 In production (`NODE_ENV=production`), all non-GET `/api/*` requests are
 rejected with `403 { error, readOnly: true }` unless the server-only env var
-`ALLOW_LEGACY_WRITES=true` is set. This is deliberate: the point is to make the
-prototype incapable of accepting further legacy writes while the relational
-shadow system is built, without an explicit owner opt-in. Reads are never
-blocked. Outside production (local dev, tests, CI) writes are always enabled —
-this guard does not change local workflows. There is no client-side switch and
-no secret in client code: the client only ever learns the current state from
-`GET /api/health` (`{ ok, readOnly }`) and shows a non-dismissible banner when
-`readOnly` is `true`. See `server/src/legacyWriteGuard.ts`.
+`ALLOW_LEGACY_WRITES=true` is set. Reads are never blocked. Outside production
+(local dev, tests, CI) writes are always enabled — this guard does not change
+local workflows. There is no client-side switch and no secret in client code:
+the client only ever learns the current state from `GET /api/health`
+(`{ ok, readOnly, … }`) and shows a non-dismissible banner when `readOnly` is
+`true`. See `server/src/legacyWriteGuard.ts`.
+
+**This guard governs HTTP requests and nothing else.** It is Express
+middleware, so it cannot govern anything that happens while modules are being
+imported.
+
+### 2. Legacy boot/bootstrap writes — `SEED_LEGACY_ON_EMPTY`
+
+Until S0.1, `server/src/index.ts` called `seedIfEmpty()` and
+`migrateProductType()` at module scope, before the guard above was installed.
+Between them those two functions created seven tables and thirteen indexes,
+added four columns to `whatnot_purchases`, inserted up to 3,950 fixture rows
+into five tables, flagged food purchases as excluded, re-tagged `product_type`
+on every non-manual row whenever `CLASSIFIER_VERSION` changed, and wrote
+classifier metadata. `ALLOW_LEGACY_WRITES=false` stopped none of it.
+
+The practical hazard was not theoretical. `seedIfEmpty()` refilled any table it
+found empty, so a container that booted against a missing, empty, remounted or
+mispointed volume rebuilt the schema and repopulated five tables from
+`server/seed/*.json` — the ORIGINAL WORKBOOK IMPORT, not a backup. The result
+looked like a recovered production database while `sales`, which has no fixture
+at all, was simply gone.
+
+All of that now runs only through `prepareLegacyDatabase()`
+(`server/src/legacyBootstrap.ts`), and only when the separate server-only env
+var `SEED_LEGACY_ON_EMPTY=true` authorizes it. The policy is fail-closed and
+exact-match: missing, empty, `false`, `1`, `TRUE` and every other value are
+disabled. Permission is never inferred from `NODE_ENV`, `DATA_DIR`,
+`DATABASE_PATH`, a writable filesystem, or `ALLOW_LEGACY_WRITES`. See
+`server/src/legacyBootstrapPolicy.ts`.
+
+`npm run dev` and `npm run seed` set the flag so local workflows are unchanged.
+`npm run start` — which is what Railway runs — does not.
+
+### 3. Database opening mode
+
+`server/src/db.ts` opens the connection lazily under both policies:
+
+- **`fileMustExist` is set whenever bootstrap is not authorized.** A missing
+  database is reported as `legacy_database_missing` rather than created, and the
+  parent directory is not created either. This is what prevents a lost volume
+  from producing a new database for startup to fill.
+- **`PRAGMA query_only` is set whenever neither permission is granted** — the
+  production default. The connection then rejects every `INSERT`, `UPDATE`,
+  `DELETE` and DDL statement at the SQL layer.
+
+**The guarantee, stated exactly:** with both permissions withheld, no schema
+object and no business row can change through this connection. That is *not*
+the same as "SQLite performs no writes". The database is opened read-write at
+the file level, so the engine may still do WAL and `-shm` bookkeeping, journal
+state and locking against an existing file. `journal_mode` is deliberately not
+set on a query-only connection, because setting it is itself a write; an
+existing production database already records WAL mode in its own header.
+
+### 4. Health signalling
+
+`GET /api/health` reports the legacy database honestly instead of assuming it
+was repaired at boot:
+
+```
+{ "ok": true, "readOnly": true,
+  "legacyDatabaseAvailable": true, "legacySchemaPresent": true,
+  "legacySeeded": true, "legacyBootWritesEnabled": false }
+```
+
+`ok` and `readOnly` are unchanged. A missing, unreadable, structurally
+incomplete or catastrophically empty database returns **503** with `ok: false`
+and a bounded `reason` from a closed set: `legacy_database_missing`,
+`legacy_database_unreadable`, `legacy_schema_missing`, `legacy_baseline_empty`,
+`legacy_health_check_failed`. No path, SQL, driver message or stack trace is
+ever included. Railway health-checks this path, so an unusable database now
+fails the check and keeps the previous good deployment serving.
+
+`legacySeeded` requires `inventory_lots` and `whatnot_purchases` each to hold at
+least one row. It deliberately does **not** compare against the repository seed
+counts, because a live database legitimately diverges — the verified production
+backup already holds 2,119 purchase rows rather than the seed's 2,149. Those two
+tables are the sentinel because no legacy route can delete from them: the legacy
+API has no `DELETE` endpoint and issues no `DELETE FROM` anywhere in production
+code, so zero rows means loss from outside the application. `cost_links` and
+`ebay_listings` are inspected but excluded from the verdict as working rather
+than source tables, and `sales` is excluded because it has no fixture and is
+legitimately empty on a fresh database. See
+`server/src/legacyDatabaseHealth.ts`.
 
 ## Repository / branch reality
 
@@ -219,8 +309,10 @@ npm ci --prefix server
 
 - Default DB path: `server/data/vault.db` (gitignored).
 - Overridable via `DATA_DIR` (directory) or `DATABASE_PATH` (full path). In
-  production these should point at a **persistent volume** so data survives
-  redeploys.
+  production these must point at a **persistent volume** so data survives
+  redeploys. A volume that is missing, empty or mispointed is no longer papered
+  over by an automatic reseed: the service reports 503 from `/api/health` with
+  a bounded reason code.
 - The database runs in **WAL mode** (`journal_mode = WAL`), so there are
   companion `vault.db-wal` and `vault.db-shm` files. **Copying only `vault.db`
   while the writer is live is not a consistent backup** — use SQLite's online
