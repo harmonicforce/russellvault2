@@ -95,13 +95,47 @@ create unique index acquisition_line_classifications_one_successor_uidx on publi
 create index acquisition_line_classifications_history_idx on public.acquisition_line_classifications (workspace_id, acquisition_line_item_id, created_at desc);
 
 create function app.classification_rule_target_matches()
-returns trigger language plpgsql set search_path = '' as $$
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_rule_version integer;
+  v_rule_target_option_id uuid;
 begin
-  if new.rule_id is not null and not exists (
-    select 1 from public.classification_rules r
-    where r.id = new.rule_id and r.workspace_id = new.workspace_id
-      and r.version = new.rule_version and r.target_classification_option_id = new.classification_option_id
-  ) then raise exception 'classification rule target/version mismatch' using errcode = '23514'; end if;
+  if new.rule_id is null then
+    return new;
+  end if;
+
+  select r.version, r.target_classification_option_id
+    into v_rule_version, v_rule_target_option_id
+  from public.classification_rules r
+  where r.id = new.rule_id
+    and r.workspace_id = new.workspace_id;
+
+  -- Foreign-workspace or missing rule references should reach the composite FK
+  -- and fail with 23503 instead of being masked as semantic mismatches.
+  if not found then
+    return new;
+  end if;
+
+  -- Foreign-workspace or missing option references should likewise reach the
+  -- option composite FK and fail with 23503.
+  if not exists (
+    select 1
+    from public.acquisition_classification_options o
+    where o.id = new.classification_option_id
+      and o.workspace_id = new.workspace_id
+  ) then
+    return new;
+  end if;
+
+  if v_rule_version is distinct from new.rule_version
+     or v_rule_target_option_id is distinct from new.classification_option_id then
+    raise exception 'classification rule target/version mismatch'
+      using errcode = '23514';
+  end if;
+
   return new;
 end $$;
 create trigger acquisition_line_classifications_rule_match before insert or update on public.acquisition_line_classifications for each row execute function app.classification_rule_target_matches();

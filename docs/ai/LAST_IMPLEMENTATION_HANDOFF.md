@@ -1,35 +1,34 @@
 # Last Implementation Handoff
 
-## PR #41 S1.1 focused fixture lifecycle repair
+## PR #41 S1.1 classification trigger repair
 
 - Repository: `harmonicforce/russellvault2`
 - PR: #41 — `S1.1: Add governed acquisition classification schema, seed data, and tests`
 - Branch: `codex/add-governed-acquisition-classification-schema-3tx1ht`
-- Current remote head named in work order: `7f80080537d91a7e8318b2568eae24961d3184a9`
-- Current CI run named in work order: `30963818752`
-- Local head inspected before this repair: `681f17e6bdc9138aef176769f465df432019ed4e`
-- Final local repair head: 58bd95c5e2f707d22f91857786e13c2650c5fbcb (pre-handoff-amend)
+- Current remote head named in work order: `cf24bbd0acfbf4eb6c2a47cddb0b86a556cd3508`
+- Current CI run named in work order: `30964839596`
+- Local head inspected before this repair: `b0b90e873be6a64fd89ffd79f47a739d49f60f8b`
+- Final local repair head: 5fa70ad3b4be0dc7ab25d3b5f32f359b31fcdf1d (pre-handoff-amend)
 - Migration count remains: 61
-- Migration file remains: `supabase/migrations/20260804000100_governed_acquisition_classification.sql`
+- Migration file edited in place because it is the unmerged S1.1 migration: `supabase/migrations/20260804000100_governed_acquisition_classification.sql`
 
 ## Proven CI failure and root cause
 
-The current database CI failure in `supabase/tests/55_governed_acquisition_classification.sql` was `this import is committed and can no longer accept new source_records`. The prior tuple-width fix exposed, but did not cause, this lifecycle defect. The focused fixture was constructing both Phase 3 import jobs and acquisition import jobs in terminal `committed` state before inserting their child rows, reversing the repository's governed staging lifecycle.
+CI run `30964839596` completed the focused `supabase/tests/55_governed_acquisition_classification.sql` file with 74/76 assertions passing. Assertions 54 and 55 failed because `app.classification_rule_target_matches()` was a BEFORE trigger that treated foreign-workspace option/rule references as semantic rule target/version mismatches and raised `23514` before PostgreSQL could enforce the existing composite foreign keys with `23503`.
 
 ## Repair made
 
-- Phase 3 `public.import_jobs` fixture rows now start as `mode = 'commit'`, `status = 'preview'`, `completed_at = NULL`, `source_row_count = 1`, `accepted_row_count = 0`, and `issue_row_count = 0`.
-- The two `public.source_records` rows are inserted while their parent import jobs are still open.
-- Only after the source records exist, the fixture updates both import jobs to `status = 'committed'`, sets `completed_at = now()`, and records truthful counts: `source_row_count = 1`, `accepted_row_count = 1`, `issue_row_count = 0`.
-- `public.acquisition_import_jobs` fixture rows now start as `mode = 'commit'`, `status = 'preview'`, `expected_line_count = 1`, all six committed-summary columns NULL, and `completed_at = NULL`.
-- The two `public.acquisition_line_items` rows are inserted while their parent acquisition import jobs are still open.
-- Only after the line items exist, the fixture updates both acquisition import jobs to `status = 'committed'`, sets `completed_at = now()`, and records truthful minimal-fixture summaries: zero orders, zero lots, one line item, zero cost components, zero unresolved supplier candidates, and zero unresolved cost components.
-- The first successful `acquisition_line_classifications` INSERT now selects the intended active seeded rule with predicates on workspace, logical key, `status = 'active'`, `version = 5`, and `source = 'legacy_classifier_v5'` so the later retired v6 history row cannot participate.
-- Other singleton `INSERT ... SELECT` rule fixtures were audited and tightened where needed to avoid arbitrary `LIMIT 1` cardinality masking.
+`app.classification_rule_target_matches()` now resolves the rule only inside `new.workspace_id`. If the rule is missing from that workspace, it returns `new` so the `(rule_id, workspace_id)` composite FK emits `23503`. It separately checks whether the referenced option exists in `new.workspace_id`; if not, it returns `new` so the `(classification_option_id, workspace_id)` composite FK emits `23503`. Only after both references are known to be valid in the row workspace does it compare rule version and target option and raise the semantic `23514` mismatch.
 
-## Static audit
+## Trigger behavior audit
 
-The focused test setup was reviewed for parent-child and cardinality mistakes: children are staged before terminal parent updates; committed summaries match the rows actually inserted; terminal parents do not receive later children; singleton rule selections identify active v5 legacy rules where historical versions are present; workspace IDs still align across composite foreign keys; and expected SQLSTATEs continue to target the intended constraints rather than earlier lifecycle failures.
+- `owner_override` rows with `rule_id IS NULL` still bypass the trigger.
+- Retirement updates with unchanged rule data still pass because the trigger sees the same valid rule/version/target.
+- Valid rule-derived classifications still pass.
+- Cross-workspace rule references should now reach the composite FK and fail with `23503`.
+- Cross-workspace option references should now reach the composite FK and fail with `23503`.
+- Same-workspace version or target contradictions still raise `23514`.
+- No composite FK, RLS policy, append-only trigger, fixture lifecycle, regex seed, or classification semantic was weakened.
 
 ## Verification
 
@@ -37,7 +36,7 @@ Local PostgreSQL remains unavailable in this container (`psql` is missing), so `
 
 ## Non-changes
 
-No migration count change, no second migration, no schema redesign, no classification semantic change, no regex seed change, no lifecycle-trigger weakening, no `server/src/classify.ts` change, no Railway action, no hosted Supabase access, no hosted migration, no historical import, no S1.2 work, and no `docs/ai/CURRENT_STATE.md` edit.
+No migration count change, no second migration, no FK weakening, no RLS weakening, no append-only weakening, no fixture lifecycle change, no `server/src/classify.ts` change, no Railway action, no hosted Supabase access, no hosted migration, no historical import, no S1.2 work, and no `docs/ai/CURRENT_STATE.md` edit.
 
 ## Next step
 
