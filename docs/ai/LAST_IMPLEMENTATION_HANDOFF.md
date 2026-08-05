@@ -1,34 +1,26 @@
 # Last Implementation Handoff
 
-## PR #41 S1.1 classification trigger repair
+## PR #41 S1.1 FK-isolation test repair
 
 - Repository: `harmonicforce/russellvault2`
 - PR: #41 — `S1.1: Add governed acquisition classification schema, seed data, and tests`
 - Branch: `codex/add-governed-acquisition-classification-schema-3tx1ht`
-- Current remote head named in work order: `cf24bbd0acfbf4eb6c2a47cddb0b86a556cd3508`
-- Current CI run named in work order: `30964839596`
-- Local head inspected before this repair: `b0b90e873be6a64fd89ffd79f47a739d49f60f8b`
-- Final local repair head: 5fa70ad3b4be0dc7ab25d3b5f32f359b31fcdf1d (pre-handoff-amend)
+- Current head named in work order: `8f0de234bdf0fddd11abcf8ca10d78a7bd64395e`
+- Current CI run named in work order: `30965321170`
+- Local head inspected before this repair: `be2a4e621734d1611528f1bdb0fdd612e1ac95a9`
+- Final local repair head: 798aed0618d7224032d5925ad63798fc82ea1589 (pre-handoff-amend)
 - Migration count remains: 61
-- Migration file edited in place because it is the unmerged S1.1 migration: `supabase/migrations/20260804000100_governed_acquisition_classification.sql`
+- No migration/schema file was changed in this repair.
 
 ## Proven CI failure and root cause
 
-CI run `30964839596` completed the focused `supabase/tests/55_governed_acquisition_classification.sql` file with 74/76 assertions passing. Assertions 54 and 55 failed because `app.classification_rule_target_matches()` was a BEFORE trigger that treated foreign-workspace option/rule references as semantic rule target/version mismatches and raised `23514` before PostgreSQL could enforce the existing composite foreign keys with `23503`.
+CI run `30965321170` executed all 76 focused assertions. The prior trigger repair worked: cross-workspace references now reach database constraints instead of being masked by `app.classification_rule_target_matches()`. Assertions 54 and 55 still failed because those two FK tests reused workspace A's acquisition line after the classification-history section had already created a current successor for that line. The attempted invalid rows collided first with `acquisition_line_classifications_one_current_uidx` (`23505`) before PostgreSQL could check the intended cross-workspace composite FKs (`23503`).
 
 ## Repair made
 
-`app.classification_rule_target_matches()` now resolves the rule only inside `new.workspace_id`. If the rule is missing from that workspace, it returns `new` so the `(rule_id, workspace_id)` composite FK emits `23503`. It separately checks whether the referenced option exists in `new.workspace_id`; if not, it returns `new` so the `(classification_option_id, workspace_id)` composite FK emits `23503`. Only after both references are known to be valid in the row workspace does it compare rule version and target option and raise the semantic `23514` mismatch.
-
-## Trigger behavior audit
-
-- `owner_override` rows with `rule_id IS NULL` still bypass the trigger.
-- Retirement updates with unchanged rule data still pass because the trigger sees the same valid rule/version/target.
-- Valid rule-derived classifications still pass.
-- Cross-workspace rule references should now reach the composite FK and fail with `23503`.
-- Cross-workspace option references should now reach the composite FK and fail with `23503`.
-- Same-workspace version or target contradictions still raise `23514`.
-- No composite FK, RLS policy, append-only trigger, fixture lifecycle, regex seed, or classification semantic was weakened.
+- `cross-workspace option rejected` now uses workspace B and unclassified line B, selects option `single` from workspace A, and selects the valid active v5 `seller:topshelfcollects` rule from workspace B. The row is otherwise valid, so only the option is cross-workspace.
+- `cross-workspace rule rejected` now uses workspace B and unclassified line B, selects option `single` from workspace B, and selects the active v5 `seller:topshelfcollects` rule from workspace A. The row is otherwise valid, so only the rule is cross-workspace.
+- Line B has no current classification at this point in the transaction: prior B-line classification attempts are inside `throws_ok` assertions and fail, leaving no row behind.
 
 ## Verification
 
@@ -36,7 +28,7 @@ Local PostgreSQL remains unavailable in this container (`psql` is missing), so `
 
 ## Non-changes
 
-No migration count change, no second migration, no FK weakening, no RLS weakening, no append-only weakening, no fixture lifecycle change, no `server/src/classify.ts` change, no Railway action, no hosted Supabase access, no hosted migration, no historical import, no S1.2 work, and no `docs/ai/CURRENT_STATE.md` edit.
+No migration schema change, no migration count change, no second migration, no trigger change, no FK change, no unique-index change, no RLS change, no fixture lifecycle change, no `server/src/classify.ts` change, no Railway action, no hosted Supabase access, no hosted migration, no historical import, no S1.2 work, and no `docs/ai/CURRENT_STATE.md` edit.
 
 ## Next step
 
