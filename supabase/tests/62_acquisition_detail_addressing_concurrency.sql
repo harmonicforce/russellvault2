@@ -208,8 +208,8 @@ select is(pg_temp.detail('SRC-62-A','LINE-62-DUP')->'sourceEvidence'->>'sourceIm
 select ok(not (pg_temp.detail('SRC-62-A','LINE-62-DUP')->'sourceEvidence' ? 'acquisitionImportPublicIdentity'),'the misleading acquisition-import identity name is gone');
 select ok(not (pg_temp.detail('SRC-62-A','LINE-62-DUP')->'sourceEvidence' ? 'sourceRecordPublicIdentity'),'the misleading source-record identity name is gone');
 -- Out-of-scope concepts must not appear anywhere in the response.
-select ok(not (pg_temp.detail('SRC-62-A','LINE-62-DUP') ?| array['receiving','receipts','discrepancies','exclusions','costBasis','profit','payout']),'no out-of-scope top-level keys are present');
-select ok(pg_temp.detail('SRC-62-A','LINE-62-DUP')::text !~* '(receiving|receipt|discrepanc|exclusion|cost[_ ]?basis|profit|payout)','no receiving, discrepancy, exclusion, cost-basis, profit, or payout content appears');
+select ok(not (pg_temp.detail('SRC-62-A','LINE-62-DUP') ?| array['receiving','receipts','discrepancies','costBasis','profit','payout']),'no out-of-scope top-level keys are present');
+select ok(pg_temp.detail('SRC-62-A','LINE-62-DUP')::text !~* '(receiving|receipt|discrepanc|cost[_ ]?basis|profit|payout)','no receiving, discrepancy, cost-basis, profit, or payout content appears');
 
 reset role;
 commit;

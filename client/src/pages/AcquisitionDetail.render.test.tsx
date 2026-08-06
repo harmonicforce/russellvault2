@@ -445,8 +445,8 @@ describe('acquisition detail — coverage and scope',()=>{
   expect(screen.getByText(/Source record row key: a-row-1/)).toBeTruthy();
   expect(screen.getByText(/Source import job: IMP-A/)).toBeTruthy();
  });
- it('shows no receiving, exclusion, cost-basis, profit, or payout control',async()=>{renderPage();await ready();
+ it('shows no receiving, cost-basis, profit, or payout control',async()=>{renderPage();await ready();
   const text=document.body.textContent??'';
-  expect(text).not.toMatch(/receiv(e|ing) into inventory|exclusion|cost basis|profit|payout|discrepanc/i);
+  expect(text).not.toMatch(/receiv(e|ing) into inventory|cost basis|profit|payout|discrepanc/i);
  });
 });

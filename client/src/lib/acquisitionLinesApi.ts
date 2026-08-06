@@ -1,10 +1,11 @@
 export type AcquisitionSort = 'occurred_at'|'created_at'|'seller'|'title'|'quantity'|'classification';
+export type AcquisitionExclusionState='included'|'excluded';
 export type AcquisitionOrder = 'asc'|'desc';
-export interface AcquisitionLine { source_system_public_id:string; acquisition_line_public_id:string; full_title:string|null; delivered_item_title:string|null; seller_normalized:string|null; business_vertical:string|null; quantity:number; occurred_at:string|null; created_at:string; source_order_reference:string|null; classification_key:string|null; classification_label:string|null; classification_method:string|null; classification_state:'classified'|'needs_review'|'unclassified' }
+export interface AcquisitionLine { source_system_public_id:string; acquisition_line_public_id:string; full_title:string|null; delivered_item_title:string|null; seller_normalized:string|null; business_vertical:string|null; quantity:number; occurred_at:string|null; created_at:string; source_order_reference:string|null; classification_key:string|null; classification_label:string|null; classification_method:string|null; classification_state:'classified'|'needs_review'|'unclassified'; exclusion_state:AcquisitionExclusionState; current_exclusion_public_id:string|null; current_exclusion_reason:string|null; excluded_at:string|null }
 export interface FacetCount { value:string; count:number }
 export interface ClassificationFacet { key:string; label:string; count:number }
-export interface AcquisitionFacets { classificationOptions:ClassificationFacet[]; unclassified:number; methods:FacetCount[]; states:FacetCount[]; sellers:FacetCount[]; businessVerticals:FacetCount[] }
-export interface LineParams { query?:string; classification?:string; seller?:string; businessVertical?:string; method?:string; classificationState?:string; sort:AcquisitionSort; order:AcquisitionOrder; limit:number; offset:number }
+export interface AcquisitionFacets { classificationOptions:ClassificationFacet[]; unclassified:number; methods:FacetCount[]; states:FacetCount[]; exclusionStates:FacetCount[]; sellers:FacetCount[]; businessVerticals:FacetCount[] }
+export interface LineParams { query?:string; classification?:string; seller?:string; businessVertical?:string; method?:string; classificationState?:string; exclusionState?:AcquisitionExclusionState; sort:AcquisitionSort; order:AcquisitionOrder; limit:number; offset:number }
 export class AcquisitionLinesError extends Error { readonly code:string; constructor(code:string){super(code);this.code=code} }
 
 async function request<T>(tokenProvider:()=>Promise<string|null>, path:string):Promise<T>{

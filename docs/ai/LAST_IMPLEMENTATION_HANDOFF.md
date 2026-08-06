@@ -1,128 +1,34 @@
-# Last Implementation Handoff
+# Last implementation handoff — S1.5 governed acquisition-line exclusions
 
-## S1.4 final behavioral, concurrency, and rendered-client acceptance
+## Lineage and authority
 
-### Base and branch
+- PR #49 implementation head: `42bfb9f57f3f9323a96899a5e725389c43f0f7e1`.
+- PR #49 merge: `551cbb747be42285622f7a1c1f311145f755e1ed`.
+- PR #49 historically had no exact-head Actions run; S1.5 does not reopen S1.4.
+- Actual S1.5 base: `551cbb747be42285622f7a1c1f311145f755e1ed` (the supplied environment had no configured Git remote, so the base was verified from local history).
+- Branch: `codex/s1-5-acquisition-line-exclusions`. Draft PR and canonical CI evidence must be recorded after publication.
 
-- Repository/canonical branch: `harmonicforce/russellvault2`, `main`.
-- Branch: `claude/s1-4-acceptance-completion`.
-- Base SHA: `d704039ed59c76dc14daf4f191502d4513648d69` — current `main` exactly matched the expected PR #48 merge commit. No drift; no intervening commits to reconcile.
-- PR #48 implementation head `8c01dbc4f1e851b3a5ba5eb4774f2c8a4d127ae0` confirmed an ancestor of the base.
-- PR #47 implementation head `75afab4a98f2c6aa0f6ebfeae9dfeb3fe03cf284`, PR #47 merge `ce5532a55d62bf471840261d3878446916c89068`.
+## Implemented vertical slice
 
-### What PR #48 actually supplied
+Migration `20260806000700_acquisition_line_exclusions.sql` adds the append-only `excluded` / `included` decision history, `RV-AEXCL` governed IDs, same-workspace composite line and successor references, one-current-row partial uniqueness, workspace-global operation-key uniqueness, RLS member reads, owner-only SECURITY DEFINER operations, and audit events `acquisition_line_excluded` / `acquisition_line_restored`.
 
-- 12 negative/fail-closed database assertions in test 61 and 6 missing-target assertions in test 62.
-- No successful payment, reversal, shipment, or transition lifecycle.
-- No genuine concurrency; no overlapping dblink sessions.
-- No rendered React Testing Library suite.
-- No exact-head GitHub CI.
-- Migration `20260806000500_acquisition_source_qualified_uuid_lookup.sql` omitted its `public.schema_migrations_log` entry and did not extend the ordered migration expectations in `supabase/tests/06_provenance_structure.sql`.
+Public signatures:
 
-### Baseline database gate
+- `exclude_acquisition_line_by_source(uuid, text, text, text, text)`
+- `restore_acquisition_line_by_source(uuid, text, text, text, text)`
 
-`npm run db:reset` succeeded. The first `npm run db:test` **timed out** on `15_acquisition_digest_parity.sql` at the runner's 600 s per-file limit. Diagnosed as environmental, not a repository fault: this container's PostgreSQL ran with `fsync=on`, `synchronous_commit=on`, and 128 MB shared buffers against slow container storage, and that file stages 2 149 lines. After tuning the disposable local cluster only (`fsync=off`, `synchronous_commit=off`, `full_page_writes=off`, 1 GB shared buffers) the full suite passed at **1 914 assertions** on the unmodified base. No repository file was changed for this; CI runners are unaffected.
+Both normalize the required reason, validate the bounded key, resolve only a committed source-qualified governed-native line, serialize keys and target lines with transaction advisory locks, replay identical payloads without new history/audit, and reject changed payloads as `idempotency_conflict`. Operators/viewers can read current/history state but cannot mutate. Anonymous has no table or function capability.
 
-### The defect that mattered most: the S1.4 mutation path could never succeed
+The list contract adds current state, current exclusion identity/reason/time/actor and an `included`/`excluded` filter; facets count each current line once by exclusion state. Detail adds current decision plus deterministic table-derived history. Excluded lines stay visible. `app.assert_acquisition_line_eligible_for_downstream(uuid,uuid)` is internal-only and raises `acquisition_line_excluded` for a current exclusion.
 
-`record_acquisition_payment`, `reverse_acquisition_payment`, `create_acquisition_shipment`, and `transition_acquisition_shipment` each computed their idempotency fingerprint with an **unqualified `digest()`**. All four are `SECURITY DEFINER` with `SET search_path = ''`, and pgcrypto is not installed in this database, so `digest()` resolved nowhere: every call raised `42883 undefined_function` the moment control reached the fingerprint assignment.
+Server routes are owner-only, caller-JWT-bound `POST .../exclude` and `POST .../restore`; bounded errors redact dependency details. Client transport is source-qualified. The list includes a URL-backed eligibility filter and excluded badge. Detail supplies read-only state/history for all members and reason-required owner exclusion/restoration controls.
 
-That assignment sits *after* the role, validation, and order-resolution checks. Every fail-closed path returned before reaching it and looked healthy, while no payment or shipment could ever be recorded. This is why S1.4 had no successful lifecycle to point at — not an untested feature, an unexecutable one. It surfaced only when test 61 was made to drive the operations to completion.
+## Verification and boundaries
 
-These eight `digest()` calls were the only ones in the repository; every other hash uses `encode(sha256(convert_to(..., 'UTF8')), 'hex')`. All four functions are restored in the corrective migration at their latest merged definitions — payment, reversal, and transition from 00300, shipment creation from 00400 — with the hash expression corrected and no other behavioral change. No S1.4 payment or shipment row can exist yet, so there was nothing to migrate.
+Baseline reset and all 62 pre-S1.5 pgTAP files passed (2,141 assertions), including S1.4 and dblink concurrency. S1.5 reset and focused/full/repository test totals, final SHA, PR, exact canonical GitHub head, workflow run, and four job conclusions are publication-time evidence and must not be inferred before they run.
 
-### Corrective migration
+No receiving/receipt/discrepancy schema, cost basis, historical import, marketplace work, SQLite change, Railway work, hosted Supabase access/migration, S1.6 implementation, S2 implementation, or `CURRENT_STATE.md` edit is authorized or included.
 
-`supabase/migrations/20260806000600_acquisition_s1_4_acceptance_completion.sql` (forward-only, additive).
+## Next checkpoint and remaining risks
 
-- Physical migration count: **67 → 68**. Ledger entries: **66 → 68** (the backfilled 00500 plus its own 00600), verified against the directory rather than assumed.
-- Backfills the missing `20260806000500_...` ledger entry with `on conflict (migration_name) do nothing`.
-- Replaces `get_acquisition_line_detail_by_source` for exact root-row cardinality.
-- Renames the two source-evidence fields.
-- Restores the four mutation functions with resolvable hashing.
-- Records its own ledger entry.
-
-Merged migrations 00200, 00300, 00400, and 00500 were **not** edited.
-
-### Detail root-row cardinality
-
-The merged implementation counted `count(distinct acquisition_line_item_id)` and closed with an arbitrary `LIMIT 1`. `acquisition_line_overview` LEFT JOINs `acquisition_lot_lines` on `state='active'`, so a line with two active placements yields **two** overview rows while still counting **one** distinct line ID: the check passed, `select * into v` took an arbitrary row, and `LIMIT 1` picked an arbitrary lot — a split-brain placement reported as fact.
-
-It now counts overview ROWS (every other join in the view is to a unique key, so row count is exactly active-placement count), proves the active-placement count separately by name, and builds the response from a literal one-row source through LEFT JOINs onto unique keys under `INTO STRICT`. No `LIMIT`. `TOO_MANY_ROWS`/`NO_DATA_FOUND` raise `acquisition_integrity_error`. Zero active placements now report `missing_active_placement` instead of an invented lot.
-
-### Source-evidence naming
-
-| Was | Now | Actual value |
-| --- | --- | --- |
-| `acquisitionImportPublicIdentity` | `sourceImportJobPublicId` | `public.import_jobs.public_id` — the SOURCE import job. `acquisition_import_jobs` has no governed public ID and none was invented. |
-| `sourceRecordPublicIdentity` | `sourceRecordRowKey` | `public.source_records.source_row_key` — a raw source row key, never an RV-style governed identity. |
-
-Updated consistently across the corrective migration, the JSON response, the client `AcquisitionDetail` interface, the rendered UI labels, pgTAP, and `docs/architecture.md`. Test 62 asserts both old names are absent.
-
-### Evidence
-
-**Database — full pgTAP suite: 2 141 assertions across 62 files, green** (`EXIT=0`). Baseline was 1 914; the increase is exactly +144 in test 61 and +83 in test 62.
-
-- `supabase/tests/61_acquisition_payment_shipment_behavior.sql` — **156 assertions** (from 12). Real committed two-workspace fixture: owner/operator/viewer/anonymous, two source systems, committed source and acquisition import jobs plus a preview job and a failed job, channels, suppliers, source records, orders, lots, placements.
-  - Successful payment lifecycle: owner and operator creation, exact stored amount/currency/instrument, bigint minor units beyond 2^53, lowercase-currency normalization, same-workspace source evidence accepted, audit-event counts.
-  - Successful reversal lifecycle: owner reversal, durable event row, payment linked to the exact event, original amount/currency/date/instrument unchanged, detail response carrying the event.
-  - Successful shipment lifecycle: `expected` and `in_transit` creation, raw carrier/tracking retained, normalized duplicate-tracking refusal, untracked shipments, paired shipping reference amount.
-  - Successful transition lifecycle: **all ten legal edges executed** — expected→in_transit/delivered/lost/cancelled, in_transit→delivered/lost/cancelled, lost→in_transit/delivered/cancelled — plus terminal-state and invalid-edge refusals, stale status, required evidence, durable no-op, and applied-edge history.
-  - Idempotent replay and key-collision matrices for all four operations; rollback matrices proving a failed audit event, reversal-event insert, payment update, transition-event insert, or shipment update leaves nothing behind.
-- `supabase/tests/62_acquisition_detail_addressing_concurrency.sql` — **89 assertions** (from 6). Source-collision fixture (one workspace, two source systems, same external line public ID), placement integrity, detail JSON content, and concurrency.
-- `supabase/tests/06_provenance_structure.sql` — 56 assertions, ledger count and ordered list updated to 68 with an explicit maintenance contract.
-
-**Genuine concurrency (5 races, overlapping dblink sessions).** Both calls are dispatched with `dblink_send_query` on two connections *before either result is collected*, then awaited under a bounded deadline — the backends are in flight together and must be serialized by the governed locks. No sequential statement is represented as concurrency anywhere.
-
-| Race | Outcome |
-| --- | --- |
-| Two identical payment creates, one key | Exactly one payment row, one audit event, neither call an error |
-| Two conflicting payment creates, one key | One winner; loser `ERR:23505`; no partial audit event |
-| Two reversals of one payment, different keys | One reversal event; loser `ERR:23505`; payment points at the survivor; no half-updated row |
-| Two normalized-equivalent tracked shipment creates | One shipment; loser `ERR:23505`; no row behind the loser's key |
-| Two transitions out of one `expected` status | One applied transition; loser `ERR:40001` stale status; shipment is the winner's state; winner's key still replays |
-
-**Server — `server/src/routes/acquisition.finalAcceptance.test.ts`: 92 tests (from 16); full server suite 555 passing.** Mounted Express approach preserved and expanded; no source-text inspection. Availability gate on reads and mutations, full viewer/operator/owner authority matrix, percent-encoded identity forwarding, payment and shipment validation tables, evidence trimming, `p_source_record_id` pinned to null so a client cannot attach unvalidated source evidence to money, every governed SQLSTATE bounded to its status (409s for stale/conflict/duplicate, 503 for a missing contract, 502 otherwise), no SQL text or constraint names in any body, empty mutation responses bounded as 502 while an empty detail read stays a truthful 404, and the caller-token client proved to be the only data path even with a service-role key present in the environment.
-
-**Client — `client/src/pages/AcquisitionDetail.render.test.tsx`: 60 rendered tests; full client suite 643 passing.** React Testing Library with MemoryRouter, route params, QueryClient, mocked WorkspaceContext and token/Supabase transport. Role matrix, classification options and required reason, tracked pending/error/success, classification history with owner reason, form validation, raw carrier/tracking preservation, delivered never offered initially, transition evidence requirements, reversal and transition history, mixed-currency refusal, loading/not-found/unauthorized/dependency-unavailable/empty states, workspace switch without a stale flash, and the coverage notice.
-
-**Retry-key evidence, all four operation classes** (payment, payment reversal, shipment, shipment transition): each fails once, renders Retry, and the retry is asserted to carry the **identical payload and identical idempotency key**; success clears the retained operation; Discard clears it with no request. A retained failure blocks further payment/shipment submission so two unresolved keys cannot coexist invisibly. A stale transition is never retained — it refetches and requires a new confirmation with a new key.
-
-### Client structure
-
-Refactored only as far as the rendered tests and state boundaries required: `useRetryableAcquisitionMutation` gained the durable single-unresolved-operation lock, `OperationRetryNotice` was extracted and now names the operation, and accessible labels were added to the forms and dialogs. `ClassificationSection`, `PaymentSection`, `ShipmentSection`, `PaymentHistory`, and `ShipmentHistory` boundaries were preserved. No visual redesign; S1.6 owns the governed UI foundation.
-
-### Full repository verification
-
-`npm ci` (root/client/server), `npm run lint`, `npm run typecheck`, `npm run build:ci`, `npm test`, `node --test scripts/db/guard.test.mjs`, `node --test scripts/ci/client-audit-gate.test.mjs`, `npm run db:reset`, `npm run db:test`, `git diff --check` — all clean. Server 555 tests, client 643 tests, connection-guard 23 tests, pgTAP 2 141 assertions. Lint reports only pre-existing warnings in files this work did not touch.
-
-### Exact-head CI: NOT OBTAINED
-
-This is the one work-order requirement that was not met, and it was not met for an environment reason rather than a repository one.
-
-GitHub does not start workflow runs for `push` or `pull_request` events produced by a GitHub App installation token, which is how this session pushes. `.github/workflows/ci.yml` has no `workflow_dispatch` trigger, so the run cannot be dispatched through the API either (`422 Workflow does not have 'workflow_dispatch' trigger`). Closing and reopening PR #49 did not fire it. The PR head `5f2550ad82bd9d182bdb0800b4c4881f7b466592` therefore sits at **0 CI check runs** — not red, absent. The only check present is Supabase Preview, which reported `skipped`.
-
-Other branches in this repository do get runs, so Actions itself is healthy; the gap is the pushing actor. The operator was asked how to proceed and chose to ship with this reported rather than have CI config changed.
-
-**To obtain it:** push an empty commit to `claude/s1-4-acceptance-completion` or close/reopen PR #49 from a human account. Either fires all four jobs on the exact head. Adding a `workflow_dispatch:` trigger to `ci.yml` would make this self-serviceable in future sessions; it was deliberately not done here because CI configuration is outside this work order's allowed scope.
-
-**Do not merge on the strength of local runs alone.** `build-and-verify`, `shadow-db-postgres-shim`, `shadow-db-supabase-stack`, and `dev-advisory-report` must all be green on the exact head first. In particular the local evidence covers only the plain-PostgreSQL shim tier; the authoritative `shadow-db-supabase-stack` tier requires Docker and was never exercised in this container.
-
-### Remaining risks
-
-1. **Ledger drift is still caught only by a hand-maintained list.** Test 06 now turns red if a migration omits its ledger insert, but nothing compares the migrations *directory* to the ledger programmatically. A filesystem-vs-ledger check wired into CI would close this class permanently; adding a CI step was outside this work order's allowed scope.
-2. **The transition ledger has no monotonic ordering column.** `created_at` defaults to `now()`, the transaction timestamp, so transitions written in one transaction share an instant and `order by created_at, id` is non-deterministic among them. Production writes land in separate transactions, so this is not a live defect, but detail history ordering and any future audit replay would benefit from a sequence.
-3. **`15_acquisition_digest_parity.sql` is performance-flaky in this container.** It passed at 13.5 s on the unmodified base and at 10.4 s run alone, but twice blew past the runner's 600 s per-file limit when run in-suite — one backend pinned at 100 % CPU with zero lock waits, i.e. plan instability, not blocking. Restarting the local PostgreSQL cluster restored it (26.7 s in the green run). It is pre-existing, untouched by this work, runs *before* tests 61/62 alphabetically, and touches none of the changed functions, so it cannot be affected by them; the repository's own test-runner comment already records this file as slow and variable. It remains the file most likely to time out on a loaded CI runner, and a rerun is the correct response if it does.
-4. Hosted Supabase, Railway, and deployment were not touched or checked — not authorized by this work order. The corrective migration has not been applied to hosted Supabase.
-
-### Authority and scope
-
-Merged migrations 00200 through 00500 were not edited. No exclusions, receiving, discrepancy schema, cost basis, historical import, or marketplace work. No SQLite change. No Railway work, no hosted Supabase access, no hosted migration. S1.5 not started. `docs/ai/CURRENT_STATE.md` not edited.
-
-### Rollback
-
-Revert the branch commits. The corrective migration has not been applied to hosted Supabase, so no hosted rollback is required.
-
-### Next decision
-
-Do not merge until all four exact-head CI jobs (`build-and-verify`, `shadow-db-postgres-shim`, `shadow-db-supabase-stack`, `dev-advisory-report`) are green on the final head. S1.5 begins only after this PR is green and merged.
+After owner approval of its separate plan, the next engineering checkpoint is **S1.6 — Governed UI Foundation and Russell Vault Design System**, not S2. Before surrender, record exact-head CI and expand genuine overlapping dblink exclusion decision coverage if it is not present in the final pgTAP suite.

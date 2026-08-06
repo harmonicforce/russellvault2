@@ -61,6 +61,7 @@ class AcquisitionReadError extends Error {
 const SORTS = new Set(['occurred_at', 'created_at', 'seller', 'title', 'quantity', 'classification']);
 const ORDERS = new Set(['asc', 'desc']);
 const STATES = new Set(['classified', 'needs_review', 'unclassified']);
+const EXCLUSION_STATES = new Set(['included', 'excluded']);
 const METHODS = new Set(['rule', 'owner_override', 'seller_specialization', 'explicit_evidence', 'system_fallback']);
 const INSTRUMENTS = new Set(['card','bank','balance','credit','cash','other']);
 const SHIPMENT_STATES = new Set(['expected','in_transit','delivered','lost','cancelled']);
@@ -82,7 +83,7 @@ function isoDate(value: unknown, required = false): string | null {
 function publicId(value: unknown): string { return bodyText(value,'invalid_request',1,200); }
 function rpcError(error: unknown): AcquisitionReadError {
   const message=String((error as {message?:string})?.message??'');
-  for (const code of ['ambiguous_acquisition_line_id','acquisition_integrity_error','duplicate_external_reference','duplicate_tracking','invalid_source_evidence','invalid_initial_status','invalid_shipping_reference_amount','invalid_request','invalid_amount','invalid_currency','invalid_instrument','invalid_transition','stale_status','idempotency_conflict','already_reversed','unauthorized_workspace','acquisition_not_found','payment_not_found','shipment_not_found']) if(message.includes(code)) return new AcquisitionReadError(code,['stale_status','idempotency_conflict','already_reversed','duplicate_external_reference','duplicate_tracking','ambiguous_acquisition_line_id','acquisition_integrity_error'].includes(code)?409:code.endsWith('_not_found')?404:code==='unauthorized_workspace'?403:400);
+  for (const code of ['already_excluded','not_excluded','acquisition_line_excluded','ambiguous_acquisition_line_id','acquisition_integrity_error','duplicate_external_reference','duplicate_tracking','invalid_source_evidence','invalid_initial_status','invalid_shipping_reference_amount','invalid_request','invalid_amount','invalid_currency','invalid_instrument','invalid_transition','stale_status','idempotency_conflict','already_reversed','unauthorized_workspace','acquisition_not_found','payment_not_found','shipment_not_found']) if(message.includes(code)) return new AcquisitionReadError(code,['stale_status','idempotency_conflict','already_reversed','already_excluded','not_excluded','acquisition_line_excluded','duplicate_external_reference','duplicate_tracking','ambiguous_acquisition_line_id','acquisition_integrity_error'].includes(code)?409:code.endsWith('_not_found')?404:code==='unauthorized_workspace'?403:400);
   if (/function .* does not exist|schema cache/i.test(message)) return new AcquisitionReadError('acquisition_detail_contract_missing',503);
   return new AcquisitionReadError('dependency_failed',502);
 }
@@ -153,8 +154,10 @@ router.get('/lines', requireMember, asyncRoute(async (req, res) => {
   const order = typeof req.query.order === 'string' ? req.query.order : 'desc';
   const state = optionalQuery(req.query.classificationState);
   const method = optionalQuery(req.query.method);
+  const exclusionState = optionalQuery(req.query.exclusionState);
   if (!SORTS.has(sort) || !ORDERS.has(order)) throw new AcquisitionReadError('invalid_sort', 400);
   if (state && !STATES.has(state)) throw new AcquisitionReadError('invalid_filter', 400);
+  if (exclusionState && !EXCLUSION_STATES.has(exclusionState)) throw new AcquisitionReadError('invalid_filter', 400);
   if (method && !METHODS.has(method)) throw new AcquisitionReadError('invalid_filter', 400);
   const args = {
     p_workspace_id: workspaceId,
@@ -168,6 +171,7 @@ router.get('/lines', requireMember, asyncRoute(async (req, res) => {
     p_order: order,
     p_limit: integerQuery(req.query.limit, 50, 1, MAX_PAGE),
     p_offset: integerQuery(req.query.offset, 0, 0),
+    p_exclusion_state: exclusionState,
   };
   const { data, error } = await client.rpc('list_acquisition_lines' as never, args as never);
   if (error) {
@@ -198,6 +202,12 @@ router.get('/lines/:publicId',requireMember,asyncRoute(async(req,res)=>{
 router.get('/sources/:sourceSystemPublicId/lines/:linePublicId',requireMember,asyncRoute(async(req,res)=>{
   const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('get_acquisition_line_detail_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId)} as never);
   if(error) throw rpcError(error); if(!data) throw new AcquisitionReadError('acquisition_not_found',404); res.json(data);
+}));
+router.post('/sources/:sourceSystemPublicId/lines/:linePublicId/exclude',requireOwner,asyncRoute(async(req,res)=>{
+ const {workspaceId,client}=caller(req);const {data,error}=await client.rpc('exclude_acquisition_line_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId),p_reason:bodyText(req.body?.reason,'invalid_request',1,500),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
+}));
+router.post('/sources/:sourceSystemPublicId/lines/:linePublicId/restore',requireOwner,asyncRoute(async(req,res)=>{
+ const {workspaceId,client}=caller(req);const {data,error}=await client.rpc('restore_acquisition_line_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId),p_reason:bodyText(req.body?.reason,'invalid_request',1,500),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
 }));
 router.post('/sources/:sourceSystemPublicId/lines/:linePublicId/classify',requireOperator,asyncRoute(async(req,res)=>{
  const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('classify_acquisition_line_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId)} as never); if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
