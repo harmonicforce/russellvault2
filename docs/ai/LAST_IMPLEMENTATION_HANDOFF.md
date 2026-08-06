@@ -1,24 +1,18 @@
-# Last implementation handoff — S1.4 acceptance hardening
+# Last Implementation Handoff
 
-## Repository state
+## S1.4 final behavioral acceptance
 
-- Repository `harmonicforce/russellvault2`; target `main`; base `d5a5ef71a067ab768e650a91b3efa52eb8cb5746` (PR #45 merge).
-- PR #45 implementation head: `3e5926207228822d34ee2b7d8b93474cee8dc9f5`; merge: `d5a5ef71a067ab768e650a91b3efa52eb8cb5746`.
-- Branch: `codex/s1-4-acceptance-hardening`.
-- The original `59_acquisition_payments_shipments.sql` remains its 18 structural assertions; PR #45 had no focused rendered-client acceptance or complete route-contract suite.
-
-## Implemented repairs
-
-- Additive migration `20260806000300_acquisition_payments_shipments_hardening.sql` (repository ledger 64 → 65); the merged migration was not edited.
-- Append-only `acquisition_payment_reversals` and `acquisition_shipment_transitions` ledgers with governed public IDs, same-workspace FKs, workspace-global keys, canonical JSON SHA-256 fingerprints, actors/times/reasons, RLS, and denied direct authenticated writes.
-- Payment create now prevalidates source evidence and distinguishes duplicate external reference. Reversal uses the ledger before state, links payment to its event, and replays durably.
-- Shipment create restricts initial state and distinguishes duplicate tracking/source/currency/reference validation. Transition replay is ledger-authoritative, locks state, records applied/no-op outcome, and audits applied transitions only.
-- Server bounded mappings include duplicate reference/tracking, invalid source/initial state, stale state, idempotency and integrity failures without returning database text.
-- Client no longer creates the reversal key inside the mutation function, removes prompt-based reasons, exposes reason inputs, restricts initial shipment state, and includes shipment timestamps and reference amount/currency.
-- Focused pgTAP `60_acquisition_payment_shipment_execution.sql`: 30 assertions. Baseline full pgTAP before edits: 1,866 assertions. Final totals and exact-head CI are recorded after final verification.
-
-## Scope and operations
-
-No exclusion, receipt, receiving, discrepancy, cost-basis, historical-import, or SQLite work. `docs/ai/CURRENT_STATE.md` is unchanged. No hosted Supabase, hosted migration, Railway, production-data, merge, or deployment action. S1.5 may start only after this hardening PR is green.
-
-Rollback: revert the hardening commit before merge. Next decision: review the green draft PR; do not merge as part of this work order.
+- Repository/canonical branch: `harmonicforce/russellvault2`, `main`.
+- Branch: `codex/s1-4-final-behavioral-acceptance`.
+- Base: `5bc5976b92d7600b0d63888025d8d771753b1c2c` (no drift from expected main).
+- PR #46 canonical head: `2845ae04a1f5af99eb8d3250a80b96c121f8b0f5`.
+- PR #46 merge commit: `5bc5976b92d7600b0d63888025d8d771753b1c2c`.
+- At verification start no exact-head PR #46 CI run was available; tests 59 and 60 were structural only.
+- Reproduced defects: workspace-only line ambiguity, deferred multiple placements, carrier/tracking display normalization, inferred delivery time, absent durable client retry, omitted typed histories, and shared action-reason state.
+- Additive migration: `20260806000400_acquisition_s1_4_final_acceptance.sql` (repository migration count 66). Migrations 00200 and 00300 remain unchanged.
+- Identity contract: workspace + governed source-system public ID + acquisition-line public ID. Legacy wrappers fail closed on ambiguity.
+- Shipment display evidence is preserved; initial delivered/lost/cancelled creation is rejected; delivery requires an explicit governed transition timestamp.
+- Client renders reversal and transition history and retains exact retry variables/key separately for payment, reversal, shipment, and transition operations. Stale transitions refetch and require a new confirmation.
+- Live Supabase, Railway, deployment, and hosted acceptance: not authorized/not checked. No production data touched.
+- Rollback: revert this branch commit; the migration is additive and has not been applied to hosted Supabase.
+- Next decision: merge only after the exact PR head has all four required CI jobs green; begin S1.5 only afterward.
