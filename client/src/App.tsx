@@ -33,6 +33,7 @@ import MediaIssues from './pages/MediaIssues';
 import ListingPrep from './pages/ListingPrep';
 import ListingPrepDetail from './pages/ListingPrepDetail';
 import Acquisitions from './pages/Acquisitions';
+import AcquisitionDetail from './pages/AcquisitionDetail';
 import FirstRunSetup from './components/FirstRunSetup';
 import { resolveAppConfig, type EnvLike } from './lib/appConfig';
 import { useWorkspace } from './lib/workspaceContext';
@@ -308,6 +309,7 @@ function RoutedContent() {
       {PROVENANCE_ENABLED && <Route path="/listing-prep" element={<ListingPrep />} />}
       {PROVENANCE_ENABLED && <Route path="/listing-prep/:prepId" element={<ListingPrepDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/acquisitions" element={<Acquisitions />} />}
+      {PROVENANCE_ENABLED && <Route path="/acquisitions/:publicId" element={<AcquisitionDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/import-review" element={<ImportReview />} />}
       {PROVENANCE_ENABLED && <Route path="/acquisition-review" element={<AcquisitionReview />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory-identity" element={<InventoryIdentity />} />}
