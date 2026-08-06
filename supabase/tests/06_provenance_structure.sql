@@ -414,10 +414,20 @@ select is(
 -- + the media hardening layer (20260801 x4)
 -- + the listing prep layer (20260801 x4)
 -- + the operations dashboard contracts (20260801 x1) -----------------------
+-- MAINTENANCE CONTRACT: this count and the ordered list below must name EVERY
+-- file in supabase/migrations, and every migration must record itself here.
+-- db:reset applies the whole directory, so a migration that omits its own
+-- schema_migrations_log insert makes the count fall short and turns this
+-- assertion red. That is exactly how the gap repaired by
+-- 20260806000600_acquisition_s1_4_acceptance_completion should have been
+-- caught: 20260806000500_acquisition_source_qualified_uuid_lookup shipped
+-- without its ledger entry AND without extending this list, so the ledger and
+-- this test agreed at 66 while the directory already held 67 files. Never
+-- reconcile a mismatch by lowering the number.
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  66,
-  'sixty-six migrations are recorded, including acquisition detail governance'
+  68,
+  'sixty-eight migrations are recorded, one per file in supabase/migrations'
 );
 
 select results_eq(
@@ -488,7 +498,9 @@ select results_eq(
     ('20260806000100_acquisition_line_read_surface'),
     ('20260806000200_acquisition_payments_shipments_detail'),
     ('20260806000300_acquisition_payments_shipments_hardening'),
-    ('20260806000400_acquisition_s1_4_final_acceptance')$$,
+    ('20260806000400_acquisition_s1_4_final_acceptance'),
+    ('20260806000500_acquisition_source_qualified_uuid_lookup'),
+    ('20260806000600_acquisition_s1_4_acceptance_completion')$$,
   'the earlier-phase migrations are unmodified and governed acquisition classification functions follow the S1.1 schema'
 );
 
