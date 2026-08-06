@@ -61,7 +61,7 @@ Updated consistently across the corrective migration, the JSON response, the cli
 
 ### Evidence
 
-**Database — full pgTAP suite: 2 152 assertions across 62 files, green.**
+**Database — full pgTAP suite: 2 141 assertions across 62 files, green** (`EXIT=0`). Baseline was 1 914; the increase is exactly +144 in test 61 and +83 in test 62.
 
 - `supabase/tests/61_acquisition_payment_shipment_behavior.sql` — **156 assertions** (from 12). Real committed two-workspace fixture: owner/operator/viewer/anonymous, two source systems, committed source and acquisition import jobs plus a preview job and a failed job, channels, suppliers, source records, orders, lots, placements.
   - Successful payment lifecycle: owner and operator creation, exact stored amount/currency/instrument, bigint minor units beyond 2^53, lowercase-currency normalization, same-workspace source evidence accepted, audit-event counts.
@@ -94,13 +94,25 @@ Refactored only as far as the rendered tests and state boundaries required: `use
 
 ### Full repository verification
 
-`npm ci` (root/client/server), `npm run lint`, `npm run typecheck`, `npm run build:ci`, `npm test`, `node --test scripts/db/guard.test.mjs`, `node --test scripts/ci/client-audit-gate.test.mjs`, `npm run db:reset`, `npm run db:test`, `git diff --check` — all clean. Lint reports only pre-existing warnings in files this work did not touch.
+`npm ci` (root/client/server), `npm run lint`, `npm run typecheck`, `npm run build:ci`, `npm test`, `node --test scripts/db/guard.test.mjs`, `node --test scripts/ci/client-audit-gate.test.mjs`, `npm run db:reset`, `npm run db:test`, `git diff --check` — all clean. Server 555 tests, client 643 tests, connection-guard 23 tests, pgTAP 2 141 assertions. Lint reports only pre-existing warnings in files this work did not touch.
+
+### Exact-head CI: NOT OBTAINED
+
+This is the one work-order requirement that was not met, and it was not met for an environment reason rather than a repository one.
+
+GitHub does not start workflow runs for `push` or `pull_request` events produced by a GitHub App installation token, which is how this session pushes. `.github/workflows/ci.yml` has no `workflow_dispatch` trigger, so the run cannot be dispatched through the API either (`422 Workflow does not have 'workflow_dispatch' trigger`). Closing and reopening PR #49 did not fire it. The PR head `5f2550ad82bd9d182bdb0800b4c4881f7b466592` therefore sits at **0 CI check runs** — not red, absent. The only check present is Supabase Preview, which reported `skipped`.
+
+Other branches in this repository do get runs, so Actions itself is healthy; the gap is the pushing actor. The operator was asked how to proceed and chose to ship with this reported rather than have CI config changed.
+
+**To obtain it:** push an empty commit to `claude/s1-4-acceptance-completion` or close/reopen PR #49 from a human account. Either fires all four jobs on the exact head. Adding a `workflow_dispatch:` trigger to `ci.yml` would make this self-serviceable in future sessions; it was deliberately not done here because CI configuration is outside this work order's allowed scope.
+
+**Do not merge on the strength of local runs alone.** `build-and-verify`, `shadow-db-postgres-shim`, `shadow-db-supabase-stack`, and `dev-advisory-report` must all be green on the exact head first. In particular the local evidence covers only the plain-PostgreSQL shim tier; the authoritative `shadow-db-supabase-stack` tier requires Docker and was never exercised in this container.
 
 ### Remaining risks
 
 1. **Ledger drift is still caught only by a hand-maintained list.** Test 06 now turns red if a migration omits its ledger insert, but nothing compares the migrations *directory* to the ledger programmatically. A filesystem-vs-ledger check wired into CI would close this class permanently; adding a CI step was outside this work order's allowed scope.
 2. **The transition ledger has no monotonic ordering column.** `created_at` defaults to `now()`, the transaction timestamp, so transitions written in one transaction share an instant and `order by created_at, id` is non-deterministic among them. Production writes land in separate transactions, so this is not a live defect, but detail history ordering and any future audit replay would benefit from a sequence.
-3. `15_acquisition_digest_parity.sql` is genuinely slow and is the file most likely to hit the 600 s per-file limit on a loaded shared runner. It passes comfortably when not competing for CPU.
+3. **`15_acquisition_digest_parity.sql` is performance-flaky in this container.** It passed at 13.5 s on the unmodified base and at 10.4 s run alone, but twice blew past the runner's 600 s per-file limit when run in-suite — one backend pinned at 100 % CPU with zero lock waits, i.e. plan instability, not blocking. Restarting the local PostgreSQL cluster restored it (26.7 s in the green run). It is pre-existing, untouched by this work, runs *before* tests 61/62 alphabetically, and touches none of the changed functions, so it cannot be affected by them; the repository's own test-runner comment already records this file as slow and variable. It remains the file most likely to time out on a loaded CI runner, and a rerun is the correct response if it does.
 4. Hosted Supabase, Railway, and deployment were not touched or checked — not authorized by this work order. The corrective migration has not been applied to hosted Supabase.
 
 ### Authority and scope
