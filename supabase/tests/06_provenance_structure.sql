@@ -426,8 +426,8 @@ select is(
 -- reconcile a mismatch by lowering the number.
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  68,
-  'sixty-eight migrations are recorded, one per file in supabase/migrations'
+  69,
+  'sixty-nine migrations are recorded, one per file in supabase/migrations'
 );
 
 select results_eq(
@@ -500,8 +500,9 @@ select results_eq(
     ('20260806000300_acquisition_payments_shipments_hardening'),
     ('20260806000400_acquisition_s1_4_final_acceptance'),
     ('20260806000500_acquisition_source_qualified_uuid_lookup'),
-    ('20260806000600_acquisition_s1_4_acceptance_completion')$$,
-  'the earlier-phase migrations are unmodified and governed acquisition classification functions follow the S1.1 schema'
+    ('20260806000600_acquisition_s1_4_acceptance_completion'),
+    ('20260806000700_acquisition_line_exclusions')$$,
+  'the migration ledger matches every governed migration through S1.5'
 );
 
 select * from finish();
