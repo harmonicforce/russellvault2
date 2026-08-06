@@ -1,35 +1,59 @@
 # Last Implementation Handoff
 
-## PR #41 S1.1 FK-isolation test repair
+## S1.2 governed acquisition classification functions
 
 - Repository: `harmonicforce/russellvault2`
-- PR: #41 — `S1.1: Add governed acquisition classification schema, seed data, and tests`
-- Branch: `codex/add-governed-acquisition-classification-schema-3tx1ht`
-- Current head named in work order: `8f0de234bdf0fddd11abcf8ca10d78a7bd64395e`
-- Current CI run named in work order: `30965321170`
-- Local head inspected before this repair: `be2a4e621734d1611528f1bdb0fdd612e1ac95a9`
-- Final local repair head: 798aed0618d7224032d5925ad63798fc82ea1589 (pre-handoff-amend)
-- Migration count remains: 61
-- No migration/schema file was changed in this repair.
+- Base SHA recorded locally: `c7c6f07d2ff80e5df8419c11a73017bd35a7128e`
+- Branch: `codex/s1-2-classification-functions`
+- PR: not opened from this environment; GitHub network access failed with `CONNECT tunnel failed, response 403`.
+- Migration: `supabase/migrations/20260805000100_governed_acquisition_classification_functions.sql`
+- Repository migration count: 61 before, 62 after.
 
-## Proven CI failure and root cause
+## Functions
 
-CI run `30965321170` executed all 76 focused assertions. The prior trigger repair worked: cross-workspace references now reach database constraints instead of being masked by `app.classification_rule_target_matches()`. Assertions 54 and 55 still failed because those two FK tests reused workspace A's acquisition line after the classification-history section had already created a current successor for that line. The attempted invalid rows collided first with `acquisition_line_classifications_one_current_uidx` (`23505`) before PostgreSQL could check the intended cross-workspace composite FKs (`23503`).
+- `app.acquisition_delivered_item_title(text)`
+- `app.get_acquisition_classification_input(uuid)`
+- `app.classification_match_value(jsonb, text)`
+- `app.regex_flags_supported(text)`
+- `app.validate_classification_rule_payload(text,text,text,text,text)`
+- `app.evaluate_acquisition_classification(uuid)`
+- `public.classify_acquisition_line(uuid)`
+- `public.override_acquisition_line_classification(uuid,text,text)`
+- `public.create_classification_rule(uuid,text,text,text,text,text,text,text,text,integer,text)`
+- `public.supersede_classification_rule(uuid,integer,text,text,text,text,text,text,integer,text)`
 
-## Repair made
+## Classification behavior
 
-- `cross-workspace option rejected` now uses workspace B and unclassified line B, selects option `single` from workspace A, and selects the valid active v5 `seller:topshelfcollects` rule from workspace B. The row is otherwise valid, so only the option is cross-workspace.
-- `cross-workspace rule rejected` now uses workspace B and unclassified line B, selects option `single` from workspace B, and selects the active v5 `seller:topshelfcollects` rule from workspace A. The row is otherwise valid, so only the rule is cross-workspace.
-- Line B has no current classification at this point in the transaction: prior B-line classification attempts are inside `throws_ok` assertions and fail, leaving no row behind.
+- Input mapping uses governed acquisition/provenance data only: workspace, line ID/public ID, import job status, business vertical, full/product title, delivered-item title via final ` - ` extraction, source record/system IDs, and seller normalized handle through the acquisition order's supplier alias relationship.
+- Explicit evidence status: no governed workspace-scoped equivalent of legacy `sealedLineIds` was found; `evidence_set` rules remain non-matching and evidence records `legacy_sealed_line_ids_unavailable`.
+- Evaluator ordering: active rules only; lower numerical precedence wins; ambiguity at the winning precedence raises check violation.
+- Fallback: no active match returns active same-workspace `unreviewed` with explicit no-match fallback evidence.
+- Confidence: deterministic `1.0000` for governed rules and owner overrides.
 
-## Verification
+## Mutation behavior
 
-Local PostgreSQL remains unavailable in this container (`psql` is missing), so `npm run db:reset`, the focused pgTAP run, and the full database test suite cannot execute locally. `git diff --check` passed locally. Push and exact-head CI inspection require GitHub network/auth access from an environment that can reach GitHub.
+- Automatic classification authorizes owner/operator membership as part of line lookup, requires a committed acquisition job, locks the line and current classification, preserves owner overrides, and supersedes system classifications atomically.
+- Owner override is owner-only, requires a bounded nonblank reason, active same-workspace option, and creates `owner_override` history without rule provenance.
+- Rule authoring is owner-only; version bumps lock the active rule, require the expected version, mark the predecessor superseded, and insert a new active successor.
+- Direct authenticated table writes remain denied; public mutation functions are `SECURITY DEFINER`, revoked from `PUBLIC`/`anon`, and granted only to `authenticated`.
 
-## Non-changes
+## Audit events
 
-No migration schema change, no migration count change, no second migration, no trigger change, no FK change, no unique-index change, no RLS change, no fixture lifecycle change, no `server/src/classify.ts` change, no Railway action, no hosted Supabase access, no hosted migration, no historical import, no S1.2 work, and no `docs/ai/CURRENT_STATE.md` edit.
+- `acquisition_line_classified`
+- `acquisition_line_classification_superseded`
+- `acquisition_line_classification_overridden`
+- `classification_rule_created`
+- `classification_rule_superseded`
 
-## Next step
+## Verification status
 
-Push this repair to PR #41 and verify all four required exact-head CI jobs: `build-and-verify`, `shadow-db-postgres-shim`, `shadow-db-supabase-stack`, and `dev-advisory-report`.
+- `npm run db:reset` failed locally because `psql` is not installed (`spawnSync psql ENOENT`).
+- Full pgTAP, focused pgTAP, CI, and PR checks are not verified in this environment due to missing local PostgreSQL tooling and blocked GitHub network access.
+- `git diff --check` passed locally.
+
+## Limitations and next slice
+
+- Concurrency proof is implemented through row locks/unique current indexes but not executed locally because pgTAP/database tooling is unavailable.
+- Draft PR still needs to be pushed/opened from an environment with GitHub access and verified against exact-head CI.
+- No Express endpoint, React page, Railway work, hosted Supabase access, hosted migration, SQLite change, `server/src/classify.ts` change, historical import, S1.3 work, or `CURRENT_STATE.md` edit was performed.
+- Next slice: S1.3 acquisition read endpoints and list page.
