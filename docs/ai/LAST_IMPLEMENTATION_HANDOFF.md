@@ -1,35 +1,59 @@
 # Last Implementation Handoff
 
-## PR #41 S1.1 FK-isolation test repair
+## S1.2 governed acquisition classification functions — CI repair
 
 - Repository: `harmonicforce/russellvault2`
-- PR: #41 — `S1.1: Add governed acquisition classification schema, seed data, and tests`
-- Branch: `codex/add-governed-acquisition-classification-schema-3tx1ht`
-- Current head named in work order: `8f0de234bdf0fddd11abcf8ca10d78a7bd64395e`
-- Current CI run named in work order: `30965321170`
-- Local head inspected before this repair: `be2a4e621734d1611528f1bdb0fdd612e1ac95a9`
-- Final local repair head: 798aed0618d7224032d5925ad63798fc82ea1589 (pre-handoff-amend)
-- Migration count remains: 61
-- No migration/schema file was changed in this repair.
+- Base SHA: `c7c6f07d2ff80e5df8419c11a73017bd35a7128e`
+- Branch: `codex/draft-s1.2-add-governed-acquisition-classification-functions`
+- Draft PR: `#42`
+- Original PR head: `05146abde5db3b840d11dce84e15b78784cb93d4`
+- Original failing CI run: `31075943936`
+- Final exact head and CI run: recorded in the final PR report after the handoff commit is pushed and exact-head CI completes.
+- Release authority: draft PR only; nothing was merged, deployed, or applied to hosted Supabase.
 
-## Proven CI failure and root cause
+## Reproduced failures
 
-CI run `30965321170` executed all 76 focused assertions. The prior trigger repair worked: cross-workspace references now reach database constraints instead of being masked by `app.classification_rule_target_matches()`. Assertions 54 and 55 still failed because those two FK tests reused workspace A's acquisition line after the classification-history section had already created a current successor for that line. The attempted invalid rows collided first with `acquisition_line_classifications_one_current_uidx` (`23505`) before PostgreSQL could check the intended cross-workspace composite FKs (`23503`).
+- `55_governed_acquisition_classification.sql`, assertion 56 (`rule method requires rule`) returned `23505` from `acquisition_line_classifications_one_current_uidx`; the unchanged test expected `23514`.
+- The original `56_governed_acquisition_classification_functions.sql` stopped on PostgreSQL because `hasnt_function_privilege(unknown, unknown, unknown)` did not exist. Direct execution after a pristine reset also exposed that the file relied on pgTAP having been created by an earlier test, so it now creates the extension itself.
 
-## Repair made
+## Repairs
 
-- `cross-workspace option rejected` now uses workspace B and unclassified line B, selects option `single` from workspace A, and selects the valid active v5 `seller:topshelfcollects` rule from workspace B. The row is otherwise valid, so only the option is cross-workspace.
-- `cross-workspace rule rejected` now uses workspace B and unclassified line B, selects option `single` from workspace B, and selects the active v5 `seller:topshelfcollects` rule from workspace A. The row is otherwise valid, so only the rule is cross-workspace.
-- Line B has no current classification at this point in the transaction: prior B-line classification attempts are inside `throws_ok` assertions and fail, leaving no row behind.
+- Restored the closed rule-presence invariant. `rule`, `seller_specialization`, and `explicit_evidence` require a governed rule and version. `owner_override` and the new `system_fallback` forbid rule references.
+- Added explicit `system_fallback` method semantics: no actor, governed system provenance, deterministic confidence, active same-workspace fallback option, and explicit no-match evidence. Card no-match becomes Unreviewed; unknown non-card vertical becomes Other.
+- Preserved the function-owned lock/retire/insert/link/audit sequence. No generic current-row retirement trigger was added.
+- Replaced non-portable pgTAP negative privilege helpers with `ok(not has_*_privilege(...))` assertions. No shim wrapper was added and the shim was not edited.
+- Corrected non-card behavior to map business vertical before inspecting any card title signal.
+- Corrected card precedence: delivered signal, strong mystery, full-title fallback, seller specialization, then system fallback; the explicit-evidence placeholder remains nonmatching until governed evidence exists.
+- Executed every accepted PostgreSQL regex flag (`i`, `m`, `s`, `x`) and translated JavaScript `\b` boundaries to PostgreSQL ARE `\y` at execution while retaining the governed source patterns unchanged.
+- Removed arbitrary winner selection. Multiple matching rules at the winning numeric precedence fail closed.
+- Restricted seller evidence to the exact governed alias tied to the line's acquisition order and source system/raw handle; display-name similarity is not used.
+- Corrected classification audit events to reference the Phase 3 `import_jobs` identity required by the shared audit-event foreign key, and extended the closed audit event vocabulary for S1.2 events.
 
-## Verification
+## Executable evidence
 
-Local PostgreSQL remains unavailable in this container (`psql` is missing), so `npm run db:reset`, the focused pgTAP run, and the full database test suite cannot execute locally. `git diff --check` passed locally. Push and exact-head CI inspection require GitHub network/auth access from an environment that can reach GitHub.
+- `55_governed_acquisition_classification.sql`: 76 assertions.
+- `56_governed_acquisition_classification_functions.sql`: 27 assertions.
+- `57_governed_acquisition_classification_execution.sql`: 60 assertions.
+- Test 57 executes evaluation, fallback, history filtering, ambiguity, authorization, automatic classification, idempotency, owner override preservation, rule authoring/supersession, audit, direct-write denial, and rollback on failed successor insertion.
+- Genuine dblink overlap proves: two classifiers yield one current idempotent row; classifier-versus-override ends with the owner result and valid history; two overrides yield one current row and two history rows; and two concurrent rule supersessions yield one active winner with complete version history.
+- Full plain-PostgreSQL pgTAP suite: 1,788 assertions passed.
 
-## Non-changes
+## Repository verification
 
-No migration schema change, no migration count change, no second migration, no trigger change, no FK change, no unique-index change, no RLS change, no fixture lifecycle change, no `server/src/classify.ts` change, no Railway action, no hosted Supabase access, no hosted migration, no historical import, no S1.2 work, and no `docs/ai/CURRENT_STATE.md` edit.
+- `npm ci`, `npm ci --prefix client`, and `npm ci --prefix server`: passed. Existing audit output reported root two high advisories, client one moderate/two high, and server one moderate; the governed advisory CI gate remains authoritative.
+- `npm run lint`: passed with seven pre-existing warnings.
+- `npm run typecheck`: passed.
+- `npm run build:ci`: passed with the existing client chunk-size warning.
+- `npm test`: passed (server 461, client 554, guard/advisory 23).
+- Separate database guard test: 9 passed.
+- Separate client audit gate test: 14 passed.
+- `npm run db:reset`: passed on PostgreSQL 16.14.
+- `npm run db:test`: 1,788 assertions passed.
+- `git diff --check`: passed.
 
-## Next step
+## Boundaries and remaining risk
 
-Push this repair to PR #41 and verify all four required exact-head CI jobs: `build-and-verify`, `shadow-db-postgres-shim`, `shadow-db-supabase-stack`, and `dev-advisory-report`.
+- Only the existing unmerged S1.2 migration was edited; no second migration was added.
+- No `hasnt_function_privilege` shim wrapper, generic retirement trigger, new branch, new PR, merge, Railway action, hosted migration, S1.3 work, or `CURRENT_STATE.md` edit occurred.
+- Local Supabase-stack execution is delegated to exact-head CI; no hosted schema or production data was touched.
+- Rollback is branch/PR reversion before merge. The next owner decision is whether to review and merge PR #42 after its exact head has all four required jobs green.
