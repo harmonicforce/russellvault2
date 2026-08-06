@@ -64,7 +64,7 @@ const STATES = new Set(['classified', 'needs_review', 'unclassified']);
 const METHODS = new Set(['rule', 'owner_override', 'seller_specialization', 'explicit_evidence', 'system_fallback']);
 const INSTRUMENTS = new Set(['card','bank','balance','credit','cash','other']);
 const SHIPMENT_STATES = new Set(['expected','in_transit','delivered','lost','cancelled']);
-const INITIAL_SHIPMENT_STATES = new Set(['expected','in_transit','delivered']);
+const INITIAL_SHIPMENT_STATES = new Set(['expected','in_transit']);
 
 function bodyText(value: unknown, code = 'invalid_request', min = 1, max = 500): string {
   if (typeof value !== 'string' || value.trim().length < min || value.trim().length > max) throw new AcquisitionReadError(code, 400);
@@ -76,13 +76,13 @@ function optionalBodyText(value: unknown, max: number): string | null {
 }
 function isoDate(value: unknown, required = false): string | null {
   if (value == null || value === '') { if (required) throw new AcquisitionReadError('invalid_request',400); return null; }
-  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) throw new AcquisitionReadError('invalid_request',400);
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value) || !Number.isFinite(Date.parse(value))) throw new AcquisitionReadError('invalid_request',400);
   return new Date(value).toISOString();
 }
 function publicId(value: unknown): string { return bodyText(value,'invalid_request',1,200); }
 function rpcError(error: unknown): AcquisitionReadError {
   const message=String((error as {message?:string})?.message??'');
-  for (const code of ['duplicate_external_reference','duplicate_tracking','invalid_source_evidence','invalid_initial_status','invalid_shipping_reference_amount','invalid_request','invalid_amount','invalid_currency','invalid_instrument','invalid_transition','stale_status','idempotency_conflict','already_reversed','integrity_error','unauthorized_workspace','acquisition_not_found','payment_not_found','shipment_not_found']) if(message.includes(code)) return new AcquisitionReadError(code,['stale_status','idempotency_conflict','already_reversed','duplicate_external_reference','duplicate_tracking','integrity_error'].includes(code)?409:code.endsWith('_not_found')?404:code==='unauthorized_workspace'?403:400);
+  for (const code of ['ambiguous_acquisition_line_id','acquisition_integrity_error','duplicate_external_reference','duplicate_tracking','invalid_source_evidence','invalid_initial_status','invalid_shipping_reference_amount','invalid_request','invalid_amount','invalid_currency','invalid_instrument','invalid_transition','stale_status','idempotency_conflict','already_reversed','unauthorized_workspace','acquisition_not_found','payment_not_found','shipment_not_found']) if(message.includes(code)) return new AcquisitionReadError(code,['stale_status','idempotency_conflict','already_reversed','duplicate_external_reference','duplicate_tracking','ambiguous_acquisition_line_id','acquisition_integrity_error'].includes(code)?409:code.endsWith('_not_found')?404:code==='unauthorized_workspace'?403:400);
   if (/function .* does not exist|schema cache/i.test(message)) return new AcquisitionReadError('acquisition_detail_contract_missing',503);
   return new AcquisitionReadError('dependency_failed',502);
 }
@@ -194,6 +194,16 @@ router.get('/facets', requireMember, asyncRoute(async (req, res) => {
 router.get('/lines/:publicId',requireMember,asyncRoute(async(req,res)=>{
   const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('get_acquisition_line_detail' as never,{p_workspace_id:workspaceId,p_acquisition_line_public_id:publicId(req.params.publicId)} as never);
   if(error) throw rpcError(error); if(!data) throw new AcquisitionReadError('acquisition_not_found',404); res.json(data);
+}));
+router.get('/sources/:sourceSystemPublicId/lines/:linePublicId',requireMember,asyncRoute(async(req,res)=>{
+  const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('get_acquisition_line_detail_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId)} as never);
+  if(error) throw rpcError(error); if(!data) throw new AcquisitionReadError('acquisition_not_found',404); res.json(data);
+}));
+router.post('/sources/:sourceSystemPublicId/lines/:linePublicId/classify',requireOperator,asyncRoute(async(req,res)=>{
+ const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('classify_acquisition_line_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId)} as never); if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
+}));
+router.post('/sources/:sourceSystemPublicId/lines/:linePublicId/classification-override',requireOwner,asyncRoute(async(req,res)=>{
+ const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('override_acquisition_line_classification_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId),p_classification_option_key:bodyText(req.body?.classificationOptionKey),p_reason:bodyText(req.body?.reason)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
 }));
 router.post('/lines/:publicId/classify',requireOperator,asyncRoute(async(req,res)=>{
  const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('classify_acquisition_line_by_public_id' as never,{p_workspace_id:workspaceId,p_acquisition_line_public_id:publicId(req.params.publicId)} as never); if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);

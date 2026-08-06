@@ -416,8 +416,8 @@ select is(
 -- + the operations dashboard contracts (20260801 x1) -----------------------
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  65,
-  'sixty-four migrations are recorded, including acquisition detail governance'
+  66,
+  'sixty-six migrations are recorded, including acquisition detail governance'
 );
 
 select results_eq(
@@ -487,7 +487,8 @@ select results_eq(
     ('20260805000100_governed_acquisition_classification_functions'),
     ('20260806000100_acquisition_line_read_surface'),
     ('20260806000200_acquisition_payments_shipments_detail'),
-    ('20260806000300_acquisition_payments_shipments_hardening')$$,
+    ('20260806000300_acquisition_payments_shipments_hardening'),
+    ('20260806000400_acquisition_s1_4_final_acceptance')$$,
   'the earlier-phase migrations are unmodified and governed acquisition classification functions follow the S1.1 schema'
 );
 

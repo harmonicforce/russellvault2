@@ -1,6 +1,6 @@
 export type AcquisitionSort = 'occurred_at'|'created_at'|'seller'|'title'|'quantity'|'classification';
 export type AcquisitionOrder = 'asc'|'desc';
-export interface AcquisitionLine { acquisition_line_public_id:string; full_title:string|null; delivered_item_title:string|null; seller_normalized:string|null; business_vertical:string|null; quantity:number; occurred_at:string|null; created_at:string; source_order_reference:string|null; classification_key:string|null; classification_label:string|null; classification_method:string|null; classification_state:'classified'|'needs_review'|'unclassified' }
+export interface AcquisitionLine { source_system_public_id:string; acquisition_line_public_id:string; full_title:string|null; delivered_item_title:string|null; seller_normalized:string|null; business_vertical:string|null; quantity:number; occurred_at:string|null; created_at:string; source_order_reference:string|null; classification_key:string|null; classification_label:string|null; classification_method:string|null; classification_state:'classified'|'needs_review'|'unclassified' }
 export interface FacetCount { value:string; count:number }
 export interface ClassificationFacet { key:string; label:string; count:number }
 export interface AcquisitionFacets { classificationOptions:ClassificationFacet[]; unclassified:number; methods:FacetCount[]; states:FacetCount[]; sellers:FacetCount[]; businessVerticals:FacetCount[] }

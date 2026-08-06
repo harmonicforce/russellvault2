@@ -309,7 +309,8 @@ function RoutedContent() {
       {PROVENANCE_ENABLED && <Route path="/listing-prep" element={<ListingPrep />} />}
       {PROVENANCE_ENABLED && <Route path="/listing-prep/:prepId" element={<ListingPrepDetail />} />}
       {PROVENANCE_ENABLED && <Route path="/acquisitions" element={<Acquisitions />} />}
-      {PROVENANCE_ENABLED && <Route path="/acquisitions/:publicId" element={<AcquisitionDetail />} />}
+      {PROVENANCE_ENABLED && <Route path="/acquisitions/:sourceSystemPublicId/:linePublicId" element={<AcquisitionDetail />} />}
+      {PROVENANCE_ENABLED && <Route path="/acquisitions/:publicId" element={<div className="p-6" role="alert"><h1>Legacy acquisition link</h1><p>This link is not source-qualified. Return to the acquisition list to select the governed source record.</p></div>} />}
       {PROVENANCE_ENABLED && <Route path="/import-review" element={<ImportReview />} />}
       {PROVENANCE_ENABLED && <Route path="/acquisition-review" element={<AcquisitionReview />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory-identity" element={<InventoryIdentity />} />}

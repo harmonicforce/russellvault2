@@ -1,0 +1,26 @@
+import {readFileSync} from 'node:fs';
+import {describe,expect,it} from 'vitest';
+const source=readFileSync(new URL('./acquisition.ts',import.meta.url),'utf8');
+const executable=source.replace(/\/\*[\s\S]*?\*\//g,'').replace(/^\s*\/\/.*$/gm,'');
+describe('S1.4 final server acceptance contract',()=>{
+ it('keeps governed availability gate',()=>expect(source).toContain('isProvenanceEnabled'));
+ it('requires member detail access',()=>expect(source).toContain("'/sources/:sourceSystemPublicId/lines/:linePublicId',requireMember"));
+ it('requires operator classification access',()=>expect(source).toContain("'/sources/:sourceSystemPublicId/lines/:linePublicId/classify',requireOperator"));
+ it('requires owner override access',()=>expect(source).toContain("'/sources/:sourceSystemPublicId/lines/:linePublicId/classification-override',requireOwner"));
+ it('forwards source ID exactly',()=>expect(source).toContain('p_source_system_public_id:publicId(req.params.sourceSystemPublicId)'));
+ it('forwards line ID exactly',()=>expect(source).toContain('p_acquisition_line_public_id:publicId(req.params.linePublicId)'));
+ it('calls source-qualified detail function',()=>expect(source).toContain("client.rpc('get_acquisition_line_detail_by_source'"));
+ it('calls source-qualified classifier',()=>expect(source).toContain("client.rpc('classify_acquisition_line_by_source'"));
+ it('calls source-qualified override',()=>expect(source).toContain("client.rpc('override_acquisition_line_classification_by_source'"));
+ it('rejects initially delivered shipments',()=>expect(source).toContain("new Set(['expected','in_transit'])"));
+ it('validates strict UTC ISO timestamps',()=>expect(source).toContain("\\d{2}:\\d{2}:\\d{2}"));
+ it('forwards reversal keys unchanged',()=>expect(source).toContain('p_idempotency_key:bodyText(req.body?.idempotencyKey'));
+ it('forwards raw carrier',()=>expect(source).toContain('p_carrier:optionalBodyText(req.body?.carrier,100)'));
+ it('forwards raw tracking',()=>expect(source).toContain('p_tracking_number:optionalBodyText(req.body?.trackingNumber,200)'));
+ it('forwards transition received time',()=>expect(source).toContain('p_received_at:isoDate(req.body?.receivedAt)'));
+ it('bounds ambiguous legacy errors',()=>expect(source).toContain('ambiguous_acquisition_line_id'));
+ it('bounds integrity errors',()=>expect(source).toContain('acquisition_integrity_error'));
+ it('bounds dependency failures',()=>expect(source).toContain("AcquisitionReadError('dependency_failed',502)"));
+ it('does not create a service-role client',()=>expect(executable).not.toMatch(/service[_-]?role/i));
+ it('does not access SQLite in acquisition route',()=>expect(executable).not.toMatch(/better-sqlite3|sqlite/i));
+});
