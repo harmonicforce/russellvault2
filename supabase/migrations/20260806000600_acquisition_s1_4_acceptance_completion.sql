@@ -58,19 +58,23 @@ create or replace function public.get_acquisition_line_detail_by_source(p_worksp
  stable security definer
  set search_path to ''
 as $function$
-declare v public.acquisition_line_overview%rowtype; result jsonb; root_rows integer; placement_rows integer;
+declare v public.acquisition_line_overview%rowtype; result jsonb; placement_rows integer;
 begin
  perform app.assert_workspace_role(p_workspace_id,array['owner','operator','viewer']::public.workspace_role[]);
 
- -- Root-row cardinality over ROWS, never distinct line ids.
- select count(*) into root_rows from public.acquisition_line_overview
-  where workspace_id=p_workspace_id and source_system_public_id=p_source_system_public_id and acquisition_line_public_id=p_acquisition_line_public_id;
- -- Zero matches and a foreign workspace are indistinguishable to the caller.
- if root_rows=0 then return null; end if;
- if root_rows>1 then raise exception 'acquisition_integrity_error' using errcode='23514'; end if;
-
- select * into v from public.acquisition_line_overview
-  where workspace_id=p_workspace_id and source_system_public_id=p_source_system_public_id and acquisition_line_public_id=p_acquisition_line_public_id;
+ -- Root-row cardinality over ROWS, never distinct line ids, and proven in the
+ -- SAME statement that fetches the row. Counting first and selecting second
+ -- would take two READ COMMITTED snapshots, so a placement written between
+ -- them would let a non-strict SELECT INTO fall back to an arbitrary row --
+ -- the very failure this replaces. INTO STRICT cannot do that.
+ begin
+  select * into strict v from public.acquisition_line_overview
+   where workspace_id=p_workspace_id and source_system_public_id=p_source_system_public_id and acquisition_line_public_id=p_acquisition_line_public_id;
+ exception
+  -- Zero matches and a foreign workspace are indistinguishable to the caller.
+  when no_data_found then return null;
+  when too_many_rows then raise exception 'acquisition_integrity_error' using errcode='23514';
+ end;
 
  -- Named, direct proof of the placement contract, independent of the view.
  select count(*) into placement_rows from public.acquisition_lot_lines
