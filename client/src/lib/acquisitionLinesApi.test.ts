@@ -1,0 +1,9 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AcquisitionLinesError, createAcquisitionLinesTransport } from './acquisitionLinesApi';
+afterEach(()=>vi.unstubAllGlobals());
+describe('acquisition lines transport',()=>{
+ it('encodes every list parameter and caller token',async()=>{const fetch=vi.fn().mockResolvedValue({ok:true,json:async()=>({total:0,rows:[]})});vi.stubGlobal('fetch',fetch);await createAcquisitionLinesTransport(async()=> 'caller token').lines('workspace A',{query:'slab & box',classification:'unclassified',seller:'seller',businessVertical:'Cards',method:'rule',classificationState:'classified',sort:'title',order:'asc',limit:25,offset:50});const [url,init]=fetch.mock.calls[0];expect(url).toContain('workspaceId=workspace+A');expect(url).toContain('query=slab+%26+box');expect(url).toContain('classificationState=classified');expect(init.headers.authorization).toBe('Bearer caller token')});
+ it('uses only the governed facet endpoint',async()=>{const fetch=vi.fn().mockResolvedValue({ok:true,json:async()=>({facets:{}})});vi.stubGlobal('fetch',fetch);await createAcquisitionLinesTransport(async()=> 't').facets('ws');expect(fetch.mock.calls[0][0]).toBe('/api/acquisition/facets?workspaceId=ws')});
+ it('throws a bounded error and drops raw server text',async()=>{vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:false,json:async()=>({error:'relation secret_table does not exist'})}));await expect(createAcquisitionLinesTransport(async()=> 't').facets('ws')).rejects.toEqual(expect.objectContaining<Partial<AcquisitionLinesError>>({code:'acquisition_read_unavailable'}))});
+ it('fails closed while signed out',async()=>{await expect(createAcquisitionLinesTransport(async()=>null).facets('ws')).rejects.toEqual(expect.objectContaining({code:'signed_out'}))});
+});

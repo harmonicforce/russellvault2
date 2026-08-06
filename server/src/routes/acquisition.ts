@@ -54,6 +54,31 @@ router.use((_req, res, next) => {
 
 const MAX_PAGE = 200;
 
+class AcquisitionReadError extends Error {
+  constructor(readonly code: string, readonly status: number) { super(code); }
+}
+
+const SORTS = new Set(['occurred_at', 'created_at', 'seller', 'title', 'quantity', 'classification']);
+const ORDERS = new Set(['asc', 'desc']);
+const STATES = new Set(['classified', 'needs_review', 'unclassified']);
+const METHODS = new Set(['rule', 'owner_override', 'seller_specialization', 'explicit_evidence', 'system_fallback']);
+
+function optionalQuery(value: unknown, max = 200): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'string') throw new AcquisitionReadError('invalid_query', 400);
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > max) throw new AcquisitionReadError('invalid_query', 400);
+  return trimmed;
+}
+
+function integerQuery(value: unknown, fallback: number, minimum: number, maximum?: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new AcquisitionReadError('invalid_query', 400);
+  const parsed = Number(value);
+  if (parsed < minimum || (maximum !== undefined && parsed > maximum)) throw new AcquisitionReadError('invalid_query', 400);
+  return parsed;
+}
+
 function readLimit(value: unknown, fallback = 50): number {
   const n = Number(value ?? fallback);
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -96,6 +121,51 @@ router.get(
     res.json({ staging: true, workspaceId, role });
   })
 );
+
+// --- Normal committed acquisition-line read surface (all members) ------------
+router.get('/lines', requireMember, asyncRoute(async (req, res) => {
+  const { workspaceId, client } = caller(req);
+  const sort = typeof req.query.sort === 'string' ? req.query.sort : 'occurred_at';
+  const order = typeof req.query.order === 'string' ? req.query.order : 'desc';
+  const state = optionalQuery(req.query.classificationState);
+  const method = optionalQuery(req.query.method);
+  if (!SORTS.has(sort) || !ORDERS.has(order)) throw new AcquisitionReadError('invalid_sort', 400);
+  if (state && !STATES.has(state)) throw new AcquisitionReadError('invalid_filter', 400);
+  if (method && !METHODS.has(method)) throw new AcquisitionReadError('invalid_filter', 400);
+  const args = {
+    p_workspace_id: workspaceId,
+    p_query: req.query.query === undefined ? null : optionalQuery(req.query.query),
+    p_classification_key: optionalQuery(req.query.classification),
+    p_seller_normalized: optionalQuery(req.query.seller),
+    p_business_vertical: optionalQuery(req.query.businessVertical),
+    p_method: method,
+    p_classification_state: state,
+    p_sort: sort,
+    p_order: order,
+    p_limit: integerQuery(req.query.limit, 50, 1, MAX_PAGE),
+    p_offset: integerQuery(req.query.offset, 0, 0),
+  };
+  const { data, error } = await client.rpc('list_acquisition_lines' as never, args as never);
+  if (error) {
+    const message = String((error as { message?: string }).message ?? '');
+    if (message.includes('invalid_sort')) throw new AcquisitionReadError('invalid_sort', 400);
+    if (message.includes('invalid_filter')) throw new AcquisitionReadError('invalid_filter', 400);
+    if (message.includes('unauthorized_workspace')) throw new AcquisitionReadError('unauthorized_workspace', 403);
+    if (/function .* does not exist|schema cache/i.test(message)) throw new AcquisitionReadError('acquisition_read_contract_missing', 503);
+    throw new AcquisitionReadError('dependency_failed', 502);
+  }
+  const payload = data as unknown as { total: number; limit: number; offset: number; rows: unknown[] };
+  if (!payload || !Array.isArray(payload.rows) || !Number.isFinite(payload.total)) throw new AcquisitionReadError('acquisition_read_unavailable', 503);
+  res.json({ coverage: 'governed_native_committed', historicalLegacyImported: false, ...payload });
+}));
+
+router.get('/facets', requireMember, asyncRoute(async (req, res) => {
+  const { workspaceId, client } = caller(req);
+  const { data, error } = await client.rpc('get_acquisition_facets' as never, { p_workspace_id: workspaceId } as never);
+  if (error) throw new AcquisitionReadError('dependency_failed', 502);
+  if (!data || typeof data !== 'object') throw new AcquisitionReadError('acquisition_read_unavailable', 503);
+  res.json({ coverage: 'governed_native_committed', historicalLegacyImported: false, facets: data });
+}));
 
 // --- Channel registry (owner) --------------------------------------------------
 router.post(
@@ -680,6 +750,10 @@ router.use(
     }
     if (err instanceof AcquisitionCommitError) {
       res.status(err.status).json({ error: err.message, importJobId: err.importJobId });
+      return;
+    }
+    if (err instanceof AcquisitionReadError) {
+      res.status(err.status).json({ error: err.code });
       return;
     }
     next(err);
