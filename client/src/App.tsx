@@ -32,6 +32,7 @@ import CycleCounts from './pages/CycleCounts';
 import MediaIssues from './pages/MediaIssues';
 import ListingPrep from './pages/ListingPrep';
 import ListingPrepDetail from './pages/ListingPrepDetail';
+import Acquisitions from './pages/Acquisitions';
 import FirstRunSetup from './components/FirstRunSetup';
 import { resolveAppConfig, type EnvLike } from './lib/appConfig';
 import { useWorkspace } from './lib/workspaceContext';
@@ -53,6 +54,7 @@ const PRIMARY_NAV = [
   { to: '/quick-add', label: 'Add Inventory', icon: PackagePlus, end: false },
   { to: '/scan', label: 'Scan or Find', icon: ScanLine, end: false },
   { to: '/inventory/current', label: 'Current Inventory', icon: Boxes, end: false },
+  { to: '/acquisitions', label: 'Acquisitions', icon: ShoppingBag, end: false },
   { to: '/inventory', label: 'Legacy Inventory', icon: Package, end: true },
   { to: '/intake-sessions', label: 'Intake Sessions', icon: ClipboardList, end: false },
   { to: '/locations', label: 'Locations', icon: MapPin, end: false },
@@ -305,6 +307,7 @@ function RoutedContent() {
       {PROVENANCE_ENABLED && <Route path="/photo-issues" element={<MediaIssues />} />}
       {PROVENANCE_ENABLED && <Route path="/listing-prep" element={<ListingPrep />} />}
       {PROVENANCE_ENABLED && <Route path="/listing-prep/:prepId" element={<ListingPrepDetail />} />}
+      {PROVENANCE_ENABLED && <Route path="/acquisitions" element={<Acquisitions />} />}
       {PROVENANCE_ENABLED && <Route path="/import-review" element={<ImportReview />} />}
       {PROVENANCE_ENABLED && <Route path="/acquisition-review" element={<AcquisitionReview />} />}
       {PROVENANCE_ENABLED && <Route path="/inventory-identity" element={<InventoryIdentity />} />}

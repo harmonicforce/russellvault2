@@ -447,3 +447,11 @@ Owner overrides are separate governed actions. They require an owner role, an ac
 Rule authoring also uses governed functions rather than direct table writes. Owners can create a new logical rule or supersede an active rule by supplying the expected current version. Supersession locks the active rule, marks it `superseded`, inserts the next active version with `supersedes_rule_id`, and leaves all historical rows queryable. Direct authenticated inserts into `classification_rules` remain denied.
 
 The S1.1 `explicit_evidence:legacy_sealed_line_ids` rule remains a governed placeholder in S1.2 because no trustworthy workspace-scoped governed equivalent of the legacy `sealedLineIds` set exists yet. The evidence-set matcher therefore fails closed and records the unavailable dependency instead of reading legacy SQLite or deriving sealed status from unrelated facts.
+
+### Governed acquisition-line read surface (S1.3)
+
+`acquisition_line_overview` is the committed governed-native list grain: exactly one row per acquisition line, joined only to its active lot/order placement and current (`superseded_at is null`) classification. It carries the same title, delivered-item, business-vertical, and exact supplier-alias semantics as governed classification input; historical classifications and placements do not multiply rows.
+
+`list_acquisition_lines` performs bounded search, closed filters and sorts, deterministic immutable-identity tie-breaking, exact counting, and offset/limit pagination in PostgreSQL across the complete authorized workspace population. `get_acquisition_facets` counts that same committed population and includes active classification options at zero. Both functions re-derive membership from `auth.uid()`, permit owner/operator/viewer, and are executable only by `authenticated`.
+
+The `/acquisitions` page and `/api/acquisition/{lines,facets}` are authoritative within that committed governed-native scope. Historical Whatnot purchases remain on the legacy page until reconciliation and their counts must not be added to governed counts. S1.3 intentionally exposes no financial totals because payment, shipment, landed-cost, and historical-import facts are not complete.

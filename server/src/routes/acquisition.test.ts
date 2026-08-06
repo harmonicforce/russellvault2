@@ -160,6 +160,8 @@ function makeFakeClient(token: string) {
       return q;
     },
     rpc: async (fn: string, args: Record<string, unknown>) => {
+      if (fn === 'list_acquisition_lines') return { data: { total: 1, limit: args.p_limit, offset: args.p_offset, rows: [{ acquisition_line_public_id: 'RV-AL-TEST' }] }, error: null };
+      if (fn === 'get_acquisition_facets') return { data: { classificationOptions: [], unclassified: 1, methods: [], states: [], sellers: [], businessVerticals: [] }, error: null };
       if (fn === 'register_channel') {
         return { data: { id: CHANNEL, public_id: 'RV-CH-TEST01', resumed: false }, error: null };
       }
@@ -361,6 +363,23 @@ describe('success for the appropriate workspace member', () => {
       expect(res.status, path).toBe(200);
       const json = await res.json();
       expect(json.staging).toBe(true);
+    }
+  });
+
+  it('serves governed committed lines and facets to viewers with exact coverage metadata', async () => {
+    const lines = await call('GET', `/api/acquisition/lines?workspaceId=${WS_A}&sort=title&order=asc&limit=10&offset=0`, { token: 'viewer-token' });
+    expect(lines.status).toBe(200);
+    expect(await lines.json()).toMatchObject({ coverage: 'governed_native_committed', historicalLegacyImported: false, total: 1, limit: 10, offset: 0 });
+    const facets = await call('GET', `/api/acquisition/facets?workspaceId=${WS_A}`, { token: 'viewer-token' });
+    expect(facets.status).toBe(200);
+    expect(await facets.json()).toMatchObject({ coverage: 'governed_native_committed', historicalLegacyImported: false });
+  });
+
+  it('returns bounded validation errors for invalid list parameters', async () => {
+    for (const query of ['sort=drop table','order=sideways','classificationState=maybe','limit=201','offset=-1']) {
+      const response = await call('GET', `/api/acquisition/lines?workspaceId=${WS_A}&${query}`, { token: 'viewer-token' });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toHaveProperty('error');
     }
   });
 
