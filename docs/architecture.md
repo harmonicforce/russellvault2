@@ -509,3 +509,76 @@ A committed governed-native acquisition line is **included by default** until an
 **One unresolved eligibility decision at a time in the browser.** Exclusion and restoration use the same durable retry mechanism as payments and shipments. The idempotency key is minted once, when the owner confirms, so a Retry resends the identical target, reason, and key. A failed decision is retained and blocks further payment, shipment, and eligibility work until it is retried or discarded, and the pending state belongs to the decision itself rather than to any other operation in flight.
 
 **Unsupported URL filters are removed and reported.** The acquisitions list treats `exclusionState` as the closed vocabulary it is, alongside sort, order, and classification state: an unrecognized value is stripped from the URL and surfaced through the governed unsupported-filter warning, so the address bar never claims a filter that is not being applied.
+
+## S1.6.1 governed UI foundation
+
+**Design tokens are three layers deep, and components only reach the third.** A
+primitive (`--rv-*`) is a raw palette value with no meaning and is the only
+place a hex literal appears. A semantic token (`--surface-*`, `--text-*`,
+`--brand-*`, `--status-*`) says what a colour MEANS in the active theme. A
+Tailwind utility is what a component writes. A component that needs a colour
+uses a utility; a colour with no semantic token yet gets a token added, never
+an inline hex.
+
+**Two paired themes, and status colour independent of brand.** Light Vault
+Ledger and Dark Vault each define the full semantic set. Gold is structural —
+it carries hierarchy and identity, never status and never danger. Destructive
+action renders in critical semantics. No status is communicated by colour
+alone: every status surface also states its meaning in words.
+
+**`on-accent` is a correctness token, not a stylistic one.** It is the
+foreground paired with a SOLID brand fill. The dark theme's brand accent is a
+bright gold, so a white label on it is roughly 1.9:1; `on-accent` resolves to
+white on the light theme's dark gold and to dark ink on the dark theme's
+bright gold. Any solid `bg-accent` fill must pair with `text-on-accent`.
+
+**Legacy utilities are mapped, not broken.** `bg-surface-0/1/2`, `text-ink*`,
+`border-hairline`, `text-accent*`, and `text-good` resolve onto the new
+semantic tokens so existing pages keep rendering correctly; later S1.6 slices
+migrate them deliberately rather than in one sweep. Tailwind's default spacing
+scale is deliberately not redefined — it already is the approved 4px rhythm,
+and overriding the explicit keys would drop the fractional steps the
+application relies on.
+
+**Theme is presentation only.** The stored preference is `system | light |
+dark`; an explicit choice always overrides the OS, and `system` removes the
+marker entirely so the stylesheet keeps following the OS rather than freezing a
+snapshot. A theme never affects data, authorization, or provenance, and no
+business preference is stored with it. The foundation defines a storage port
+and does not itself touch web storage.
+
+**The truth-state contract makes "we could not find out" unsayable as zero.**
+Every governed asynchronous surface can represent loading, ready, empty,
+partial, stale, unavailable, unauthorized, notConfigured, and error. `empty`
+means an authoritative request PROVED there are none; the indeterminate states
+carry no value at all, and no exported helper converts a failure into a count.
+`partial` carries included and missing coverage plus whether the subset is safe
+to aggregate, because partial data that is silently summed becomes a confident
+wrong total. `stale` carries its last confirmed time and refresh affordance.
+Money stays currency-qualified and mixed currencies are never silently summed.
+
+**The design system owns presentation, never business meaning.**
+`client/src/design-system` provides Button, IconButton, Field, StatusPill,
+Alert, and the root render error boundary. Field wires label, description and
+error but does not validate; Alert renders a severity but does not decide one;
+StatusPill renders a tone but does not compute status. Anything requiring
+knowledge of what an acquisition, exclusion, payment, or shipment means belongs
+in the domain — that boundary is why a design change cannot quietly become a
+business-rule change.
+
+**The root error boundary catches React render faults only.** A network
+failure, a governed dependency failure, and an authorization failure are all
+the domain component's to report. Conflating them would let a routine
+"dependency unavailable" read as "the app broke", which trains operators to
+ignore both. The fallback says the fault is in the interface rather than the
+records, offers a reload, and never renders a stack trace.
+
+**Display type is self-hosted and role-restricted.** Barlow Condensed
+(`@fontsource/barlow-condensed`, OFL-1.1, weights 500/600/700) is bundled from
+our own origin with no third-party runtime font request, and is opt-in through
+a single utility so it cannot leak into tables, form fields, money, long prose,
+or error text.
+
+The full S1.6 program, its seven slices, and the deferred Workbench
+customization boundary are recorded in
+`docs/programs/commercial-core-legacy-retirement/07_S1_6_GOVERNED_UI_FOUNDATION.md`.
