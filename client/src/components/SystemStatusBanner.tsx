@@ -151,10 +151,14 @@ function Banner({
 }) {
   // Text carries the meaning; colour only reinforces it. Not dismissible:
   // these are system states, not notices the owner can clear.
+  // Both tones use semantic status tokens, which already carry the correct
+  // value for each theme. The warning tone previously hard-coded a light-theme
+  // hex and relied on a `dark:` override; the token does that flip itself, in
+  // one place, for both the OS preference and the explicit Dark Vault choice.
   const toneClass =
     tone === 'critical'
       ? 'bg-critical/15 text-critical border-critical/30'
-      : 'bg-[#8a5a00]/15 text-[#8a5a00] border-[#8a5a00]/30 dark:bg-warning/15 dark:text-warning dark:border-warning/30';
+      : 'bg-warning/15 text-warning border-warning/30';
   return (
     <div role={role} className={`flex items-start gap-2 border-b px-4 py-2 text-sm font-medium shrink-0 ${toneClass}`}>
       {icon}

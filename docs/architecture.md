@@ -585,6 +585,47 @@ authoritative record before repeating any consequential action. Behavioural
 tests render the boundary and assert each of those claims is absent from its
 actual DOM text.
 
+**The application shell is fixed governed infrastructure.**
+`client/src/app/` separates what `App.tsx` used to hold in one file:
+`app/navigation` owns what is ADVERTISED, `app/routing` owns what is MOUNTED,
+`app/shell` owns the chrome, and `app/theme` owns the browser `ThemeStore`
+adapter. `App.tsx` is composition only. The shell communicates identity, active
+workspace, navigation, user context, theme, system truth, and the page-content
+boundary — and calculates no business fact, reads no governed table, and holds
+no workspace state of its own.
+
+**Navigation advertises only what routing mounts.** One typed navigation model
+feeds both the desktop sidebar and the mobile drawer, so the two cannot drift,
+and a test cross-checks every advertised destination against the router.
+Detail and action routes are mounted but deliberately unadvertised — they are
+entered from a record, not a menu. Nothing planned is listed: no Settings
+domain, because no `/settings` route exists; no Intelligence domain, because no
+valuation, pricing, or analytics route exists. There is no role-based route
+hiding, because the application applies none — inventing it in the shell would
+be a lock on the menu rather than on the door. Legacy destinations sit in a
+separate collapsed area, marked "Non-authoritative" in words, never inside a
+governed domain.
+
+**The System Truth Region is outside the routed subtree.** Navigation cannot
+unmount it, no page can suppress it, and no future layout customization can
+remove it. It wraps `SystemStatusBanner` rather than reimplementing it, so the
+banner's precedence semantics — and the twenty tests pinning them — are
+preserved exactly. Application misconfiguration and session failure are handled
+by `AuthShell` before the shell mounts; that boundary is documented rather than
+duplicated. The ready state renders nothing, because "nothing to report" and
+"verified healthy" are different claims.
+
+**Theme preference is device-local, and the UI says so.** `ThemeControl` talks
+to a `ThemeStore`; only the browser adapter touches `localStorage`, under a
+namespaced, versioned, optionally user-scoped key that holds one of exactly
+three strings and nothing business-shaped. A corrupt or absent value resolves to
+System, and a storage exception costs durability rather than the application —
+the guard lives at the single hook every store passes through. `system` removes
+`data-theme` instead of writing a snapshot, so the OS change is handled by CSS
+with no JavaScript listener involved. A `@custom-variant dark` teaches Tailwind's
+`dark:` utilities about the explicit opt-in, which the stock
+`prefers-color-scheme` variant does not cover.
+
 **Display type is self-hosted and role-restricted.** Barlow Condensed
 (`@fontsource/barlow-condensed`, OFL-1.1, weights 500/600/700) is bundled from
 our own origin with no third-party runtime font request, and is opt-in through
