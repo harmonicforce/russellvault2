@@ -314,6 +314,10 @@ describe('RootErrorBoundary', () => {
   // React logs a caught render error; silence it so a passing run is readable.
   const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => {});
 
+  // The rendered fallback's own text, whitespace-normalised so an assertion
+  // survives a reflowed JSX line. This reads the DOM, never module source.
+  const fallbackText = () => (screen.getByRole('alert').textContent ?? '').replace(/\s+/g, ' ').trim();
+
   it('catches an actual thrown render exception instead of blanking the screen', () => {
     const spy = quiet();
     const onError = vi.fn();
@@ -354,15 +358,70 @@ describe('RootErrorBoundary', () => {
 
   // A render fault is not a data fault, and saying so is what stops operators
   // treating a drawing bug as a records problem.
-  it('says the failure is in the interface, not in the records', () => {
+  it('says the failure is in the interface rather than in the records', () => {
     const spy = quiet();
     render(
       <RootErrorBoundary onError={() => {}} onReload={() => {}}>
         <Boom />
       </RootErrorBoundary>,
     );
-    const text = screen.getByRole('alert').textContent ?? '';
-    expect(text).toMatch(/nothing has been saved or altered/i);
+    const text = fallbackText();
+    expect(text).toMatch(/interface failed while displaying this screen/i);
+    expect(text).toMatch(/fault in drawing the page/i);
+    spy.mockRestore();
+  });
+
+  // The correction this suite exists to lock down.
+  //
+  // A component can throw during the rerender or refetch that FOLLOWS a
+  // governed mutation which already committed. A render boundary cannot tell
+  // that apart from a crash on first paint, so any reassurance about what did
+  // or did not happen to the records is a fabricated fact — exactly what the
+  // truth doctrine forbids. The fallback must state the uncertainty instead.
+  it('states that it cannot know whether a previously submitted action completed', () => {
+    const spy = quiet();
+    render(
+      <RootErrorBoundary onError={() => {}} onReload={() => {}}>
+        <Boom />
+      </RootErrorBoundary>,
+    );
+    const text = fallbackText();
+    expect(text).toMatch(/cannot tell us whether an action you submitted just before it completed/i);
+    spy.mockRestore();
+  });
+
+  it('sends the operator to verify authoritative state before repeating a consequential action', () => {
+    const spy = quiet();
+    render(
+      <RootErrorBoundary onError={() => {}} onReload={() => {}}>
+        <Boom />
+      </RootErrorBoundary>,
+    );
+    const text = fallbackText();
+    expect(text).toMatch(/reload/i);
+    expect(text).toMatch(/verify the current state of the record/i);
+    expect(text).toMatch(/before repeating any consequential action/i);
+    spy.mockRestore();
+  });
+
+  // Each of these is a claim the boundary is not in a position to make. They
+  // are asserted against the rendered DOM text, not against module source, so
+  // the wording can be improved without the guard silently going slack.
+  it.each([
+    ['claim nothing was saved', /nothing[^.]*\bsaved\b/i],
+    ['claim nothing was altered', /nothing[^.]*\b(altered|changed)\b/i],
+    ['claim the records are definitely unchanged', /records (are|were|have been) (definitely )?(unchanged|untouched)/i],
+    ['claim no change reached the records', /not a change to your records/i],
+    ['claim the preceding operation failed', /(was not|were not|has not been|did not) (saved|submitted|completed|applied|recorded)/i],
+    ['claim the preceding operation succeeded', /(your|the) (action|submission|change) (was|has been) (saved|completed|applied|recorded)/i],
+  ])('does not %s', (_label, forbidden) => {
+    const spy = quiet();
+    render(
+      <RootErrorBoundary onError={() => {}} onReload={() => {}}>
+        <Boom />
+      </RootErrorBoundary>,
+    );
+    expect(fallbackText()).not.toMatch(forbidden);
     spy.mockRestore();
   });
 

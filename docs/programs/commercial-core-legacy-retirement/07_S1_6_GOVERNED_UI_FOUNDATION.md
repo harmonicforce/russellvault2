@@ -28,6 +28,35 @@ Three consequences run through every slice:
    not establish the truth says so; it does not render a confident zero.
 3. **Brand is structural, not ornamental.** Gold carries hierarchy and
    identity. It never carries status, and it never signals danger.
+4. **A surface never asserts more than it can know.** Reassurance is a factual
+   claim like any other. A surface that cannot establish what happened says so
+   and points at the authoritative record.
+
+### A render boundary cannot infer the outcome of a submitted operation
+
+The architectural rule stands: **render failure is not business-data failure.**
+A network error, a governed dependency error, and an authorization error are
+the domain component's to report, and the root error boundary must not
+reinterpret them.
+
+The stronger rule that follows from consequence 4: **a render boundary cannot
+infer the completion state of a previously submitted governed operation.** A
+component can throw during the rerender or refetch that *follows* a mutation
+which already committed, and from inside the boundary that is
+indistinguishable from a crash on first paint.
+
+So the fallback may not say a preceding operation succeeded, may not say it
+failed, and may not say nothing was saved or altered. It must:
+
+1. identify itself as an interface/render failure;
+2. state that it cannot determine whether a previously submitted action
+   completed;
+3. direct the operator to reload and verify the authoritative record;
+4. warn against blindly repeating a consequential operation because the screen
+   crashed.
+
+Behavioural tests render the boundary and assert each forbidden claim is absent
+from its actual DOM text, rather than inspecting module source.
 
 ## Visual character: the 75/25 Vault Operations Hybrid
 
