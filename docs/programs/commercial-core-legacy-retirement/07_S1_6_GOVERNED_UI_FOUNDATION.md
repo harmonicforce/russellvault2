@@ -199,8 +199,8 @@ can never quietly become a business-rule change.
 
 | Slice | Scope |
 | --- | --- |
-| **S1.6.1 Foundations** | Tokens, themes, typography, geometry, motion, truth-state contract, initial house primitives, root render error boundary, this document. |
-| **S1.6.2 Shell** | Governed application shell, navigation, theme control integration, storage adapter for the theme port. |
+| **S1.6.1 Foundations** ✅ | Tokens, themes, typography, geometry, motion, truth-state contract, initial house primitives, root render error boundary, this document. |
+| **S1.6.2 Shell** ✅ | Governed application shell, navigation, theme control integration, storage adapter for the theme port. |
 | **S1.6.3 Data and overlay primitives** | Table, dialog, drawer, popover, and the remaining feedback surfaces. |
 | **S1.6.4 Workbench foundation** | Layout store and grid mechanics (see below). |
 | **S1.6.5 Governed-list reference migration** | Acquisitions list migrated onto the system as the reference implementation. |
@@ -208,6 +208,171 @@ can never quietly become a business-rule change.
 | **S1.6.7 Browser quality gate** | Playwright and axe; end-to-end and automated accessibility checks. |
 
 Each slice is one PR. None may be pulled forward.
+
+## The governed application shell (S1.6.2, implemented)
+
+The shell is **fixed governed infrastructure**. It communicates application
+identity, the active workspace, navigation, user context, theme preference,
+system-level truth, and the boundary of page content. It calculates no business
+fact and reads no governed table.
+
+### Route truth versus navigation
+
+`App.tsx` previously owned configuration interpretation, four navigation
+arrays, the workspace header, the first-run gate, drawer state, and every route
+declaration. Those are now separate concerns:
+
+| Module | Owns |
+| --- | --- |
+| `app/navigation/navigationModel.ts` | What is **advertised** — one typed model |
+| `app/navigation/NavigationPanel.tsx` | How destinations render, on both surfaces |
+| `app/routing/AppRoutes.tsx` | What is **mounted** |
+| `app/routing/FirstRunGate.tsx` | Blocking routed content until setup completes |
+| `app/shell/*` | The chrome: shell, header, sidebar, drawer, workspace, theme, truth region |
+| `app/theme/*` | The browser `ThemeStore` adapter and its wiring |
+
+`App.tsx` is now composition only.
+
+Routing and navigation overlap but are not the same set, and the difference is
+deliberate. Detail routes (`/inventory/current/:itemId`,
+`/acquisitions/:source/:line`) and action routes (`/batch-intake`,
+`/inventory/move`) are mounted and reachable but not advertised — they are
+entered from a record or a workflow, not from a menu. The reverse is forbidden:
+**a destination is advertised only if the route exists today**, and a test
+cross-checks every navigation entry against the router itself.
+
+Nothing planned is listed. There is no `/settings` route, so there is no
+Settings domain; no valuation, pricing, analytics, or AI route exists, so there
+is no Intelligence domain. Theme control lives in the shell's user area rather
+than behind a manufactured settings page.
+
+There is no role-based route hiding. The application has no per-role route
+visibility today, and inventing it in the shell would enforce authorization the
+server does not apply — a lock on the menu, not on the door.
+
+### Primary domains
+
+| Domain | Destinations |
+| --- | --- |
+| **Home** | Dashboard, Daily Workbench |
+| **Inventory** | Current Inventory, Scan or Find, Intake Sessions, Locations, Cycle Counts, Corrections, Photo Issues |
+| **Acquire** | Acquisitions, Add Inventory |
+| **Sell** | Listing Prep |
+
+Intake Sessions appears in **Inventory only**. Intake touches acquisition and
+inventory both, but a destination listed under two domains teaches the operator
+that the grouping carries no meaning.
+
+### Tools and legacy separation
+
+Legacy and diagnostic destinations live in a separate, collapsed disclosure
+below a rule — never inside a governed domain. Legacy destinations carry a
+**"Non-authoritative"** marker in words, not by colour alone.
+
+Legacy `/inventory` previously sat in the primary governed list directly above
+the governed inventory destinations, labelled only "Legacy Inventory". It is now
+filed under the legacy group. **The route is unchanged**; only its placement and
+its marking are corrected.
+
+In a legacy-only deployment there is no separation to draw — the whole
+deployment is legacy, the System Truth Region says so permanently, and the
+original legacy navigation is preserved unchanged.
+
+### System Truth Region
+
+Shell infrastructure, rendered outside the routed subtree. Navigation cannot
+unmount it, no page can suppress it, and no future Workbench or widget API can
+remove it: a layout preference may rearrange perspective, never suppress truth.
+
+It **wraps** `SystemStatusBanner` rather than reimplementing it. That component's
+precedence logic is pinned by twenty behavioural tests which are themselves a
+fix for a real defect — the old banner rendered `null` whenever the health
+request failed, going quiet at exactly the moment the legacy database was
+unreadable. The region owns placement and permanence; the health verdict is
+delegated unchanged. No new health semantics are introduced.
+
+The two highest-ranking conditions are handled **before** the shell mounts, and
+that boundary is preserved rather than duplicated:
+
+1. application misconfiguration → `AuthShell` fails closed;
+2. authorization/session failure → `AuthShell` renders the auth screen.
+
+Ranks 3–9 belong to the region via the delegated banner: structured legacy-health
+failure (critical), unverifiable dependency state (warning), legacy-only mode,
+legacy read-only notice, and finally ready. **Ready renders nothing** — "we have
+nothing to report" and "we have verified everything is fine" are different
+claims, and only the first is true. Partial/stale coverage is not established by
+any surface today and is therefore absent rather than faked.
+
+### Responsive shell geometry
+
+| Viewport | Shell |
+| --- | --- |
+| Phone `<640` | Compact top bar, drawer, single content column |
+| Tablet portrait `640–1023` | Compact top bar, drawer, comfortable density |
+| Tablet landscape `1024–1279` (`lg`) | Persistent narrow rail, `w-52` |
+| Desktop `1280–1535` (`xl`) | Persistent full sidebar, `w-60` |
+| Wide `1536+` | Same sidebar; route content owns its own width |
+
+The shell fixes its own geometry only. It imposes **no maximum width on route
+content** — how a record uses the space it is given is a page decision, and
+S1.6.5/S1.6.6 make it.
+
+### Theme persistence
+
+```
+ThemeControl → useThemePreference → ThemeStore → browser adapter → localStorage
+```
+
+No shell component touches `localStorage`. The key is namespaced and versioned
+(`rv.theme.v1`) and can be scoped per user so a shared device does not leak a
+preference between operators. **Nothing business-shaped is stored** — the value
+is one of exactly three strings.
+
+The preference is **device-local** and the UI says so ("Saved on this device
+only"). It does not travel with the account; cross-device governed preference
+persistence would need a server-side model and is deliberately not part of this
+slice.
+
+A corrupt, absent, or hostile stored value resolves to System. A storage
+exception costs durability, never the application — the guard sits in
+`useThemePreference`, the single choke point every store passes through, so the
+invariant holds for any adapter rather than depending on each one to be careful.
+
+`system` removes `data-theme` rather than writing a resolved snapshot, which
+keeps the stylesheet's `prefers-color-scheme` block live. There is deliberately
+**no `matchMedia` listener**: CSS already handles the OS change correctly, and a
+JavaScript snapshot would only be staler. The absence is the feature.
+
+S1.6.2 also taught Tailwind's `dark:` variant about the explicit opt-in. The
+stock variant keys off `prefers-color-scheme` alone, so it silently did nothing
+for an operator who *chose* Dark Vault while their OS was light — the
+pre-existing `text-[#8a5a00] dark:text-warning` pairs would have kept a
+light-theme brown on a graphite surface. A `@custom-variant dark` mirroring the
+token blocks' own selectors repairs every such usage at once.
+
+### Mobile navigation accessibility contract
+
+The shell drawer has an accessibly-named trigger exposing `aria-expanded` and
+`aria-haspopup="dialog"`; `role="dialog"` with `aria-modal` and an accessible
+name; Escape, an explicit close control, and backdrop dismissal; closing on
+navigation so one tap reaches a destination; focus moved in on open and
+returned to the trigger on close.
+
+The backdrop is `aria-hidden`. Exposing it as a second control named "Close
+navigation" would put two identically-named commands in the accessibility tree
+with no way to tell them apart.
+
+Interactions **inside** the drawer — the Tools & legacy disclosure, the
+workspace switcher, the theme radios — do not close it. The close handler is on
+each destination, never on the container; a handler on the container shuts the
+drawer the instant the operator touches anything in it, which is exactly the
+regression that made legacy destinations unreachable from a tablet.
+
+**This is the shell's drawer, not a reusable primitive.** Focus is moved in and
+restored out; focus is not continuously trapped. The governed reusable
+Dialog/Drawer primitives are S1.6.3's, and no general focus-trap framework is
+claimed to exist yet.
 
 ## Workbench customization boundary (S1.6.4+, not implemented here)
 

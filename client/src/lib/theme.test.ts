@@ -102,15 +102,31 @@ describe('theme storage port', () => {
 describe('theme stylesheet', () => {
   const darkBlocks = () => {
     // Both Dark Vault blocks: the OS-preference one and the explicit opt-in.
+    //
+    // Anchored on each block's own OPENING SELECTOR rather than on
+    // "@media (prefers-color-scheme: dark)". That media string also appears in
+    // the `@custom-variant dark` definition near the top of the file, so
+    // anchoring on it sliced the wrong region entirely and silently compared
+    // two empty strings. These two selectors occur exactly once each.
+    const MEDIA_SELECTOR = ':root:where(:not([data-theme="light"]))';
+    const EXPLICIT_SELECTOR = ':root[data-theme="dark"] {';
     const declarations = (block: string) =>
       block
         .split('\n')
         .map((line) => line.trim())
         .filter((line) => line.startsWith('--'))
         .join('\n');
-    const media = css.slice(css.indexOf('@media (prefers-color-scheme: dark)'), css.indexOf(':root[data-theme="dark"]'));
-    const explicit = css.slice(css.indexOf(':root[data-theme="dark"]'));
-    return [declarations(media), declarations(explicit.slice(0, explicit.indexOf('\n}')))];
+    // The media block is nested inside @media so it closes at one indent
+    // level; the explicit block is top-level and closes at column zero.
+    const body = (selector: string, closes: string) => {
+      const start = css.indexOf(selector);
+      expect(start, `${selector} should appear in index.css`).toBeGreaterThan(-1);
+      const rest = css.slice(start + selector.length);
+      const end = rest.indexOf(closes);
+      expect(end, `${selector} should be a closed block`).toBeGreaterThan(-1);
+      return declarations(rest.slice(0, end));
+    };
+    return [body(MEDIA_SELECTOR, '\n  }'), body(EXPLICIT_SELECTOR, '\n}')];
   };
 
   // Plain CSS has no mixin, so the values appear twice. If they ever drift,

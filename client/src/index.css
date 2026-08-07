@@ -8,6 +8,24 @@
 @import "@fontsource/barlow-condensed/600.css";
 @import "@fontsource/barlow-condensed/700.css";
 
+/* Teach the `dark:` utility variant about the explicit Dark Vault opt-in.
+   Tailwind's stock `dark:` keys off `prefers-color-scheme` alone, so before
+   this it silently did nothing for an operator who CHOSE Dark Vault while
+   their OS was set to light — the pre-existing `text-[#8a5a00] dark:text-warning`
+   pairs would have kept the light-theme brown on a graphite surface. The two
+   arms below mirror the token blocks' own selectors exactly, so a utility and
+   a token can never disagree about which theme is active. */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+  &:where(:root[data-theme="dark"] *) {
+    @slot;
+  }
+}
+
 /* ===========================================================================
    RUSSELL VAULT DESIGN TOKENS
    ===========================================================================

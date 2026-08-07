@@ -102,13 +102,20 @@ describe('tablet drawer with governed surfaces enabled', () => {
     expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull();
   });
 
-  it('still closes on the backdrop and on Escape', () => {
+  it('still closes on the explicit close control and on Escape', () => {
     openDrawer();
     fireEvent.click(screen.getByLabelText('Close navigation'));
     expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull();
 
     const reopened = openDrawer();
     fireEvent.keyDown(reopened, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull();
+  });
+
+  it('still closes on the backdrop', () => {
+    const { container } = renderApp();
+    fireEvent.click(screen.getByLabelText('Open navigation'));
+    fireEvent.click(container.querySelector('[data-drawer-backdrop]')!);
     expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull();
   });
 

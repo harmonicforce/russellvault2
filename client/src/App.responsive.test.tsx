@@ -75,12 +75,26 @@ describe('tablet navigation', () => {
     expect(screen.getByLabelText('Open navigation').getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('closes on the backdrop and on Escape', () => {
+  // Three independent ways out, asserted separately. The backdrop is hidden
+  // from the accessibility tree — two controls both named "Close navigation"
+  // would be ambiguous to a screen reader — so it is reached by its own hook
+  // rather than by the label the close BUTTON owns.
+  it('closes on the backdrop', () => {
+    const { container } = renderApp();
+    fireEvent.click(screen.getByLabelText('Open navigation'));
+    fireEvent.click(container.querySelector('[data-drawer-backdrop]')!);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('closes on the explicit close control', () => {
     renderApp();
     fireEvent.click(screen.getByLabelText('Open navigation'));
     fireEvent.click(screen.getByLabelText('Close navigation'));
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
 
+  it('closes on Escape', () => {
+    renderApp();
     fireEvent.click(screen.getByLabelText('Open navigation'));
     fireEvent.keyDown(screen.getByRole('dialog', { name: 'Navigation' }), { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
