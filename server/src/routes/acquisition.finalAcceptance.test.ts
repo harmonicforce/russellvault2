@@ -25,7 +25,11 @@ let rpcNullData=false;
 function fake(token:string){const role=roles[token];return {
  auth:{getUser:async()=>role!==undefined||token==='stranger'?{data:{user:{id:token}},error:null}:{data:{user:null},error:{message:'bad token'}}},
  from(table:string){const q:any={select:()=>q,eq:()=>q,order:()=>q,limit:async()=>({data:table==='workspace_members'&&role?[{role}]:[],error:null}),then:(resolve:(v:unknown)=>unknown)=>Promise.resolve(resolve({data:table==='workspace_members'&&role?[{role}]:[],error:null}))};return q},
- rpc:async(fn:string,args:Record<string,unknown>)=>{calls.push({fn,args});if(rpcError)return {data:null,error:{message:rpcError}};return {data:rpcNullData?null:{ok:true},error:null}}
+ rpc:async(fn:string,args:Record<string,unknown>)=>{calls.push({fn,args});if(rpcError)return {data:null,error:{message:rpcError}};if(rpcNullData)return {data:null,error:null};
+  // The list route validates the governed payload shape, so the double stands
+  // in with a well-formed page rather than a placeholder the route must reject.
+  if(fn==='list_acquisition_lines')return {data:{total:0,limit:args.p_limit,offset:args.p_offset,rows:[]},error:null};
+  return {data:{ok:true},error:null}}
 };}
 let server:Server,base='';
 beforeAll(async()=>{const app=express();app.use(express.json());app.use('/api/acquisition',router);app.use((_e:unknown,_q:unknown,res:express.Response)=>res.status(500).json({error:'internal_error'}));await new Promise<void>(resolve=>{server=app.listen(0,'127.0.0.1',()=>{const a=server.address();base=`http://127.0.0.1:${typeof a==='object'&&a?a.port:0}`;resolve()})});setCallerClientFactoryForTests(t=>fake(t) as never)});
@@ -179,4 +183,132 @@ describe('S1.4 acquisition HTTP data path',()=>{
  it('has no privileged fallback when the caller token is refused',async()=>{process.env.SUPABASE_SERVICE_ROLE_KEY='service-role-must-not-be-used';const r=await request('GET',path('/sources/S/lines/L'),'nobody');delete process.env.SUPABASE_SERVICE_ROLE_KEY;expect(r.status).toBe(401);expect(calls).toHaveLength(0)});
  it('scopes every governed call to the requested workspace',async()=>{await request('POST',path('/orders/O/payments'),'operator',payment());expect(calls[0].args.p_workspace_id).toBe(WS);expect(Object.values(calls[0].args)).not.toContain(undefined)});
  it('requires a workspace id on every governed call',async()=>expect((await request('GET','/api/acquisition/sources/S/lines/L','viewer')).status).toBe(400));
+});
+
+const exclusion=(over:Record<string,unknown>={})=>({reason:'food and candy, not resale inventory',idempotencyKey:'exclusion-key-1',...over});
+
+describe('S1.5 acquisition exclusion HTTP transport',()=>{
+ it.each([['exclude'],['restore']])('permits an owner to %s and forwards the governed arguments exactly',async(op)=>{
+  const r=await request('POST',path(`/sources/SRC-A/lines/LINE-1/${op}`),'owner',exclusion());
+  expect(r.status).toBe(200);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toEqual({fn:`${op==='exclude'?'exclude':'restore'}_acquisition_line_by_source`,args:{
+   p_workspace_id:WS,p_source_system_public_id:'SRC-A',p_acquisition_line_public_id:'LINE-1',
+   p_reason:'food and candy, not resale inventory',p_idempotency_key:'exclusion-key-1'}});
+ });
+ it.each([['exclude'],['restore']])('denies an operator from %s',async(op)=>{
+  expect((await request('POST',path(`/sources/S/lines/L/${op}`),'operator',exclusion())).status).toBe(403);
+  expect(calls).toHaveLength(0);
+ });
+ it.each([['exclude'],['restore']])('denies a viewer from %s',async(op)=>{
+  expect((await request('POST',path(`/sources/S/lines/L/${op}`),'viewer',exclusion())).status).toBe(403);
+  expect(calls).toHaveLength(0);
+ });
+ it.each([['exclude'],['restore']])('denies an unauthenticated %s',async(op)=>{
+  expect((await request('POST',path(`/sources/S/lines/L/${op}`),undefined,exclusion())).status).toBe(401);
+  expect(calls).toHaveLength(0);
+ });
+ it('forwards percent-encoded source and line identities decoded exactly once',async()=>{
+  await request('POST',path(`/sources/${encodeURIComponent('SRC A/B')}/lines/${encodeURIComponent('LINE #1')}/exclude`),'owner',exclusion());
+  expect(calls[0].args).toMatchObject({p_source_system_public_id:'SRC A/B',p_acquisition_line_public_id:'LINE #1'});
+ });
+ it('normalizes surrounding whitespace in the reason',async()=>{
+  await request('POST',path('/sources/S/lines/L/exclude'),'owner',exclusion({reason:'   trimmed reason   '}));
+  expect(calls[0].args.p_reason).toBe('trimmed reason');
+ });
+ it('forwards the exact idempotency key unchanged',async()=>{
+  await request('POST',path('/sources/S/lines/L/exclude'),'owner',exclusion({idempotencyKey:'Mixed-Case_Key-0001'}));
+  expect(calls[0].args.p_idempotency_key).toBe('Mixed-Case_Key-0001');
+ });
+ it.each([
+  ['a missing reason',{reason:undefined}],
+  ['a blank reason',{reason:'   '}],
+  ['an empty reason',{reason:''}],
+  ['an overlong reason',{reason:'x'.repeat(501)}],
+  ['a missing idempotency key',{idempotencyKey:undefined}],
+  ['a short idempotency key',{idempotencyKey:'short'}],
+  ['an overlong idempotency key',{idempotencyKey:'k'.repeat(201)}],
+ ])('rejects %s before any RPC',async(_label,over)=>{
+  const r=await request('POST',path('/sources/S/lines/L/exclude'),'owner',exclusion(over));
+  expect(r.status).toBe(400);
+  expect(calls).toHaveLength(0);
+ });
+ it.each([
+  ['already_excluded',409],
+  ['not_excluded',409],
+  ['idempotency_conflict',409],
+  ['acquisition_integrity_error',409],
+  ['ambiguous_acquisition_line_id',409],
+  ['acquisition_not_found',404],
+  ['unauthorized_workspace',403],
+  ['invalid_request',400],
+ ])('bounds a %s decision failure as %i',async(message,status)=>{
+  rpcError=message;
+  const r=await request('POST',path('/sources/S/lines/L/exclude'),'owner',exclusion());
+  expect(r.status).toBe(status);
+  expect(await r.json()).toEqual({error:message});
+ });
+ it('bounds an unexpected exclusion dependency failure as 502 without leaking internals',async()=>{
+  rpcError='duplicate key value violates unique constraint "acquisition_line_exclusions_current_uidx" SQL: select * from public.acquisition_line_exclusions';
+  const r=await request('POST',path('/sources/S/lines/L/exclude'),'owner',exclusion());
+  expect(r.status).toBe(502);
+  const text=JSON.stringify(await r.json());
+  expect(text).toBe('{"error":"dependency_failed"}');
+  expect(text).not.toMatch(/constraint|select \*|acquisition_line_exclusions|SQL/i);
+ });
+ it('never turns an empty exclusion dependency response into a success',async()=>{
+  rpcNullData=true;
+  const r=await request('POST',path('/sources/S/lines/L/exclude'),'owner',exclusion());
+  expect(r.status).toBe(502);
+  expect(await r.json()).toEqual({error:'dependency_failed'});
+ });
+ // The injected caller-token client is the only data path: a route reaching a
+ // service-role client or a local SQLite file would answer while recording
+ // nothing here.
+ it.each([['exclude'],['restore']])('routes %s exclusively through the caller-token client',async(op)=>{
+  process.env.SUPABASE_SERVICE_ROLE_KEY='service-role-must-not-be-used';
+  const r=await request('POST',path(`/sources/S/lines/L/${op}`),'owner',exclusion());
+  delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  expect(r.status).toBe(200);
+  expect(calls).toHaveLength(1);
+  expect(calls[0].args.p_workspace_id).toBe(WS);
+ });
+ it('has no privileged fallback when the caller token is refused',async()=>{
+  const r=await request('POST',path('/sources/S/lines/L/exclude'),'nobody',exclusion());
+  expect(r.status).toBe(401);
+  expect(calls).toHaveLength(0);
+ });
+ it('404s the exclusion routes when governed mode is disabled',async()=>{
+  delete process.env.SHADOW_IMPORT;
+  expect((await request('POST',path('/sources/S/lines/L/exclude'),'owner',exclusion())).status).toBe(404);
+  expect((await request('POST',path('/sources/S/lines/L/restore'),'owner',exclusion())).status).toBe(404);
+  expect(calls).toHaveLength(0);
+ });
+ it('rejects an unsupported exclusion filter on the list route before any RPC',async()=>{
+  const r=await request('GET',path('/lines?exclusionState=banana'),'viewer');
+  expect(r.status).toBe(400);
+  expect(await r.json()).toEqual({error:'invalid_filter'});
+  expect(calls).toHaveLength(0);
+ });
+ it.each([['included'],['excluded']])('forwards a valid %s exclusion filter to the list RPC',async(state)=>{
+  const r=await request('GET',path(`/lines?exclusionState=${state}`),'viewer');
+  expect(r.status).toBe(200);
+  expect(calls[0].args.p_exclusion_state).toBe(state);
+ });
+ it('forwards no exclusion filter when none is requested',async()=>{
+  await request('GET',path('/lines'),'viewer');
+  expect(calls[0].args.p_exclusion_state).toBeNull();
+ });
+ it('forwards the requested page window to the list RPC',async()=>{
+  await request('GET',path('/lines?limit=25&offset=50'),'viewer');
+  expect(calls[0].args).toMatchObject({p_limit:25,p_offset:50});
+ });
+ // A list response without a truthful total is unusable for pagination, so the
+ // route refuses it rather than rendering a page whose count cannot be trusted.
+ it('refuses a governed list payload that carries no total',async()=>{
+  rpcNullData=true;
+  const r=await request('GET',path('/lines'),'viewer');
+  expect(r.status).toBe(503);
+  expect(await r.json()).toEqual({error:'acquisition_read_unavailable'});
+ });
 });
