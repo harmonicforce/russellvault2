@@ -187,8 +187,14 @@ select is((select reason from public.acquisition_line_exclusions where public_id
 select is(pg_temp.audit_count('acquisition_line_restored',(select decision from s15_ops where k='rest1')),1,'exactly one acquisition_line_restored audit event exists');
 select is((select detail->>'prior_state' from public.audit_events where detail->>'decision_public_id'=(select decision from s15_ops where k='rest1')),'excluded','the restoration audit records the prior excluded state');
 select is(jsonb_array_length(pg_temp.detail('LINE-63-A1')->'exclusion'->'history'),2,'detail history contains both decisions');
-select is(pg_temp.detail('LINE-63-A1')->'exclusion'->'history'->0->>'publicId',(select decision from s15_ops where k='excl1'),'history is ordered oldest first, deterministically');
-select is(pg_temp.detail('LINE-63-A1')->'exclusion'->'history'->1->>'publicId',(select decision from s15_ops where k='rest1'),'the restoration is the newest history entry');
+-- Both decisions land in ONE transaction, so created_at is the SAME
+-- transaction timestamp for both and the detail view's `order by created_at,
+-- id` tie-breaks on a random UUID: array position is genuinely not
+-- deterministic here, and asserting it passed on one runner and failed on
+-- another. The durable ordering fact is the supersession chain, so history is
+-- identified by that instead.
+select is((select h->>'publicId' from jsonb_array_elements(pg_temp.detail('LINE-63-A1')->'exclusion'->'history') h where h->>'supersededAt' is not null),(select decision from s15_ops where k='excl1'),'the exclusion is the superseded history entry');
+select is((select h->>'publicId' from jsonb_array_elements(pg_temp.detail('LINE-63-A1')->'exclusion'->'history') h where h->>'supersededAt' is null),(select decision from s15_ops where k='rest1'),'the restoration is the current history entry');
 select is(pg_temp.detail('LINE-63-A1')->'exclusion'->>'state','included','detail reports the restored included state');
 select is(pg_temp.overview_state('LINE-63-A1'),'included','the overview now reports included');
 select ok(pg_temp.line_ids(pg_temp.listed('included')) @> array['LINE-63-A1'],'the included filter returns the restored line');
