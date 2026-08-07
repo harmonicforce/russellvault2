@@ -146,7 +146,7 @@ export function RequestCorrectionDialog({
           <button
             onClick={submit}
             disabled={!ready || busy}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-on-accent disabled:opacity-50"
           >
             {busy ? 'Sending…' : 'Report problem'}
           </button>
@@ -279,7 +279,7 @@ export function CorrectionReviewCard({
             <button
               onClick={() => onDecide('approve', note)}
               disabled={busy}
-              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-on-accent disabled:opacity-50"
             >
               <Check className="h-4 w-4" /> Agree there is a problem
             </button>

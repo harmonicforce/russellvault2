@@ -693,7 +693,7 @@ export default function IntakeHub({
                   type="button"
                   onClick={commit}
                   disabled={busy || noLocations}
-                  className="w-full rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  className="w-full rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-on-accent disabled:opacity-50"
                 >
                   {busy ? 'Adding…' : `Add ${def.label.toLowerCase()}`}
                 </button>
@@ -882,7 +882,7 @@ function CommittedReceipt({
         <button
           type="button"
           onClick={onAddAnother}
-          className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white"
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-on-accent"
         >
           Add another {category.label.toLowerCase()}
         </button>

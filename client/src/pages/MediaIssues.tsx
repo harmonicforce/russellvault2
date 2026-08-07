@@ -225,7 +225,7 @@ export default function MediaIssues() {
             type="button"
             onClick={() => void scan()}
             disabled={scanning}
-            className="flex items-center gap-2 rounded bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            className="flex items-center gap-2 rounded bg-accent px-3 py-2 text-sm font-semibold text-on-accent disabled:opacity-60"
           >
             <RefreshCw className={`h-4 w-4 ${scanning ? 'animate-spin' : ''}`} />
             {scanning ? 'Checking…' : 'Check now'}

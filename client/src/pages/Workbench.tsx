@@ -293,7 +293,7 @@ export default function Workbench() {
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => navigate('/quick-add')}
-              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white"
+              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-on-accent"
             >
               <PackagePlus className="h-4 w-4" /> Add inventory
             </button>

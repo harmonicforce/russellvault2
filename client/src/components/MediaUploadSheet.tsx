@@ -113,7 +113,7 @@ export function MediaUploadSheet({
           <button
             type="button"
             onClick={() => cameraRef.current?.click()}
-            className="flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-4 text-sm font-semibold text-white"
+            className="flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-4 text-sm font-semibold text-on-accent"
           >
             <Camera className="h-5 w-5" /> Take photo
           </button>
@@ -189,7 +189,7 @@ export function MediaUploadSheet({
               Clear finished
             </button>
           )}
-          <button type="button" onClick={onClose} className="ml-auto rounded bg-accent px-3 py-2 text-sm font-semibold text-white">
+          <button type="button" onClick={onClose} className="ml-auto rounded bg-accent px-3 py-2 text-sm font-semibold text-on-accent">
             {busy ? 'Keep uploading in background' : 'Done'}
           </button>
         </div>

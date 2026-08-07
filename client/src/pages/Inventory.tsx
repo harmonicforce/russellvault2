@@ -84,7 +84,7 @@ export default function Inventory() {
         </div>
         <button
           onClick={() => setShowAdd(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-accent text-white px-3.5 py-2 text-sm font-medium hover:bg-accent-strong"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-accent text-on-accent px-3.5 py-2 text-sm font-medium hover:bg-accent-strong"
         >
           <Plus className="h-4 w-4" /> Add inventory
         </button>
@@ -214,7 +214,7 @@ function InventoryDetail({ id, onClose, onChanged }: { id: string; onClose: () =
                   recorded_unit_value: form.recorded_unit_value === '' ? null : Number(form.recorded_unit_value),
                 })}
                 disabled={mutation.isPending}
-                className="rounded-lg bg-accent text-white px-3.5 py-2 text-sm font-medium hover:bg-accent-strong disabled:opacity-50"
+                className="rounded-lg bg-accent text-on-accent px-3.5 py-2 text-sm font-medium hover:bg-accent-strong disabled:opacity-50"
               >
                 Save changes
               </button>
@@ -385,7 +385,7 @@ function AddInventoryModal({ lookups, onClose, onCreated }: { lookups?: Lookups;
         </FormField>
         {mutation.isError && <p className="text-sm text-critical">{(mutation.error as Error).message}</p>}
         <div className="flex gap-2 pt-1">
-          <button type="submit" disabled={mutation.isPending} className="rounded-lg bg-accent text-white px-3.5 py-2 text-sm font-medium hover:bg-accent-strong disabled:opacity-50">
+          <button type="submit" disabled={mutation.isPending} className="rounded-lg bg-accent text-on-accent px-3.5 py-2 text-sm font-medium hover:bg-accent-strong disabled:opacity-50">
             {mutation.isPending ? 'Adding…' : 'Add lot'}
           </button>
           <button type="button" onClick={onClose} className="rounded-lg border border-hairline px-3.5 py-2 text-sm">Cancel</button>

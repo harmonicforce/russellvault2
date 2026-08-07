@@ -92,7 +92,7 @@ export function ListingPrepEntry({
             type="button"
             disabled={starting}
             onClick={() => void start()}
-            className="rounded bg-accent px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
+            className="rounded bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent disabled:opacity-60"
           >
             {starting ? 'Starting…' : 'Prepare for listing'}
           </button>

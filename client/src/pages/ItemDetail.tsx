@@ -165,7 +165,7 @@ export default function ItemDetail() {
       <div className="flex flex-wrap gap-2">
         <button
           onClick={() => setMoving(true)}
-          className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white"
+          className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-on-accent"
         >
           <MapPin className="h-4 w-4" /> Move item
         </button>
