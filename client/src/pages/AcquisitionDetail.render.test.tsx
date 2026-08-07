@@ -26,6 +26,7 @@ let outcomes:Record<string,Array<'ok'|AcquisitionDetailError>>;
 let holdFns:Set<string>;
 let releases:Array<()=>void>;
 let holdDetail:boolean;
+let detailFetches:number;
 
 vi.mock('../lib/workspaceContext',()=>({useWorkspace:()=>({workspace:{id:workspaceId,name:'Vault',role}})}));
 vi.mock('../lib/supabaseShadow',()=>({createShadowClient:()=>({})}));
@@ -41,13 +42,15 @@ function record(fn:string,...args:unknown[]){calls.push({fn,args});return outcom
 vi.mock('../lib/acquisitionDetailApi',async(importOriginal)=>({
  ...(await importOriginal<Record<string,unknown>>()),
  createAcquisitionDetailTransport:()=>({
-  detail:()=>holdDetail?new Promise(()=>undefined):(detailError?Promise.reject(detailError):Promise.resolve(detail)),
+  detail:()=>{detailFetches++;return holdDetail?new Promise(()=>undefined):(detailError?Promise.reject(detailError):Promise.resolve(detail))},
   classify:(...a:unknown[])=>record('classify',...a),
   override:(...a:unknown[])=>record('override',...a),
   recordPayment:(...a:unknown[])=>record('recordPayment',...a),
   reversePayment:(...a:unknown[])=>record('reversePayment',...a),
   createShipment:(...a:unknown[])=>record('createShipment',...a),
   transitionShipment:(...a:unknown[])=>record('transitionShipment',...a),
+  exclude:(...a:unknown[])=>record('exclude',...a),
+  restore:(...a:unknown[])=>record('restore',...a),
  }),
 }));
 
@@ -71,6 +74,7 @@ function makeDetail(over:Partial<Detail>={}):Detail{
   payments:[makePayment()],
   paymentSummary:{activeCount:1,activeCurrencies:['USD'],mixedCurrencies:false,activeTotalMinor:1500,sourceReportedTotalMinor:5000,differenceMinor:3500},
   shipments:[makeShipment()],
+  exclusion:{state:'included',current:null,history:[]},
   sourceEvidence:{sourceSystemPublicId:SOURCE,sourceRecordRowKey:'a-row-1',sourceImportJobPublicId:'IMP-A'},
   ...over,
  } as Detail;
@@ -86,13 +90,18 @@ function tree(){
  );
 }
 let client:QueryClient;
+const EXCLUDED_DECISION={publicId:'RV-AEXCL-ABCDEF123456',state:'excluded' as const,reason:'food and candy, not resale inventory',actorId:'user-1',createdAt:'2026-08-03T00:00:00.000Z',supersededAt:null};
+const RESTORED_HISTORY=[{publicId:'RV-AEXCL-AAAAAA111111',state:'excluded' as const,reason:'first exclusion',actorId:'user-1',createdAt:'2026-08-01T00:00:00.000Z',supersededAt:'2026-08-02T00:00:00.000Z'},
+ {publicId:'RV-AEXCL-BBBBBB222222',state:'included' as const,reason:'owner reviewed',actorId:'user-1',createdAt:'2026-08-02T00:00:00.000Z',supersededAt:null}];
+const excludedDetail=()=>makeDetail({exclusion:{state:'excluded',current:EXCLUDED_DECISION,history:[EXCLUDED_DECISION]}});
+
 function renderPage(){
  client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
  return render(tree());
 }
 const ready=()=>screen.findByText('Sealed booster box');
 
-beforeEach(()=>{role='owner';workspaceId='ws-1';detail=makeDetail();detailError=null;calls=[];outcomes={};holdFns=new Set();releases=[];holdDetail=false});
+beforeEach(()=>{role='owner';workspaceId='ws-1';detail=makeDetail();detailError=null;calls=[];outcomes={};holdFns=new Set();releases=[];holdDetail=false;detailFetches=0});
 afterEach(cleanup);
 
 describe('acquisition detail — role matrix',()=>{
@@ -448,5 +457,184 @@ describe('acquisition detail — coverage and scope',()=>{
  it('shows no receiving, cost-basis, profit, or payout control',async()=>{renderPage();await ready();
   const text=document.body.textContent??'';
   expect(text).not.toMatch(/receiv(e|ing) into inventory|cost basis|profit|payout|discrepanc/i);
+ });
+});
+
+describe('acquisition detail — downstream eligibility decisions',()=>{
+ const failure=()=>new AcquisitionDetailError('dependency_failed',502);
+ const confirmExclusion=(reason='food and candy, not resale inventory')=>{
+  fireEvent.click(screen.getByRole('button',{name:'Exclude from downstream workflows'}));
+  fireEvent.change(screen.getByLabelText('Eligibility decision reason'),{target:{value:reason}});
+  fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
+ };
+ const confirmRestoration=(reason='owner reviewed: genuinely resale inventory')=>{
+  fireEvent.click(screen.getByRole('button',{name:'Restore downstream eligibility'}));
+  fireEvent.change(screen.getByLabelText('Eligibility decision reason'),{target:{value:reason}});
+  fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
+ };
+
+ it.each([['viewer'],['operator']])('lets a %s read the state, reason, and history without any control',async(r)=>{
+  role=r as 'viewer'|'operator';
+  detail=makeDetail({exclusion:{state:'excluded',current:EXCLUDED_DECISION,history:RESTORED_HISTORY}});
+  renderPage();await ready();
+  expect(screen.getByText('Excluded')).toBeTruthy();
+  expect(screen.getByText(/Current reason: food and candy/)).toBeTruthy();
+  expect(screen.getByText(/first exclusion/)).toBeTruthy();
+  expect(screen.getByText(/owner reviewed/)).toBeTruthy();
+  expect(screen.queryByRole('button',{name:'Exclude from downstream workflows'})).toBeNull();
+  expect(screen.queryByRole('button',{name:'Restore downstream eligibility'})).toBeNull();
+ });
+ it('shows an included line as Included with no decision history',async()=>{
+  role='viewer';renderPage();await ready();
+  expect(screen.getByText('Included')).toBeTruthy();
+  expect(screen.getByText('No explicit eligibility decisions.')).toBeTruthy();
+ });
+ it('offers an owner the exclusion control on an included line',async()=>{renderPage();await ready();
+  expect(screen.getByRole('button',{name:'Exclude from downstream workflows'})).toBeTruthy();
+  expect(screen.queryByRole('button',{name:'Restore downstream eligibility'})).toBeNull();
+ });
+ it('offers an owner the restoration control on an excluded line',async()=>{
+  detail=excludedDetail();renderPage();await ready();
+  expect(screen.getByRole('button',{name:'Restore downstream eligibility'})).toBeTruthy();
+  expect(screen.queryByRole('button',{name:'Exclude from downstream workflows'})).toBeNull();
+ });
+ it('sends nothing when the reason is left empty',async()=>{renderPage();await ready();
+  fireEvent.click(screen.getByRole('button',{name:'Exclude from downstream workflows'}));
+  fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
+  // The native required attribute blocks submission before any handler runs,
+  // so the form simply stays open and nothing is sent.
+  expect(calls).toHaveLength(0);
+  expect(screen.getByLabelText('Eligibility decision reason')).toBeTruthy();
+ });
+ // Whitespace satisfies `required`, so the trim check is the real guard.
+ it('rejects a whitespace-only reason and sends nothing',async()=>{renderPage();await ready();
+  fireEvent.click(screen.getByRole('button',{name:'Exclude from downstream workflows'}));
+  fireEvent.change(screen.getByLabelText('Eligibility decision reason'),{target:{value:'    '}});
+  fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
+  expect(await screen.findByText('A reason is required.')).toBeTruthy();
+  expect(calls).toHaveLength(0);
+ });
+ it('sends nothing when the confirmation is cancelled',async()=>{renderPage();await ready();
+  fireEvent.click(screen.getByRole('button',{name:'Exclude from downstream workflows'}));
+  fireEvent.change(screen.getByLabelText('Eligibility decision reason'),{target:{value:'a reason'}});
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}));
+  expect(calls).toHaveLength(0);
+  expect(screen.getByRole('button',{name:'Exclude from downstream workflows'})).toBeTruthy();
+ });
+ it('sends the exact source, line, trimmed reason, and a key on exclusion',async()=>{renderPage();await ready();
+  confirmExclusion('   food and candy, not resale inventory   ');
+  await waitFor(()=>expect(calls.find(c=>c.fn==='exclude')).toBeTruthy());
+  expect(calls[0].args.slice(0,4)).toEqual(['ws-1',SOURCE,LINE,'food and candy, not resale inventory']);
+  expect(typeof calls[0].args[4]).toBe('string');
+  expect((calls[0].args[4] as string).length).toBeGreaterThan(7);
+ });
+ it('sends the exact restoration request on an excluded line',async()=>{
+  detail=excludedDetail();renderPage();await ready();
+  confirmRestoration();
+  await waitFor(()=>expect(calls.find(c=>c.fn==='restore')).toBeTruthy());
+  expect(calls[0].args.slice(0,4)).toEqual(['ws-1',SOURCE,LINE,'owner reviewed: genuinely resale inventory']);
+ });
+ it('closes the confirmation form once the decision is confirmed',async()=>{renderPage();await ready();
+  confirmExclusion();
+  await waitFor(()=>expect(screen.queryByLabelText('Eligibility decision reason')).toBeNull());
+ });
+ it('disables Confirm while the decision is in flight and cannot send a second request',async()=>{
+  holdFns.add('exclude');renderPage();await ready();
+  confirmExclusion();
+  await waitFor(()=>expect((screen.getByRole('button',{name:'Confirm'}) as HTMLButtonElement).disabled).toBe(true));
+  fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
+  fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
+  expect(calls.filter(c=>c.fn==='exclude')).toHaveLength(1);
+  releases.forEach(r=>r());
+ });
+ // The pending flag must belong to THIS operation, not to an unrelated
+ // payment or shipment request that happens to be in flight.
+ it('does not disable the exclusion control because a payment is in flight',async()=>{
+  holdFns.add('recordPayment');renderPage();await ready();
+  fireEvent.change(screen.getByLabelText('Payment amount'),{target:{value:'12.34'}});
+  fireEvent.change(screen.getByLabelText('Payment date and time'),{target:{value:'2026-08-06T12:00'}});
+  fireEvent.submit(screen.getByLabelText('Record payment'));
+  await waitFor(()=>expect(calls.find(c=>c.fn==='recordPayment')).toBeTruthy());
+  expect((screen.getByRole('button',{name:'Exclude from downstream workflows'}) as HTMLButtonElement).disabled).toBe(false);
+  releases.forEach(r=>r());
+ });
+
+ it('retries a failed exclusion with the identical target, reason, and key',async()=>{
+  outcomes={exclude:[failure()]};renderPage();await ready();
+  confirmExclusion();
+  await waitFor(()=>expect(screen.getByText('Retry exact request')).toBeTruthy());
+  const first=calls.filter(c=>c.fn==='exclude');
+  expect(first).toHaveLength(1);
+  fireEvent.click(screen.getByText('Retry exact request'));
+  await waitFor(()=>expect(calls.filter(c=>c.fn==='exclude')).toHaveLength(2));
+  expect(calls.filter(c=>c.fn==='exclude')[1].args).toEqual(first[0].args);
+ });
+ it('retries a failed restoration with the identical target, reason, and key',async()=>{
+  outcomes={restore:[failure()]};detail=excludedDetail();renderPage();await ready();
+  confirmRestoration();
+  await waitFor(()=>expect(screen.getByText('Retry exact request')).toBeTruthy());
+  const first=calls.filter(c=>c.fn==='restore');
+  expect(first).toHaveLength(1);
+  fireEvent.click(screen.getByText('Retry exact request'));
+  await waitFor(()=>expect(calls.filter(c=>c.fn==='restore')).toHaveLength(2));
+  expect(calls.filter(c=>c.fn==='restore')[1].args).toEqual(first[0].args);
+ });
+ it('names the failed operation in the governed retry notice',async()=>{
+  outcomes={exclude:[failure()]};renderPage();await ready();
+  confirmExclusion();
+  const named=await screen.findAllByText(/Exclusion was not confirmed/);
+  expect(named.length).toBeGreaterThan(0);
+  expect(screen.getByRole('alert').textContent).toContain('Exclusion was not confirmed');
+ });
+ it('clears the retained exclusion once the retry succeeds',async()=>{
+  outcomes={exclude:[failure()]};renderPage();await ready();
+  confirmExclusion();
+  await waitFor(()=>expect(screen.getByText('Retry exact request')).toBeTruthy());
+  fireEvent.click(screen.getByText('Retry exact request'));
+  await waitFor(()=>expect(screen.queryByText('Retry exact request')).toBeNull());
+  expect(await screen.findByText('Saved.')).toBeTruthy();
+ });
+ it('discards a retained exclusion without sending anything',async()=>{
+  outcomes={exclude:[failure()]};renderPage();await ready();
+  confirmExclusion();
+  await waitFor(()=>expect(screen.getByText('Discard retry')).toBeTruthy());
+  const before=calls.length;
+  fireEvent.click(screen.getByText('Discard retry'));
+  await waitFor(()=>expect(screen.queryByText('Discard retry')).toBeNull());
+  expect(calls).toHaveLength(before);
+ });
+ it('refuses a second eligibility decision while one is unresolved',async()=>{
+  outcomes={exclude:[failure()]};renderPage();await ready();
+  confirmExclusion();
+  await waitFor(()=>expect(screen.getByText('Retry exact request')).toBeTruthy());
+  // The confirmation stays open after a failure, so the lock is on Confirm.
+  expect((screen.getByRole('button',{name:'Confirm'}) as HTMLButtonElement).disabled).toBe(true);
+  // Submitting the form directly bypasses the disabled button and proves the
+  // refusal is enforced in the handler, not only by the disabled attribute.
+  fireEvent.submit(screen.getByLabelText('Exclude from downstream workflows'));
+  await waitFor(()=>expect(screen.getByText(/Resolve the unconfirmed exclusion first/)).toBeTruthy());
+  expect(calls.filter(c=>c.fn==='exclude')).toHaveLength(1);
+ });
+ it('refuses a payment while an unresolved exclusion is retained',async()=>{
+  outcomes={exclude:[failure()]};renderPage();await ready();
+  confirmExclusion();
+  await waitFor(()=>expect(screen.getByText('Retry exact request')).toBeTruthy());
+  fireEvent.change(screen.getByLabelText('Payment amount'),{target:{value:'12.34'}});
+  fireEvent.change(screen.getByLabelText('Payment date and time'),{target:{value:'2026-08-06T12:00'}});
+  fireEvent.submit(screen.getByLabelText('Record payment'));
+  expect(calls.filter(c=>c.fn==='recordPayment')).toHaveLength(0);
+ });
+ it('invalidates the detail, list, and facet queries on a confirmed decision',async()=>{
+  renderPage();await ready();
+  const seen:unknown[][]=[];
+  const original=client.invalidateQueries.bind(client);
+  client.invalidateQueries=((args:{queryKey:unknown[]})=>{seen.push(args.queryKey);return original(args)}) as typeof client.invalidateQueries;
+  const detailFetchesBefore=detailFetches;
+  confirmExclusion();
+  await waitFor(()=>expect(screen.queryByText('Saved.')).toBeTruthy());
+  expect(seen.some(k=>Array.isArray(k)&&k[0]==='acquisition-lines')).toBe(true);
+  expect(seen.some(k=>Array.isArray(k)&&k[0]==='acquisition-facets')).toBe(true);
+  // The detail is refetched directly rather than invalidated.
+  expect(detailFetches).toBeGreaterThan(detailFetchesBefore);
  });
 });

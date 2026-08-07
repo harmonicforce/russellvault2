@@ -9,6 +9,9 @@ import { tokenProviderFromClient } from '../lib/tokenProvider';
 
 const sorts=new Set<AcquisitionSort>(['occurred_at','created_at','seller','title','quantity','classification']);
 const orders=new Set<AcquisitionOrder>(['asc','desc']); const states=new Set(['classified','needs_review','unclassified']);
+// The governed eligibility filter is a CLOSED vocabulary, exactly like the
+// others above. Anything else is an unsupported filter, not a silent no-op.
+const exclusions=new Set<AcquisitionExclusionState>(['included','excluded']);
 const PAGE_SIZE=50;
 export default function Acquisitions(){
  const {workspace}=useWorkspace(); const [url,setUrl]=useSearchParams(); const [invalid,setInvalid]=useState(false);
@@ -17,10 +20,10 @@ export default function Acquisitions(){
  const sort=(sorts.has(rawSort as AcquisitionSort)?rawSort:'occurred_at') as AcquisitionSort;
  const order=(orders.has(rawOrder as AcquisitionOrder)?rawOrder:'desc') as AcquisitionOrder;
  const page=Math.max(1,Number(url.get('page'))||1);
- useEffect(()=>{const bad=rawSort!==sort||rawOrder!==order||(rawState!==null&&!states.has(rawState))||String(page)!==(url.get('page')??'1');if(bad){setInvalid(true);const n=new URLSearchParams(url);if(rawSort!==sort)n.delete('sort');if(rawOrder!==order)n.delete('order');if(rawState&&!states.has(rawState))n.delete('classificationState');if(String(page)!==(url.get('page')??'1'))n.delete('page');setUrl(n,{replace:true})}},[rawSort,rawOrder,rawState,sort,order,page,url,setUrl]);
+ useEffect(()=>{const badExclusion=rawExclusion!==null&&!exclusions.has(rawExclusion as AcquisitionExclusionState);const bad=rawSort!==sort||rawOrder!==order||(rawState!==null&&!states.has(rawState))||badExclusion||String(page)!==(url.get('page')??'1');if(bad){setInvalid(true);const n=new URLSearchParams(url);if(rawSort!==sort)n.delete('sort');if(rawOrder!==order)n.delete('order');if(rawState&&!states.has(rawState))n.delete('classificationState');if(badExclusion)n.delete('exclusionState');if(String(page)!==(url.get('page')??'1'))n.delete('page');setUrl(n,{replace:true})}},[rawSort,rawOrder,rawState,rawExclusion,sort,order,page,url,setUrl]);
  const previousWorkspace=useRef(workspace?.id);
  useEffect(()=>{if(previousWorkspace.current&&previousWorkspace.current!==workspace?.id){setUrl(new URLSearchParams(),{replace:true});}previousWorkspace.current=workspace?.id},[workspace?.id,setUrl]);
- const params={query:url.get('query')||undefined,classification:url.get('classification')||undefined,seller:url.get('seller')||undefined,businessVertical:url.get('businessVertical')||undefined,method:url.get('method')||undefined,classificationState:rawState&&states.has(rawState)?rawState:undefined,exclusionState:rawExclusion==='included'||rawExclusion==='excluded'?rawExclusion as AcquisitionExclusionState:undefined,sort,order,limit:PAGE_SIZE,offset:(page-1)*PAGE_SIZE};
+ const params={query:url.get('query')||undefined,classification:url.get('classification')||undefined,seller:url.get('seller')||undefined,businessVertical:url.get('businessVertical')||undefined,method:url.get('method')||undefined,classificationState:rawState&&states.has(rawState)?rawState:undefined,exclusionState:rawExclusion!==null&&exclusions.has(rawExclusion as AcquisitionExclusionState)?rawExclusion as AcquisitionExclusionState:undefined,sort,order,limit:PAGE_SIZE,offset:(page-1)*PAGE_SIZE};
  const enabled=Boolean(workspace); const lines=useQuery({queryKey:['acquisition-lines',workspace?.id,params],queryFn:()=>api.lines(workspace!.id,params),enabled,placeholderData:undefined});
  const facets=useQuery({queryKey:['acquisition-facets',workspace?.id],queryFn:()=>api.facets(workspace!.id),enabled,placeholderData:undefined});
  const change=(key:string,value:string)=>{const n=new URLSearchParams(url);if(value){n.set(key,value)}else{n.delete(key)}if(key!=='page')n.delete('page');setUrl(n)};
