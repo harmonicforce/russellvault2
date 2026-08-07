@@ -15,6 +15,16 @@ import { Component, type ErrorInfo, type ReactNode } from 'react';
  * "dependency unavailable" render as "the app broke", which trains operators
  * to ignore both.
  *
+ * WHAT THIS BOUNDARY MAY NOT CLAIM
+ *
+ * A render failure is not a business-data failure — but it is also not proof
+ * that no business data changed. A component can throw during the rerender or
+ * refetch that FOLLOWS a governed mutation that already committed. From inside
+ * a render boundary there is no way to tell that case apart from a crash on
+ * first paint, so the fallback must not say a preceding operation succeeded,
+ * must not say it failed, and must not say nothing was saved. It states the
+ * uncertainty and sends the operator to the authoritative record.
+ *
  * A real error boundary must be a class component: there is no hook form of
  * componentDidCatch. That is the only reason this is not a function.
  */
@@ -57,11 +67,16 @@ export class RootErrorBoundary extends Component<Props, State> {
         <div className="max-w-md rounded-instrument border border-critical/50 bg-surface-raised p-5">
           <h1 className="font-display text-xl font-semibold text-ink">Russell Vault could not display this screen</h1>
           <p className="mt-2 text-sm text-ink-secondary">
-            The application failed while drawing this page. This is a fault in the interface, not a change to your
-            records — nothing has been saved or altered by it.
+            The interface failed while displaying this screen. That is a fault in drawing the page, not a report about
+            the state of your records.
           </p>
           <p className="mt-2 text-sm text-ink-secondary">
-            Reloading usually clears it. If it keeps happening, report it before continuing with this workflow.
+            This error cannot tell us whether an action you submitted just before it completed. Reload, then verify the
+            current state of the record before repeating any consequential action.
+          </p>
+          <p className="mt-2 text-sm text-ink-secondary">
+            Reloading usually clears the display fault. If it keeps happening, report it before continuing with this
+            workflow.
           </p>
           <button
             type="button"

@@ -573,6 +573,18 @@ the domain component's to report. Conflating them would let a routine
 ignore both. The fallback says the fault is in the interface rather than the
 records, offers a reload, and never renders a stack trace.
 
+**A render boundary cannot infer the completion state of a previously
+submitted governed operation.** Render failure is not business-data failure —
+but neither is it evidence that no business data changed. A component can throw
+during the rerender or refetch that FOLLOWS a governed mutation which already
+committed, and from inside the boundary that is indistinguishable from a crash
+on first paint. So the fallback may not claim a preceding operation succeeded,
+may not claim it failed, and may not claim nothing was saved or altered. It
+states the uncertainty and directs the operator to reload and verify the
+authoritative record before repeating any consequential action. Behavioural
+tests render the boundary and assert each of those claims is absent from its
+actual DOM text.
+
 **Display type is self-hosted and role-restricted.** Barlow Condensed
 (`@fontsource/barlow-condensed`, OFL-1.1, weights 500/600/700) is bundled from
 our own origin with no third-party runtime font request, and is opt-in through

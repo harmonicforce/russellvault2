@@ -94,6 +94,16 @@ description, and error without validating. `Button` always carries an explicit
 `<App/>`. Catches React render faults only; says the fault is in the interface
 rather than the records; offers a reload; never renders a stack.
 
+It does **not** claim the records are unchanged. A render boundary cannot infer
+the completion state of a previously submitted governed operation: a component
+can throw during the rerender or refetch that follows a mutation which already
+committed, and that is indistinguishable from a crash on first paint. The
+fallback therefore states the uncertainty and sends the operator to reload and
+verify the authoritative record before repeating any consequential action.
+Corrected on `claude/s1-6-1-render-error-truth-fix`, which replaced the earlier
+"nothing has been saved or altered by it" reassurance and the test that
+required it.
+
 ### Tests
 
 Client **684 → 785** (+101), all passing:
