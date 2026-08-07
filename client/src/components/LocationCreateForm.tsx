@@ -89,7 +89,7 @@ export function LocationCreateForm({
       <button
         type="submit"
         disabled={busy}
-        className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-on-accent disabled:opacity-50"
       >
         <Plus className="h-3.5 w-3.5" /> Add location
       </button>

@@ -351,7 +351,7 @@ export default function ListingPrep() {
                       type="button"
                       disabled={starting === row.subject_id}
                       onClick={() => void startPrep(row.subject_kind, row.subject_id)}
-                      className="rounded bg-accent px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+                      className="rounded bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent disabled:opacity-60"
                     >
                       {starting === row.subject_id ? 'Starting…' : 'Prepare for listing'}
                     </button>

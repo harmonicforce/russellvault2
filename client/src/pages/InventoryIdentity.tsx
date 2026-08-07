@@ -144,7 +144,7 @@ export default function InventoryIdentity() {
             placeholder="RV-PROD-… / RV-SKU-… / RV-C-… / RV-ITEM-… / RV-LOC-…"
           />
           <button
-            className="rounded bg-accent px-3 py-1 text-sm font-medium text-white"
+            className="rounded bg-accent px-3 py-1 text-sm font-medium text-on-accent"
             onClick={() =>
               run(async () => {
                 setPidResult(null);
@@ -175,7 +175,7 @@ export default function InventoryIdentity() {
             placeholder="RV-7K3F9Q2"
           />
           <button
-            className="rounded bg-accent px-3 py-1 text-sm font-medium text-white"
+            className="rounded bg-accent px-3 py-1 text-sm font-medium text-on-accent"
             onClick={() =>
               run(async () => {
                 setScanResult(null);
@@ -225,7 +225,7 @@ export default function InventoryIdentity() {
             placeholder="lot internal id"
           />
           <button
-            className="rounded bg-accent px-3 py-1 text-sm font-medium text-white"
+            className="rounded bg-accent px-3 py-1 text-sm font-medium text-on-accent"
             onClick={() => run(async () => setLotDetail(await transport.lotDetail(workspaceId, lotId)))}
           >
             Load chain
@@ -264,7 +264,7 @@ export default function InventoryIdentity() {
             placeholder="item internal id"
           />
           <button
-            className="rounded bg-accent px-3 py-1 text-sm font-medium text-white"
+            className="rounded bg-accent px-3 py-1 text-sm font-medium text-on-accent"
             onClick={() =>
               run(async () => {
                 setItemDetail(null);

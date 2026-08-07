@@ -170,7 +170,7 @@ export default function BulkMove() {
           </p>
           <button
             onClick={() => navigate('/inventory/current')}
-            className="rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white"
+            className="rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-on-accent"
           >
             Go to Current Inventory
           </button>
@@ -295,7 +295,7 @@ export default function BulkMove() {
                 onClick={() => run()}
                 disabled={running || plan.blocker !== null}
                 title={plan.blocker ?? undefined}
-                className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-on-accent disabled:opacity-50"
               >
                 {running
                   ? `Moving ${progress?.done ?? 0} of ${progress?.total ?? 0}…`
@@ -306,7 +306,7 @@ export default function BulkMove() {
               <button
                 onClick={() => run(retryable)}
                 disabled={running}
-                className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-on-accent disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" /> Retry {retryable.length} failed
               </button>

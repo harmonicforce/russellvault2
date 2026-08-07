@@ -271,7 +271,7 @@ export default function ListingPrepDetail() {
                 disabled={saving || !ready}
                 title={ready ? undefined : 'Clear the outstanding blockers first'}
                 onClick={() => void act(() => transport.transition(prep.id, 'ready_to_list'), 'Marked ready to list.')}
-                className="rounded bg-accent px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
+                className="rounded bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent disabled:opacity-40"
               >
                 Mark ready to list
               </button>
@@ -578,7 +578,7 @@ function ContentSection({
           type="button"
           disabled={saving}
           onClick={submit}
-          className="rounded bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+          className="rounded bg-accent px-3 py-2 text-sm font-semibold text-on-accent disabled:opacity-60"
         >
           {saving ? 'Saving…' : 'Save listing details'}
         </button>
@@ -605,7 +605,7 @@ function MarkListed({ saving, onSubmit }: { saving: boolean; onSubmit: (ref: str
       <button
         type="submit"
         disabled={saving || !ref.trim()}
-        className="rounded bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-40"
+        className="rounded bg-accent px-3 py-2 text-sm font-semibold text-on-accent disabled:opacity-40"
       >
         Record as listed
       </button>

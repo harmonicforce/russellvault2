@@ -1,76 +1,285 @@
 @import "tailwindcss";
 
-@theme {
-  --color-surface-0: var(--surface-0);
-  --color-surface-1: var(--surface-1);
-  --color-surface-2: var(--surface-2);
-  --color-ink: var(--text-primary);
-  --color-ink-secondary: var(--text-secondary);
-  --color-ink-muted: var(--text-muted);
-  --color-hairline: var(--border-hairline);
-  --color-border-strong: var(--border-strong);
-  --color-accent: var(--accent);
-  --color-accent-strong: var(--accent-strong);
-  --color-good: var(--status-good);
-  --color-warning: var(--status-warning);
-  --color-serious: var(--status-serious);
-  --color-critical: var(--status-critical);
+/* Self-hosted display type. No Google Fonts or other third-party runtime font
+   request: these are bundled from @fontsource/barlow-condensed (OFL-1.1) and
+   served from our own origin. Only the three approved display weights are
+   imported — 400 and the italics are deliberately not pulled in. */
+@import "@fontsource/barlow-condensed/500.css";
+@import "@fontsource/barlow-condensed/600.css";
+@import "@fontsource/barlow-condensed/700.css";
+
+/* ===========================================================================
+   RUSSELL VAULT DESIGN TOKENS
+   ===========================================================================
+
+   Three layers, in this order, and components only ever reach the third:
+
+     primitive color      raw palette value, no meaning attached
+          |               (--rv-*, defined once, never theme-dependent)
+          v
+     semantic token       what the colour MEANS in this theme
+          |               (--surface-*, --text-*, --brand-*, --status-*)
+          v
+     Tailwind utility     what a component writes
+                          (bg-surface-raised, text-ink, border-subtle, ...)
+
+   The primitive layer is the ONLY place a hex literal appears. A component
+   that needs a colour uses a utility; if no semantic token expresses what it
+   means, the answer is to add a semantic token, not to inline a hex value.
+
+   DOCTRINE
+   - Gold is the brand accent and is STRUCTURAL. It never means "warning".
+   - Status colour is independent of brand and is never the sole carrier of
+     meaning — every status surface also carries a text label.
+   - Destructive action uses critical semantics, never brand gold.
+   =========================================================================== */
+
+/* --- Layer 1: primitives --------------------------------------------------
+   Named by what they ARE, never by what they are used for. */
+:root {
+  /* Vault parchment — the Light Vault Ledger neutral ramp. */
+  --rv-parchment-000: #ffffff;
+  --rv-parchment-100: #fbfaf6;
+  --rv-parchment-200: #f5f2ea;
+  --rv-parchment-300: #efe9dd;
+  --rv-parchment-400: #ddd5c6;
+  --rv-parchment-500: #b7aa94;
+
+  /* Vault ink — dark content on parchment. */
+  --rv-ink-900: #171511;
+  --rv-ink-700: #504b42;
+  --rv-ink-500: #746e63;
+
+  /* Vault graphite — the Dark Vault neutral ramp. */
+  --rv-graphite-950: #0c0d0d;
+  --rv-graphite-900: #101112;
+  --rv-graphite-800: #141516;
+  --rv-graphite-700: #1b1c1d;
+  --rv-graphite-600: #2e2c29;
+  --rv-graphite-500: #49443b;
+
+  /* Vault bone — light content on graphite. */
+  --rv-bone-100: #f5f1e8;
+  --rv-bone-300: #c8c0b2;
+  --rv-bone-500: #968c7e;
+
+  /* Russell Vault gold. Ordered dark to light, not by numeric weight, because
+     the light theme needs a DARK gold and the dark theme needs a BRIGHT one. */
+  --rv-gold-deep: #5e430e;
+  --rv-gold-dark: #7a5812;
+  --rv-gold-shadow: #342b18;
+  --rv-gold-bright: #d6ae52;
+  --rv-gold-brighter: #e3be65;
+  --rv-gold-pale: #e8d8ae;
+
+  /* Status primitives. Two independent ramps, one per theme, chosen for
+     contrast against that theme's surfaces. Nothing here is gold. */
+  --rv-success-on-light: #1e7a4a;
+  --rv-warning-on-light: #8b5500;
+  --rv-serious-on-light: #a84722;
+  --rv-critical-on-light: #b3261e;
+  --rv-information-on-light: #2467a8;
+
+  --rv-success-on-dark: #4dc27c;
+  --rv-warning-on-dark: #f0a33a;
+  --rv-serious-on-dark: #f08b5f;
+  --rv-critical-on-dark: #e66b63;
+  --rv-information-on-dark: #72a7db;
 }
 
+/* --- Layer 2: semantic tokens, Light Vault Ledger ------------------------- */
 :root {
   color-scheme: light;
-  --surface-0: #f9f9f7;
-  --surface-1: #fcfcfb;
-  --surface-2: #ffffff;
-  --text-primary: #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted: #898781;
-  --border-hairline: rgba(11, 11, 11, 0.1);
-  --border-strong: #e1e0d9;
-  --accent: #2a78d6;
-  --accent-strong: #1c5cab;
-  --status-good: #0ca30c;
-  --status-warning: #b9790c;
-  --status-serious: #c8623c;
-  --status-critical: #d03b3b;
+
+  --surface-canvas: var(--rv-parchment-200);
+  --surface-base: var(--rv-parchment-100);
+  --surface-raised: var(--rv-parchment-000);
+  --surface-inset: var(--rv-parchment-300);
+
+  --text-primary: var(--rv-ink-900);
+  --text-secondary: var(--rv-ink-700);
+  --text-muted: var(--rv-ink-500);
+
+  --border-subtle: var(--rv-parchment-400);
+  --border-strong: var(--rv-parchment-500);
+
+  --brand-accent: var(--rv-gold-dark);
+  /* Compatibility-required: the approved light palette does not name a strong
+     variant, but the existing `accent-strong` utility (28 sites) needs an
+     emphatic step for text on a gold tint. Derived from the approved light
+     brand accent, same hue, one step deeper. */
+  --brand-accent-strong: var(--rv-gold-deep);
+  --brand-accent-soft: var(--rv-gold-pale);
+  /* The readable foreground for a SOLID brand fill. Light theme fills with a
+     dark gold, so the label is white. */
+  --on-accent: var(--rv-parchment-000);
+  --focus-ring: var(--rv-gold-dark);
+
+  --status-success: var(--rv-success-on-light);
+  --status-warning: var(--rv-warning-on-light);
+  --status-serious: var(--rv-serious-on-light);
+  --status-critical: var(--rv-critical-on-light);
+  --status-information: var(--rv-information-on-light);
 }
 
+/* --- Layer 2: semantic tokens, Dark Vault ---------------------------------
+   Plain CSS has no mixin, so the Dark Vault values appear twice: once for the
+   OS preference and once for the explicit opt-in. The two blocks must stay
+   byte-identical; client/src/lib/theme.test.ts asserts that they do. */
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) {
     color-scheme: dark;
-    --surface-0: #0d0d0d;
-    --surface-1: #1a1a19;
-    --surface-2: #212120;
-    --text-primary: #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted: #898781;
-    --border-hairline: rgba(255, 255, 255, 0.1);
-    --border-strong: #383835;
-    --accent: #3987e5;
-    --accent-strong: #86b6ef;
-    --status-good: #0ca30c;
-    --status-warning: #fab219;
-    --status-serious: #ec835a;
-    --status-critical: #e66767;
+
+    --surface-canvas: var(--rv-graphite-950);
+    --surface-base: var(--rv-graphite-800);
+    --surface-raised: var(--rv-graphite-700);
+    --surface-inset: var(--rv-graphite-900);
+
+    --text-primary: var(--rv-bone-100);
+    --text-secondary: var(--rv-bone-300);
+    --text-muted: var(--rv-bone-500);
+
+    --border-subtle: var(--rv-graphite-600);
+    --border-strong: var(--rv-graphite-500);
+
+    --brand-accent: var(--rv-gold-bright);
+    --brand-accent-strong: var(--rv-gold-brighter);
+    --brand-accent-soft: var(--rv-gold-shadow);
+    /* Dark theme fills with a BRIGHT gold, so the label must be dark ink. A
+       white label on bright gold is roughly 1.9:1 and unreadable. */
+    --on-accent: var(--rv-ink-900);
+    --focus-ring: var(--rv-gold-brighter);
+
+    --status-success: var(--rv-success-on-dark);
+    --status-warning: var(--rv-warning-on-dark);
+    --status-serious: var(--rv-serious-on-dark);
+    --status-critical: var(--rv-critical-on-dark);
+    --status-information: var(--rv-information-on-dark);
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --surface-0: #0d0d0d;
-  --surface-1: #1a1a19;
-  --surface-2: #212120;
-  --text-primary: #ffffff;
-  --text-secondary: #c3c2b7;
-  --text-muted: #898781;
-  --border-hairline: rgba(255, 255, 255, 0.1);
-  --border-strong: #383835;
-  --accent: #3987e5;
-  --accent-strong: #86b6ef;
-  --status-good: #0ca30c;
-  --status-warning: #fab219;
-  --status-serious: #ec835a;
-  --status-critical: #e66767;
+
+  --surface-canvas: var(--rv-graphite-950);
+  --surface-base: var(--rv-graphite-800);
+  --surface-raised: var(--rv-graphite-700);
+  --surface-inset: var(--rv-graphite-900);
+
+  --text-primary: var(--rv-bone-100);
+  --text-secondary: var(--rv-bone-300);
+  --text-muted: var(--rv-bone-500);
+
+  --border-subtle: var(--rv-graphite-600);
+  --border-strong: var(--rv-graphite-500);
+
+  --brand-accent: var(--rv-gold-bright);
+  --brand-accent-strong: var(--rv-gold-brighter);
+  --brand-accent-soft: var(--rv-gold-shadow);
+  --on-accent: var(--rv-ink-900);
+  --focus-ring: var(--rv-gold-brighter);
+
+  --status-success: var(--rv-success-on-dark);
+  --status-warning: var(--rv-warning-on-dark);
+  --status-serious: var(--rv-serious-on-dark);
+  --status-critical: var(--rv-critical-on-dark);
+  --status-information: var(--rv-information-on-dark);
+}
+
+/* Canonical 4px rhythm, mirrored for consumers outside Tailwind's scale. */
+:root {
+  --rv-space-0: 0px;
+  --rv-space-1: 4px;
+  --rv-space-2: 8px;
+  --rv-space-3: 12px;
+  --rv-space-4: 16px;
+  --rv-space-5: 20px;
+  --rv-space-6: 24px;
+  --rv-space-8: 32px;
+  --rv-space-10: 40px;
+  --rv-space-12: 48px;
+  --rv-space-16: 64px;
+}
+
+/* --- Layer 3: Tailwind utility vocabulary --------------------------------- */
+@theme {
+  /* Surfaces — canonical names. */
+  --color-surface-canvas: var(--surface-canvas);
+  --color-surface-base: var(--surface-base);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-inset: var(--surface-inset);
+
+  /* Content. `ink` is the canonical content vocabulary and is already used
+     across the application; it maps onto the semantic text tokens. */
+  --color-ink: var(--text-primary);
+  --color-ink-secondary: var(--text-secondary);
+  --color-ink-muted: var(--text-muted);
+
+  /* Borders. */
+  --color-subtle: var(--border-subtle);
+  --color-strong: var(--border-strong);
+
+  /* Brand. `accent` is the canonical brand vocabulary at the utility layer;
+     the semantic layer beneath it is --brand-accent. */
+  --color-accent: var(--brand-accent);
+  --color-accent-strong: var(--brand-accent-strong);
+  --color-accent-soft: var(--brand-accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-focus-ring: var(--focus-ring);
+
+  /* Status — independent of brand. */
+  --color-success: var(--status-success);
+  --color-warning: var(--status-warning);
+  --color-serious: var(--status-serious);
+  --color-critical: var(--status-critical);
+  --color-information: var(--status-information);
+
+  /* ---- Compatibility aliases -------------------------------------------
+     The application predates this token system and uses these names in
+     hundreds of places. They are NOT deprecated-and-broken: they resolve to
+     the same semantic tokens, so existing pages keep rendering correctly
+     while later S1.6 slices migrate them deliberately. */
+  --color-surface-0: var(--surface-canvas);
+  --color-surface-1: var(--surface-base);
+  --color-surface-2: var(--surface-raised);
+  --color-hairline: var(--border-subtle);
+  --color-good: var(--status-success);
+
+  /* ---- Spacing -------------------------------------------------------
+     Tailwind's default scale ALREADY is the approved 4px rhythm (1=4px,
+     2=8px, 3=12px, 4=16px, 5=20px, 6=24px, 8=32px, 10=40px, 12=48px,
+     16=64px), so it is deliberately NOT redefined here: overriding the
+     explicit keys would drop the fractional steps (py-0.5, py-1.5) the
+     application already relies on. The canonical rhythm is mirrored as
+     --rv-space-* below for consumers outside Tailwind. */
+
+  /* ---- Radii ------------------------------------------------------------
+     `pill` is reserved for status/tag/avatar semantics. The application is
+     deliberately not pill-heavy. */
+  --radius-compact: 4px;
+  --radius-control: 6px;
+  --radius-instrument: 8px;
+  --radius-dialog: 12px;
+  --radius-pill: 9999px;
+
+  /* ---- Elevation --------------------------------------------------------
+     `base` has no shadow at all; `raised` separates with border and tone
+     rather than shadow. A critical overlay uses the SAME structural
+     elevation as any other overlay: risk raises the stakes, not the
+     decoration. */
+  --shadow-raised: none;
+  --shadow-overlay: 0 12px 32px -12px rgb(0 0 0 / 0.35), 0 2px 8px -4px rgb(0 0 0 / 0.25);
+  --shadow-critical-overlay: 0 12px 32px -12px rgb(0 0 0 / 0.35), 0 2px 8px -4px rgb(0 0 0 / 0.25);
+
+  /* ---- Motion: functional only ----------------------------------------- */
+  --ease-standard: cubic-bezier(0.2, 0, 0.15, 1);
+  --duration-control: 120ms;
+  --duration-disclosure: 180ms;
+  --duration-overlay: 240ms;
+
+  /* ---- Type families ---------------------------------------------------- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Barlow Condensed", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 * {
@@ -83,10 +292,20 @@ html, body, #root {
 
 body {
   margin: 0;
+  /* Operational typography. Everything dense, financial, or diagnostic reads
+     in the system UI stack; the display family is opt-in per role. */
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  background: var(--surface-0);
+  background: var(--surface-canvas);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Vault display type is opt-in through the generated `font-display` utility
+   only, so it cannot leak into tables, form fields, money, long prose, or
+   error text. This rule adds the tracking the family wants without redefining
+   the family itself. */
+.font-display {
+  letter-spacing: 0.01em;
 }
 
 ::-webkit-scrollbar {
@@ -101,6 +320,22 @@ body {
   background: transparent;
 }
 
+/* Money, counts, quantities, aligned timestamps and identifiers align on the
+   digit column rather than drifting per glyph width. */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* Functional motion only. An operator who has asked the OS for reduced motion
+   gets state changes without transitions — never a workflow that depends on an
+   animation to be understood. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

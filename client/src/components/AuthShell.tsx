@@ -223,7 +223,7 @@ function CreateWorkspacePanel({
         {error && <p className="text-xs text-critical">{error}</p>}
         <button
           type="submit"
-          className="mt-1 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+          className="mt-1 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-on-accent hover:opacity-90"
         >
           Create workspace
         </button>
@@ -284,7 +284,7 @@ function AuthForm({ error, controller }: { error?: string; controller: AuthShell
           {error && <p className="text-xs text-critical">{error}</p>}
           <button
             type="submit"
-            className="mt-1 flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+            className="mt-1 flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-on-accent hover:opacity-90"
           >
             <Mail className="h-4 w-4" /> Send reset link
           </button>
@@ -343,7 +343,7 @@ function AuthForm({ error, controller }: { error?: string; controller: AuthShell
         {error && <p className="text-xs text-critical">{friendlyAuthError(mode, error)}</p>}
         <button
           type="submit"
-          className="mt-1 flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+          className="mt-1 flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-on-accent hover:opacity-90"
         >
           {mode === 'sign-in' ? <Lock className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
           {mode === 'sign-in' ? 'Sign in' : 'Create account'}

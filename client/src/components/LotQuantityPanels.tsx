@@ -194,7 +194,7 @@ export function QuantityPanel({
       <button
         onClick={submit}
         disabled={!validation.ok || busy}
-        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-on-accent disabled:opacity-50"
       >
         {busy ? 'Saving…' : mode === 'recount' ? 'Apply recount' : 'Apply adjustment'}
       </button>
@@ -303,7 +303,7 @@ export function SplitPanel({
       <button
         onClick={submit}
         disabled={!validation.ok || busy}
-        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+        className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-on-accent disabled:opacity-50"
       >
         {busy ? 'Splitting…' : 'Split lot'}
       </button>
@@ -423,7 +423,7 @@ export function MergePanel({
           <button
             onClick={submit}
             disabled={chosen.size === 0 || busy}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-on-accent disabled:opacity-50"
           >
             {busy ? 'Merging…' : `Merge ${chosen.size} lot${chosen.size === 1 ? '' : 's'} into this one`}
           </button>

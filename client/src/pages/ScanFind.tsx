@@ -123,7 +123,7 @@ export default function ScanFind() {
         <button
           type="submit"
           disabled={busy}
-          className="rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-white disabled:opacity-50"
+          className="rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-on-accent disabled:opacity-50"
         >
           {busy ? 'Finding…' : 'Find'}
         </button>

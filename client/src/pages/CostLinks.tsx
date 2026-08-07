@@ -171,7 +171,7 @@ export default function CostLinks() {
             <button
               onClick={() => createLink.mutate()}
               disabled={createLink.isPending}
-              className="rounded-lg bg-accent text-white px-4 py-2 text-sm font-medium hover:bg-accent-strong disabled:opacity-50"
+              className="rounded-lg bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:bg-accent-strong disabled:opacity-50"
             >
               {createLink.isPending ? 'Linking…' : 'Create link'}
             </button>

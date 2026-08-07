@@ -184,7 +184,7 @@ export default function Sales() {
               <button
                 onClick={() => createSale.mutate()}
                 disabled={createSale.isPending}
-                className="rounded-lg bg-accent text-white px-4 py-2 text-sm font-medium hover:bg-accent-strong disabled:opacity-50"
+                className="rounded-lg bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:bg-accent-strong disabled:opacity-50"
               >
                 {createSale.isPending ? 'Recording…' : 'Record sale'}
               </button>

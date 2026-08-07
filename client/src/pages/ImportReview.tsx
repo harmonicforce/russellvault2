@@ -165,7 +165,7 @@ export default function ImportReview() {
             </select>
           </label>
           <button
-            className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+            className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-on-accent disabled:opacity-40"
             onClick={openWorkspace}
             disabled={state.busy || !workspaceId.trim()}
           >
@@ -239,7 +239,7 @@ export default function ImportReview() {
                 Preview
               </button>
               <button
-                className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-on-accent disabled:opacity-40"
                 onClick={() => void controller.commit(runLabel)}
                 disabled={disabled || !state.preview}
               >

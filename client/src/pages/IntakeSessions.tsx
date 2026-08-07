@@ -107,7 +107,7 @@ export default function IntakeSessions() {
         <button
           type="button"
           onClick={() => navigate('/quick-add')}
-          className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white"
+          className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-on-accent"
         >
           <PackagePlus className="h-4 w-4" /> Start new session
         </button>
@@ -148,7 +148,7 @@ export default function IntakeSessions() {
                       <button
                         type="button"
                         onClick={() => resume(s)}
-                        className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white"
+                        className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-on-accent"
                       >
                         Resume
                       </button>
