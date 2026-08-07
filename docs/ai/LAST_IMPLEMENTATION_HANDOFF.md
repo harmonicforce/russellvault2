@@ -72,6 +72,21 @@ It restores the S1.3 semantics and adds the exclusion filter to them: `total` co
 
 `npm ci` (root/client/server), `npm run lint`, `npm run typecheck`, `npm run build:ci`, `npm test`, `node --test scripts/db/guard.test.mjs`, `node --test scripts/ci/client-audit-gate.test.mjs`, `npm run db:reset`, `npm run db:test`, `git diff --check`. Lint reports only pre-existing warnings in files this work did not touch.
 
+### Exact-head CI
+
+Head `44f80318bde61026f556844f3a099816e4ad1178`, workflow run **31172593688** — **all four jobs green**:
+
+| Job | Conclusion |
+| --- | --- |
+| `build-and-verify` | success |
+| `shadow-db-postgres-shim` | success |
+| `shadow-db-supabase-stack` | success |
+| `dev-advisory-report` | success |
+
+Both database tiers independently confirm the same total. The shim tier logged `all test files passed (2300 assertions)`; the authoritative Supabase-stack tier logged `All tests successful. Files=63, Tests=2300, Result: PASS`, matching the local run exactly.
+
+The previous head `ddb0b235` was green on three of four: `shadow-db-supabase-stack` failed on assertions 58-59 of test 63. That was a genuine defect in the new test, not infrastructure and not a flake — see risk 4 — and it was fixed on this same branch rather than rerun.
+
 ### Remaining risks
 
 1. **`15_acquisition_digest_parity.sql` remains performance-flaky in this container.** It was classified against the known pattern rather than assumed: one backend pinned at ~91 % CPU with CPU-time equal to elapsed, zero ungranted locks, inside `app.compute_acquisition_plan_digest`, and the file references none of the objects changed here (verified by grep) and runs *before* test 63 alphabetically. A local PostgreSQL restart clears it. It is pre-existing and untouched; a rerun is the correct response if it times out on CI.
