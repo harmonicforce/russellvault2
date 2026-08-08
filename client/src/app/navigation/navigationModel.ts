@@ -30,24 +30,84 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { AppConfigMode } from '../../lib/appConfig';
+import { DOMAIN_TOPOLOGY, isAuthoritative, type DataBackend } from '../../lib/dataTopology';
+
+// WHY THIS MODEL DOES NOT HAVE AN "AUTHORITY" FIELD ANY MORE
+//
+// It used to. `NavAuthority = 'governed' | 'legacy' | 'tool'` was described as
+// "how much a destination's data can be trusted" — but `tool` is not an answer
+// to that question at all. It is a statement about where a destination sits in
+// the menu. Folding a navigational role into a truth claim produced two false
+// classifications that shipped:
+//
+//   - `/checks` was `tool`, so it rendered with no marker. It reads
+//     `/api/checks`, which is `getDb()` — SQLite. A NON-AUTHORITATIVE legacy
+//     surface was being presented as an ordinary diagnostic.
+//   - `/` was `governed`. Dashboard renders the governed operations sections
+//     AND the legacy `/dashboard` panel it labels "Legacy spreadsheet-imported
+//     inventory". No single authority value is true of that page.
+//
+// A test then made the defect durable by requiring every primary destination
+// to be `governed` — green, and proving something false.
+//
+// The two questions are now separate. GROUPING says what a destination is for;
+// this says what it reads.
 
 /**
- * How much a destination's data can be trusted.
+ * What a ROUTE SURFACE renders, in terms of source composition.
  *
- * This is a truth claim, not decoration. `legacy` means the SQLite system,
- * which is non-authoritative — the shell marks it so the operator can never
- * mistake a legacy number for a governed one.
+ * `mixed` describes a rendered page that draws on both systems. It is NOT a
+ * third backend — there are exactly two, `dataTopology` names them, and
+ * inventing a third here would repeat the mistake `dataAdapter.ts` made when it
+ * claimed one global backend for the whole application.
  */
-export type NavAuthority = 'governed' | 'legacy' | 'tool';
+export type NavDataComposition = 'governed-only' | 'legacy-only' | 'mixed';
 
 export interface NavDestination {
   /** Router path. Must match a route AppRoutes actually mounts. */
   readonly to: string;
   readonly label: string;
   readonly icon: LucideIcon;
-  readonly authority: NavAuthority;
+  /**
+   * Which backends this route surface actually reads, verified from the page's
+   * own transports rather than inferred from its path or its menu group.
+   *
+   * This records BACKENDS, not authority. Whether a backend is authoritative is
+   * `dataTopology`'s answer, and it is asked rather than copied — see the
+   * boundary note on `backendIsNonAuthoritative`.
+   */
+  readonly reads: readonly DataBackend[];
   /** Exact-match only. `/` and legacy `/inventory` both need it. */
   readonly end?: boolean;
+}
+
+const READS_GOVERNED: readonly DataBackend[] = ['governed-supabase'];
+const READS_LEGACY: readonly DataBackend[] = ['legacy-sqlite-rest'];
+const READS_BOTH: readonly DataBackend[] = ['governed-supabase', 'legacy-sqlite-rest'];
+
+/**
+ * Is every domain stored on this backend non-authoritative?
+ *
+ * THE BOUNDARY WITH `dataTopology`. That module owns backend and domain
+ * authority; this module owns what a route surface renders. They answer
+ * different questions and neither proves the other. Navigation therefore keeps
+ * no authority table of its own — it asks. If `dataTopology` ever reclassified
+ * a backend, the shell's markers would follow rather than silently disagree.
+ */
+function backendIsNonAuthoritative(backend: DataBackend): boolean {
+  const domains = DOMAIN_TOPOLOGY.filter((entry) => entry.backend === backend);
+  return domains.length > 0 && domains.every((entry) => !isAuthoritative(entry.domain));
+}
+
+/**
+ * Derived, never hand-written, so a destination's marker cannot drift from the
+ * backends it was recorded as reading.
+ */
+export function compositionOf(destination: NavDestination): NavDataComposition {
+  const nonAuthoritative = destination.reads.filter(backendIsNonAuthoritative);
+  if (nonAuthoritative.length === 0) return 'governed-only';
+  if (nonAuthoritative.length === destination.reads.length) return 'legacy-only';
+  return 'mixed';
 }
 
 export interface NavGroup {
@@ -78,8 +138,8 @@ const HOME: NavGroup = {
   id: 'home',
   label: 'Home',
   destinations: [
-    { to: '/', label: 'Dashboard', icon: LayoutDashboard, authority: 'governed', end: true },
-    { to: '/workbench', label: 'Daily Workbench', icon: ListChecks, authority: 'governed' },
+    { to: '/', label: 'Dashboard', icon: LayoutDashboard, reads: READS_BOTH, end: true },
+    { to: '/workbench', label: 'Daily Workbench', icon: ListChecks, reads: READS_GOVERNED },
   ],
 };
 
@@ -90,13 +150,13 @@ const INVENTORY: NavGroup = {
   id: 'inventory',
   label: 'Inventory',
   destinations: [
-    { to: '/inventory/current', label: 'Current Inventory', icon: Boxes, authority: 'governed' },
-    { to: '/scan', label: 'Scan or Find', icon: ScanLine, authority: 'governed' },
-    { to: '/intake-sessions', label: 'Intake Sessions', icon: ClipboardList, authority: 'governed' },
-    { to: '/locations', label: 'Locations', icon: MapPin, authority: 'governed' },
-    { to: '/cycle-counts', label: 'Cycle Counts', icon: ClipboardCheck, authority: 'governed' },
-    { to: '/corrections', label: 'Corrections', icon: FileWarning, authority: 'governed' },
-    { to: '/photo-issues', label: 'Photo Issues', icon: FileWarning, authority: 'governed' },
+    { to: '/inventory/current', label: 'Current Inventory', icon: Boxes, reads: READS_GOVERNED },
+    { to: '/scan', label: 'Scan or Find', icon: ScanLine, reads: READS_GOVERNED },
+    { to: '/intake-sessions', label: 'Intake Sessions', icon: ClipboardList, reads: READS_GOVERNED },
+    { to: '/locations', label: 'Locations', icon: MapPin, reads: READS_GOVERNED },
+    { to: '/cycle-counts', label: 'Cycle Counts', icon: ClipboardCheck, reads: READS_GOVERNED },
+    { to: '/corrections', label: 'Corrections', icon: FileWarning, reads: READS_GOVERNED },
+    { to: '/photo-issues', label: 'Photo Issues', icon: FileWarning, reads: READS_GOVERNED },
   ],
 };
 
@@ -104,8 +164,8 @@ const ACQUIRE: NavGroup = {
   id: 'acquire',
   label: 'Acquire',
   destinations: [
-    { to: '/acquisitions', label: 'Acquisitions', icon: ShoppingBag, authority: 'governed' },
-    { to: '/quick-add', label: 'Add Inventory', icon: PackagePlus, authority: 'governed' },
+    { to: '/acquisitions', label: 'Acquisitions', icon: ShoppingBag, reads: READS_GOVERNED },
+    { to: '/quick-add', label: 'Add Inventory', icon: PackagePlus, reads: READS_GOVERNED },
   ],
 };
 
@@ -113,7 +173,7 @@ const SELL: NavGroup = {
   id: 'sell',
   label: 'Sell',
   destinations: [
-    { to: '/listing-prep', label: 'Listing Prep', icon: Tags, authority: 'governed' },
+    { to: '/listing-prep', label: 'Listing Prep', icon: Tags, reads: READS_GOVERNED },
   ],
 };
 
@@ -144,22 +204,26 @@ const LEGACY: NavGroup = {
   id: 'legacy',
   label: 'Legacy application',
   destinations: [
-    { to: '/inventory', label: 'Legacy Inventory', icon: Package, authority: 'legacy', end: true },
-    { to: '/purchases', label: 'Whatnot Purchases', icon: ShoppingBag, authority: 'legacy' },
-    { to: '/cost-links', label: 'Cost Basis Links', icon: Link2, authority: 'legacy' },
-    { to: '/listings', label: 'eBay Listings', icon: Tag, authority: 'legacy' },
-    { to: '/sales', label: 'Sales', icon: DollarSign, authority: 'legacy' },
+    { to: '/inventory', label: 'Legacy Inventory', icon: Package, reads: READS_LEGACY, end: true },
+    { to: '/purchases', label: 'Whatnot Purchases', icon: ShoppingBag, reads: READS_LEGACY },
+    { to: '/cost-links', label: 'Cost Basis Links', icon: Link2, reads: READS_LEGACY },
+    { to: '/listings', label: 'eBay Listings', icon: Tag, reads: READS_LEGACY },
+    { to: '/sales', label: 'Sales', icon: DollarSign, reads: READS_LEGACY },
   ],
 };
 
+// A group is a NAVIGATIONAL role, not a source claim, and this group proves it:
+// three of these diagnostics read the governed backend and Health Checks reads
+// SQLite. Grouping cannot determine authority — encoding "tool" AS an authority
+// is exactly what let /checks go unmarked.
 const TOOLS: NavGroup = {
   id: 'tools',
   label: 'Tools and diagnostics',
   destinations: [
-    { to: '/import-review', label: 'Import Review', icon: FileSearch, authority: 'tool' },
-    { to: '/acquisition-review', label: 'Acquisition Review', icon: Layers, authority: 'tool' },
-    { to: '/inventory-identity', label: 'Identity Diagnostics', icon: Boxes, authority: 'tool' },
-    { to: '/checks', label: 'Health Checks', icon: ShieldCheck, authority: 'tool' },
+    { to: '/import-review', label: 'Import Review', icon: FileSearch, reads: READS_GOVERNED },
+    { to: '/acquisition-review', label: 'Acquisition Review', icon: Layers, reads: READS_GOVERNED },
+    { to: '/inventory-identity', label: 'Identity Diagnostics', icon: Boxes, reads: READS_GOVERNED },
+    { to: '/checks', label: 'Health Checks', icon: ShieldCheck, reads: READS_LEGACY },
   ],
 };
 
@@ -176,17 +240,24 @@ const TOOLS: NavGroup = {
 // unmissably; repeating it on every row would be noise that dilutes the marking
 // where it actually discriminates — the governed-mode sidebar, where legacy and
 // governed sit on the same screen.
+// Dashboard reads LEGACY ONLY here, not both.
+//
+// In governed mode it renders the governed operations sections alongside the
+// legacy panel. In this mode `getProvenanceUiConfig()` returns null, so
+// `WorkspaceSummarySection` never mounts and the legacy aggregate is the whole
+// page. Recording it as mixed would claim a governed section this deployment
+// cannot render.
 const LEGACY_ONLY: NavGroup = {
   id: 'legacy-only',
   label: 'Operations',
   destinations: [
-    { to: '/', label: 'Dashboard', icon: LayoutDashboard, authority: 'legacy', end: true },
-    { to: '/inventory', label: 'Inventory', icon: Package, authority: 'legacy', end: true },
-    { to: '/purchases', label: 'Whatnot Purchases', icon: ShoppingBag, authority: 'legacy' },
-    { to: '/cost-links', label: 'Cost Basis Links', icon: Link2, authority: 'legacy' },
-    { to: '/listings', label: 'eBay Listings', icon: Tag, authority: 'legacy' },
-    { to: '/sales', label: 'Sales', icon: DollarSign, authority: 'legacy' },
-    { to: '/checks', label: 'Health Checks', icon: ShieldCheck, authority: 'tool' },
+    { to: '/', label: 'Dashboard', icon: LayoutDashboard, reads: READS_LEGACY, end: true },
+    { to: '/inventory', label: 'Inventory', icon: Package, reads: READS_LEGACY, end: true },
+    { to: '/purchases', label: 'Whatnot Purchases', icon: ShoppingBag, reads: READS_LEGACY },
+    { to: '/cost-links', label: 'Cost Basis Links', icon: Link2, reads: READS_LEGACY },
+    { to: '/listings', label: 'eBay Listings', icon: Tag, reads: READS_LEGACY },
+    { to: '/sales', label: 'Sales', icon: DollarSign, reads: READS_LEGACY },
+    { to: '/checks', label: 'Health Checks', icon: ShieldCheck, reads: READS_LEGACY },
   ],
 };
 

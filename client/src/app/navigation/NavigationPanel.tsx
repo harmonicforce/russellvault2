@@ -5,7 +5,13 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { ChevronDown } from 'lucide-react';
-import type { NavDestination, NavGroup, NavigationModel } from './navigationModel';
+import {
+  compositionOf,
+  type NavDataComposition,
+  type NavDestination,
+  type NavGroup,
+  type NavigationModel,
+} from './navigationModel';
 
 /**
  * Active state is carried by background, weight, and a gold rail — never by
@@ -25,17 +31,34 @@ function Destination({ item, onNavigate }: { item: NavDestination; onNavigate?: 
     <NavLink to={item.to} end={item.end} className={destinationClass} onClick={onNavigate}>
       <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
       <span className="min-w-0 truncate">{item.label}</span>
-      {/*
-        The legacy marking is words, not a colour. An operator who cannot
-        distinguish the palette still reads "Non-authoritative", and a screen
-        reader announces it as part of the link's accessible name.
-      */}
-      {item.authority === 'legacy' && (
-        <span className="ml-auto shrink-0 rounded-pill border border-hairline px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
-          Non-authoritative
-        </span>
-      )}
+      <NavMarker composition={compositionOf(item)} />
     </NavLink>
+  );
+}
+
+/**
+ * The source marking. Words, not colour: an operator who cannot distinguish the
+ * palette still reads it, and it lands inside the link so a screen reader
+ * announces it as part of the accessible name.
+ *
+ * The two markings are deliberately DIFFERENT CLAIMS:
+ *
+ *   legacy-only  the whole surface is non-authoritative;
+ *   mixed        part of it is governed and part is not. Branding the whole
+ *                page "Non-authoritative" would be as wrong as calling it
+ *                governed, so it states the fact that is actually true —
+ *                legacy data is present — without inviting the operator to
+ *                combine the two into one total.
+ *
+ * governed-only carries nothing. A badge on every row makes the badge
+ * furniture, and furniture is not read.
+ */
+function NavMarker({ composition }: { composition: NavDataComposition }) {
+  if (composition === 'governed-only') return null;
+  return (
+    <span className="ml-auto shrink-0 rounded-pill border border-hairline px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+      {composition === 'legacy-only' ? 'Non-authoritative' : 'Includes legacy data'}
+    </span>
   );
 }
 

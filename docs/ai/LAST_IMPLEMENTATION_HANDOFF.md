@@ -1,5 +1,93 @@
 # Last Implementation Handoff
 
+## S1.6.2 post-merge repair — Navigation Source-Truth Model
+
+Bounded corrective PR for the already-merged S1.6.2 shell. **Not a CI repair** —
+PR #54's exact-head CI was genuinely green. A post-merge acceptance audit found
+that S1.6.2 had introduced a false semantic invariant in the navigation model.
+
+### Lineage and base
+
+- Branch: `claude/s1-6-2-navigation-source-truth-repair`.
+- Base SHA: `ce3be2e904cfda1c664280f0eba851aeb66485cb` — current `main` matched the expected PR #54 merge commit exactly. **No drift.**
+- PR #54 implementation head `6c3a2ac270cc60ebd4091a883a119891b6179882`; exact-head CI run `31218786171`, four jobs green.
+
+### The defect
+
+`NavAuthority = 'governed' | 'legacy' | 'tool'` was documented as "how much a
+destination's data can be trusted". But `tool` answers a different question —
+where a destination sits in the menu. Conflating a navigational role with a
+truth claim produced two false classifications, both verified from
+implementation before being corrected:
+
+- **`/checks`** was `authority: 'tool'` and therefore rendered with **no
+  marker**. `Checks.tsx` calls `get('/checks')` → `/api/checks` →
+  `server/src/routes/checks.ts` → `getDb()` → SQLite. It is legacy-backed and
+  non-authoritative.
+- **`/`** was `authority: 'governed'`. `Dashboard.tsx` renders
+  `WorkspaceSummarySection` (governed operations transport) **and**
+  `get('/dashboard')` under its "Legacy spreadsheet-imported inventory" heading.
+  No single authority value is true of it.
+
+A test made this durable by requiring every primary destination to be
+`authority === 'governed'` — green, and proving something false.
+
+### The replacement
+
+`NavDataComposition = 'governed-only' | 'legacy-only' | 'mixed'`, **derived**
+from a per-destination `reads: readonly DataBackend[]` recording which backends
+that route surface actually reads.
+
+`mixed` describes a rendered page's composition, **never a third backend**.
+There are exactly two and `dataTopology` names them.
+
+Navigation keeps **no authority table of its own**. `backendIsNonAuthoritative`
+asks `dataTopology`, so a reclassification there propagates instead of silently
+disagreeing. The two models answer different questions and neither proves the
+other; that boundary is stated in code and in both documents.
+
+All 21 advertised destinations were classified by inspecting each page's
+transports, not by name. Result matched the expected classification exactly.
+One additional truth the audit surfaced: Dashboard is `mixed` in governed mode
+but `legacy-only` in a legacy-only deployment, where `getProvenanceUiConfig()`
+is null and the governed sections never mount.
+
+### Operator-facing marking
+
+| Composition | Marker |
+| --- | --- |
+| `governed-only` | none |
+| `legacy-only` | **Non-authoritative** |
+| `mixed` | **Includes legacy data** |
+
+Both markings are words inside the link, so they are part of its accessible
+name. A mixed page is never branded wholly non-authoritative — its governed
+sections are authoritative — and never invites combining the two totals.
+Dashboard's internal "Legacy spreadsheet-imported inventory" heading is
+unchanged.
+
+### Tests
+
+Client **873 → 907** (+34), 48 files, all passing. The false invariant was
+deleted and replaced with truthful ones covering composition per destination,
+the grouping/authority separation, and the rendered markers on both surfaces.
+
+Verified load-bearing: re-running the new suite against the old classification
+(`/checks` as a governed tool, `/` as governed) and the old single-marker
+renderer fails **7** tests — 3 model, 4 rendered.
+
+### Remaining risks
+
+1. Composition is recorded per destination and verified by inspection; nothing mechanically ties `reads` to a page's imports, so a future page that adds a legacy call would need its entry updated. A lint-style cross-check is possible but was out of scope here.
+2. `dataTopology` program debt around acquisition-domain coverage and the legacy purchase-write cutover is untouched, by instruction.
+3. Marker copy has not been reviewed by an operator; "Includes legacy data" is concise and truthful but is a first formulation.
+
+### Next checkpoint
+
+**S1.6.3 — Data and Overlay Primitives.** Not started.
+
+---
+
 ## S1.6.2 — Governed Application Shell
 
 Second slice of the seven-slice S1.6 program. Separates the application shell

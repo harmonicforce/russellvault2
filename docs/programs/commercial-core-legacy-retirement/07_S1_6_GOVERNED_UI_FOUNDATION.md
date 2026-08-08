@@ -263,11 +263,65 @@ Intake Sessions appears in **Inventory only**. Intake touches acquisition and
 inventory both, but a destination listed under two domains teaches the operator
 that the grouping carries no meaning.
 
+> **Primary navigation is an operational grouping, not a proof of data
+> authority.** Membership in a governed domain says a destination is part of
+> daily governed workflow. It does not certify that everything the page renders
+> comes from the governed backend — Dashboard sits in Home and is mixed-source.
+> Source composition is recorded per destination and derived, never inferred
+> from the group.
+
+### Source composition, and why it is separate from grouping
+
+Each destination records **which backends its route surface reads**, verified
+from the page's own transports. The marker shown to the operator is *derived*
+from that, so a badge cannot drift from the fact it describes:
+
+| Composition | Meaning | Marker |
+| --- | --- | --- |
+| `governed-only` | Every section reads the governed backend | none |
+| `legacy-only` | The whole surface is non-authoritative | **Non-authoritative** |
+| `mixed` | Governed and legacy sections on one page | **Includes legacy data** |
+
+**`mixed` is a description of a rendered page, not a third backend.** There are
+exactly two — `dataTopology` names them — and inventing a third here would
+repeat the error `dataAdapter.ts` made in claiming one global backend.
+
+This replaced an earlier `NavAuthority = 'governed' | 'legacy' | 'tool'` field
+that conflated two orthogonal questions: what a destination is *for*, and what
+it *reads*. `tool` is an answer to the first masquerading as an answer to the
+second, and it produced two false classifications:
+
+- **Health Checks** was `tool` and therefore unmarked. `/checks` reads
+  `/api/checks`, which is `getDb()` — SQLite. It is a **legacy-backed
+  diagnostic and non-authoritative**, and now says so.
+- **Dashboard** was `governed`. It renders the governed operations sections
+  *and* the legacy `/dashboard` panel it labels "Legacy spreadsheet-imported
+  inventory". It is a **mixed-source route with a labelled legacy region**, and
+  no single authority value was ever true of it.
+
+A test had made the defect durable by requiring every primary destination to be
+`governed` — green, and proving something false. The invariants are now
+truthful: no legacy-only destination sits in a governed domain, every legacy-only
+destination carries its marker, and Dashboard is mixed.
+
+Dashboard is `mixed` in governed mode but `legacy-only` in a legacy-only
+deployment, where `getProvenanceUiConfig()` is null and the governed sections
+never mount.
+
+**Boundary with `dataTopology`.** That module owns backend and domain
+authority. The navigation model owns what a route surface renders. They answer
+different questions and **neither proves the other**. Navigation keeps no
+authority table of its own — it asks `dataTopology` whether a backend is
+authoritative, so a reclassification there propagates rather than silently
+disagreeing.
+
 ### Tools and legacy separation
 
 Legacy and diagnostic destinations live in a separate, collapsed disclosure
-below a rule — never inside a governed domain. Legacy destinations carry a
-**"Non-authoritative"** marker in words, not by colour alone.
+below a rule — no legacy-only destination sits inside a governed domain.
+
+Grouping and authority are independent, and the Tools group is the proof: it
+legitimately holds three governed diagnostics *and* one legacy-backed one.
 
 Legacy `/inventory` previously sat in the primary governed list directly above
 the governed inventory destinations, labelled only "Legacy Inventory". It is now

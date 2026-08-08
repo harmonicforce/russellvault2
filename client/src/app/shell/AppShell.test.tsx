@@ -137,6 +137,91 @@ describe('governed, tools, and legacy stay separated', () => {
     expect(legacyLink.textContent).toContain('Non-authoritative');
   });
 
+  // Health Checks reads /api/checks, which is getDb() — SQLite. It was
+  // classified as a "tool" and therefore rendered with no marker at all, so
+  // the shell presented a non-authoritative surface as an ordinary diagnostic.
+  it('marks Health Checks non-authoritative, because it is SQLite-backed', () => {
+    const { container } = renderShell();
+    const nav = within(sidebar(container));
+    fireEvent.click(nav.getByText(/Tools & legacy/).closest('button')!);
+    const link = nav.getByText('Health Checks').closest('a')!;
+    expect(link.textContent).toContain('Non-authoritative');
+  });
+
+  // The Tools group holds three governed diagnostics and one legacy-backed
+  // one. Grouping is a navigational role; it cannot decide authority.
+  it('leaves the governed diagnostics in that same group unmarked', () => {
+    const { container } = renderShell();
+    const nav = within(sidebar(container));
+    fireEvent.click(nav.getByText(/Tools & legacy/).closest('button')!);
+    for (const label of ['Import Review', 'Acquisition Review', 'Identity Diagnostics']) {
+      const link = nav.getByText(label).closest('a')!;
+      expect(link.textContent).not.toContain('Non-authoritative');
+      expect(link.textContent).not.toContain('Includes legacy data');
+    }
+  });
+});
+
+describe('mixed-source destinations state their composition', () => {
+  // Dashboard renders the governed operations sections AND the legacy
+  // /dashboard panel it labels "Legacy spreadsheet-imported inventory". It was
+  // recorded as uniformly governed, which is not true of it.
+  it('tells the operator that Dashboard includes legacy data, without opening any disclosure', () => {
+    const { container } = renderShell();
+    const link = within(sidebar(container)).getByText('Dashboard').closest('a')!;
+    expect(link.textContent).toContain('Includes legacy data');
+  });
+
+  // Calling the whole page non-authoritative would be as wrong as calling it
+  // governed: its operations sections ARE authoritative.
+  it('does not brand the whole mixed page non-authoritative', () => {
+    const { container } = renderShell();
+    const link = within(sidebar(container)).getByText('Dashboard').closest('a')!;
+    expect(link.textContent).not.toContain('Non-authoritative');
+  });
+
+  it('leaves every governed-only destination unmarked', () => {
+    const { container } = renderShell();
+    const nav = within(sidebar(container));
+    for (const label of [
+      'Daily Workbench', 'Current Inventory', 'Scan or Find', 'Intake Sessions',
+      'Locations', 'Cycle Counts', 'Corrections', 'Photo Issues',
+      'Acquisitions', 'Add Inventory', 'Listing Prep',
+    ]) {
+      const link = nav.getByText(label).closest('a')!;
+      expect(link.textContent, `${label} gained a false legacy warning`).toBe(label);
+    }
+  });
+
+  // A marker only works if it is read. Both markings are text inside the
+  // link, so they are part of its accessible name.
+  it('carries both markings as text, never as colour alone', () => {
+    const { container } = renderShell();
+    const nav = within(sidebar(container));
+    const named = (label: string, marker: string) => (name: string) =>
+      name.includes(label) && name.toLowerCase().includes(marker.toLowerCase());
+    expect(nav.getByRole('link', { name: named('Dashboard', 'Includes legacy data') })).toBeTruthy();
+    fireEvent.click(nav.getByText(/Tools & legacy/).closest('button')!);
+    expect(nav.getByRole('link', { name: named('Health Checks', 'Non-authoritative') })).toBeTruthy();
+  });
+
+  // Desktop and drawer read the same model, so the markers cannot differ.
+  it('renders identical destination text in the sidebar and the drawer', () => {
+    const { container } = renderShell();
+    const open = (root: HTMLElement) =>
+      fireEvent.click(within(root).getByText(/Tools & legacy/).closest('button')!);
+    open(sidebar(container));
+    const sidebarText = [...sidebar(container).querySelectorAll('a')].map((a) => a.textContent);
+
+    const drawer = openDrawer();
+    open(drawer);
+    const drawerText = [...screen.getByRole('dialog', { name: 'Navigation' }).querySelectorAll('a')]
+      .map((a) => a.textContent);
+    expect(drawerText).toEqual(sidebarText);
+    expect(drawerText.some((t) => t?.includes('Includes legacy data'))).toBe(true);
+    expect(drawerText.some((t) => t?.includes('Non-authoritative'))).toBe(true);
+  });
+
   it('advertises no legacy destination inside a governed domain', () => {
     const { container } = renderShell();
     const nav = sidebar(container);

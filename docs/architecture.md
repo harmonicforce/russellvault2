@@ -602,9 +602,24 @@ entered from a record, not a menu. Nothing planned is listed: no Settings
 domain, because no `/settings` route exists; no Intelligence domain, because no
 valuation, pricing, or analytics route exists. There is no role-based route
 hiding, because the application applies none — inventing it in the shell would
-be a lock on the menu rather than on the door. Legacy destinations sit in a
+be a lock on the menu rather than on the door. Legacy-only destinations sit in a
 separate collapsed area, marked "Non-authoritative" in words, never inside a
 governed domain.
+
+**Navigation grouping is operational, not a data-authority proof.** Each
+destination records which backends its route surface actually reads, and the
+operator-facing marker is derived from that rather than from the group it sits
+in: `legacy-only` reads "Non-authoritative", `mixed` reads "Includes legacy
+data", and `governed-only` carries nothing. `mixed` describes a rendered page's
+composition — it is **not a third backend**; there are exactly two, and
+`dataTopology` names them. Dashboard is mixed, because it renders the governed
+operations sections alongside the legacy panel it labels "Legacy
+spreadsheet-imported inventory"; Health Checks is a legacy-backed diagnostic,
+because `/api/checks` is SQLite. Neither could be described by the earlier
+`'governed' | 'legacy' | 'tool'` field, which folded a menu role into a truth
+claim and left both mislabelled. `dataTopology` owns backend and domain
+authority; navigation owns what a surface renders; neither model proves the
+other, and navigation asks rather than keeping its own copy.
 
 **The System Truth Region is outside the routed subtree.** Navigation cannot
 unmount it, no page can suppress it, and no future layout customization can
