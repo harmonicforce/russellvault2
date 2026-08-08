@@ -1,5 +1,200 @@
 # Last Implementation Handoff
 
+## S1.6.4 — Workbench Foundation
+
+The customizable Workbench architecture, with the Daily Workbench and the
+governed Home region migrated onto it. No database change, no server change, no
+S2 semantics.
+
+### Lineage and base
+
+- Branch: `claude/s1-6-4-workbench-foundation`.
+- Base SHA: `83a7778b7f1109f2771bf938012de1084b0a47d0` — current `main` matched the expected SHA exactly. **No drift.**
+- `git merge-base --is-ancestor 9797995e63a9e16e5da96ed987ee8491bdfc9ff3 HEAD` → true. The S1.6.3 merge and its implementation head `4900e05` are both ancestors.
+- Main carries both parallel predecessors: S1.6.3 (PR #57, merge `9797995`) and S2.1 receiving schema (PR #56, merge `83a7778`).
+
+### Parallel isolation held
+
+`supabase/**`, `docs/programs/.../08_S2_RECEIVING_AND_COST_BASIS.md` and
+`docs/ai/CURRENT_STATE.md` are untouched — `git status` reports zero changes
+across all three. No receiving or cost-basis behaviour was implemented.
+
+### What was built
+
+All under `client/src/workbench/`.
+
+| Module | Owns |
+| --- | --- |
+| `registry/widgetDefinition.ts` | The typed contract; availability resolution |
+| `registry/definitions.ts` | The nine shipped definitions |
+| `registry/widgetRegistry.ts` | Lookup and availability filtering |
+| `layout/layoutModel.ts` | Instances, defaults, repair, pure mutations |
+| `layout/layoutStore.ts` | The port and the key identity |
+| `layout/browserLayoutStore.ts` | The only file touching `localStorage` |
+| `presentation/grid.ts` | CSS Grid mapping and size spans |
+| `presentation/WidgetFrame.tsx` | Families and edit furniture |
+| `interaction/WorkbenchInteractionAdapter.tsx` | The only file importing @dnd-kit |
+| `data/workbenchFacts.ts` | Per-source TruthState from existing transports |
+| `widgets/widgetRenderers.tsx` | Widget bodies |
+| `WidgetCatalog.tsx`, `WorkbenchSurface.tsx`, `useWorkbenchLayout.ts`, `useWorkbenchContext.ts` | Surface, catalogue, controller, wiring |
+
+### dnd-kit version and rationale
+
+`@dnd-kit/react@0.5.0` and `@dnd-kit/dom@0.5.0`, both pinned exactly
+(`--save-exact`). `0.5.0` is the package's `latest` dist-tag and its newest
+**stable** release. The registry also publishes a `0.5.1-beta-*` stream; a
+prerelease was not adopted for being newest, because a beta drag library is a
+beta reorder for the operator. `@dnd-kit/dom` is declared explicitly rather than
+relied on transitively, since the adapter imports `PointerActivationConstraints`
+from it. Peer range is `react ^18 || ^19`; the client is on React 19.
+
+### Contracts
+
+**WidgetDefinition** — identity (stable id, definition version, title,
+description, domain), availability (lifecycle, required role, named
+requirements, surfaces), data contract (source, provenance, coverage, refresh,
+**genuine-empty definition**, stale-while-refreshing), presentation contract
+(family, supported sizes, default, per-size behaviour, responsive mode),
+interaction contract (read-only vs action-capable, destination, local settings,
+background refresh), and `allowMultiple` defaulting to false.
+
+**Registry never fetches.** No `load()`, no query, no transport; a test asserts
+no definition holds a callable at all.
+
+**Lifecycle.** Only `available` and `experimental` are offerable. `planned` and
+`retired` are metadata and are absent from the catalogue — no "coming soon"
+card, nothing greyed out. No tier, entitlement, purchase or upsell anywhere.
+
+**Presentation families** — `metric`, `instrument`, `workspace` — are orthogonal
+to truth state. A Metric that could not load is still a Metric.
+
+**Semantic sizes** — Compact · Standard · Expanded · Wide · Full. Each
+definition declares supported sizes, a default, and what each size *shows*; a
+test requires those descriptions to be distinct so a larger size cannot be the
+same content stretched wider. An unsupported size is never offered and is
+refused by the model.
+
+**Layout instance** — `{definitionId, instanceId, size, settings?}` only.
+Settings accept scalars. The adapter serialises field by field, and a test
+pollutes a layout with a count, a total and an API response to prove none reach
+storage.
+
+**LayoutStore identity** — user × workspace × surface × schema version, all four
+in the key. Key prefix `rv.workbench.v1.<user>.<workspace>.<surface>`. Explicit
+`anonymous` / `no-workspace` segments rather than omitted ones. The user scope
+is the authenticated `userId` from `workspaceContext` — never a display name,
+never an email.
+
+**Device-local persistence.** The UI states "Saved on this device only. Your
+layout does not follow you to other devices." No database preference table.
+
+**Recovery.** Non-object payload, schema mismatch or foreign surface → reset.
+Unknown/retired widget → dropped. Unsupported size → repaired to default.
+Duplicate single-instance → first occurrence kept, deterministically. Reused
+instance id → regenerated. Every correction is reported to the operator. Corrupt
+JSON and throwing storage cost durability only.
+
+**CSS Grid.** 2 columns on phone, 6 at `sm`, 12 from `lg`. One persisted
+semantic order; breakpoints change span, never sequence. No `react-grid-layout`,
+no free-pixel resize.
+
+**Edit mode.** Normal mode mounts no drag context at all. Edit mode adds handle,
+move buttons, size select, remove, catalogue and reset. Drag starts only at the
+grip, under a 200 ms/8 px touch delay plus a 6 px distance constraint.
+
+**Keyboard/button reorder** names each widget, disables at boundaries, announces
+into a polite live region, and drives the same canonical order as drag — proved
+by asserting `applyReorder` equals `reorderInstances`, and that repeated button
+moves equal one drag reorder. Independent of the package.
+
+### Widgets shipped
+
+Needs location · Needs photos · Unclassified category · Needs condition details ·
+Open corrections · Inventory records · Listing preparation · Open intake
+sessions · Quick actions.
+
+Every one reads a fact the application already read. No server query was
+invented. Deliberately absent and asserted absent: valuation, pricing, market
+value, AI, S2 receiving/cost-basis, orders/returns, and anything over the legacy
+SQLite store.
+
+### The truth defect repaired
+
+The old Daily Workbench initialised every count to `0` and loaded them under one
+shared `catch`. An unresolved or failed source rendered a confident zero, and
+one failure blanked seven working panels. Each source now carries its own
+`TruthState`: `loading` renders an em dash, a rejection renders a bounded code,
+an unconfigured transport renders `notConfigured`, and a proven zero renders as
+a confirmed zero. Sources settle independently — no `Promise.all` over the set.
+
+### Home
+
+The governed awareness region is customizable and reads governed transports
+only. The governed operations panels and the legacy spreadsheet-imported section
+below it are fixed. The legacy panel is never a widget, never in the catalogue,
+has no furniture in edit mode, and cannot enter the governed region.
+
+### Tests
+
+Client **1056 → 1177** (+121). Five new files plus an expanded `Workbench.test.tsx`:
+
+| File | Tests |
+| --- | --- |
+| `workbench/workbenchSurface.test.tsx` | 38 |
+| `workbench/layout/layout.test.ts` | 35 |
+| `workbench/registry/registry.test.ts` | 19 |
+| `pages/Workbench.test.tsx` (3 → 13) | 13 |
+| `workbench/presentation/widgetPresentation.test.tsx` | 11 |
+| `pages/Dashboard.workbench.test.tsx` | 8 |
+
+### Verification — every command run, every exit code checked
+
+| Command | Result |
+| --- | --- |
+| `npm ci`, `npm ci --prefix client`, `npm ci --prefix server` | exit 0 |
+| `npm run lint` | exit 0 (7 pre-existing warnings + 4 new fast-refresh advisories, no errors) |
+| `npm run typecheck` | exit 0 |
+| `npm run build:ci` | exit 0 |
+| `npm test` | exit 0 — server 593, client 1177, node guards 23 |
+| `node --test scripts/db/guard.test.mjs` | exit 0 — 9 pass |
+| `node --test scripts/ci/client-audit-gate.test.mjs` | exit 0 — 14 pass |
+| `npm run db:reset` | exit 0 |
+| `npm run db:test` | exit 0 — **2468 assertions**, unchanged baseline |
+| `git diff --check` | exit 0 |
+
+Migration count **71**, unchanged. The DB baseline is untouched, which is the
+evidence that this branch made no database change.
+
+### Remaining risks
+
+- **No real drag/touch proof.** jsdom has no layout and no pointer/touch events.
+  What is proved is that a reorder reported by the adapter drives the same order
+  the buttons drive. Real gesture proof is S1.6.7.
+- **`client/vitest.setup.ts` installs no-op `ResizeObserver`/`IntersectionObserver`
+  stubs** because `@dnd-kit/dom` constructs one at module load and jsdom does not
+  implement it. They let the module import; they simulate no geometry and prove
+  no gesture.
+- **Responsive behaviour is class/contract-level**, not measured at a viewport.
+- **Touch activation timings (200 ms / 8 px / 6 px) are unverified on hardware.**
+  They are a considered default, not a measured one.
+- **Device-local persistence only.** A layout does not follow an operator to
+  another device, and the UI says so.
+- A widget whose requirements stop being satisfied is hidden but retained in the
+  layout, so a temporary condition does not silently discard an arrangement.
+
+### Scope confirmation
+
+No database migration. No server change. No receiving or cost-basis
+implementation. No S2 business calculation. No Acquisitions or Acquisition
+Detail migration. No Playwright, no axe. No `react-grid-layout`, no free-pixel
+resize. No marketplace, monetization, shared team layouts, named saved
+dashboards, user-authored formulas, widget-level SQL, or AI layout mutation. No
+edit to `docs/ai/CURRENT_STATE.md` or to the S2 receiving document.
+
+### Next checkpoint
+
+**S1.6.5 — Governed Acquisitions List Reference.**
+
 ## S1.6.3 — Data and Overlay Primitives
 
 The shared UI primitives the remaining S1.6 slices are built from, proved

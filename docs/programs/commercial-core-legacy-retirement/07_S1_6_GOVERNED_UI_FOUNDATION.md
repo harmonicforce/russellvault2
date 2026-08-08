@@ -202,7 +202,7 @@ can never quietly become a business-rule change.
 | **S1.6.1 Foundations** ✅ | Tokens, themes, typography, geometry, motion, truth-state contract, initial house primitives, root render error boundary, this document. |
 | **S1.6.2 Shell** ✅ | Governed application shell, navigation, theme control integration, storage adapter for the theme port. |
 | **S1.6.3 Data and overlay primitives** ✅ | Table, responsive record list, dialog, drawer, truth-state presentation, coverage, provenance, mutation-reason pattern, and one proof migration. |
-| **S1.6.4 Workbench foundation** | Layout store and grid mechanics (see below). |
+| **S1.6.4 Workbench foundation** ✅ | Widget registry, layout store, semantic sizes, CSS Grid, dnd-kit adapter, edit mode, catalog, and the Daily Workbench / Home migration. |
 | **S1.6.5 Governed-list reference migration** | Acquisitions list migrated onto the system as the reference implementation. |
 | **S1.6.6 Governed-detail reference migration** | Acquisition detail migrated onto the system. |
 | **S1.6.7 Browser quality gate** | Playwright and axe; end-to-end and automated accessibility checks. |
@@ -614,7 +614,7 @@ Responsive behaviour is likewise CSS-driven: the tests prove the handoff exists
 and carries the right visibility classes, not that a 390px viewport renders as
 intended.
 
-## Workbench customization boundary (S1.6.4+, not implemented here)
+## Workbench customization boundary (S1.6.4, implemented)
 
 Approved architecture, recorded now so later slices inherit it rather than
 re-deciding it:
@@ -632,6 +632,195 @@ re-deciding it:
 The customization boundary follows the doctrine directly: an operator may
 arrange perspective. They may not arrange truth, and no layout choice may
 change what a widget is permitted to show.
+
+### What S1.6.4 built
+
+**The WidgetDefinition contract.** A definition declares identity (stable id,
+definition version, title, description, domain), availability (lifecycle,
+required role, named requirements, supported surfaces), a data contract
+(governed source, provenance, coverage, refresh policy, **what a genuine zero
+means**, whether stale-while-refreshing is allowed), a presentation contract
+(family, supported sizes, default size, what each size shows, responsive
+behaviour), and an interaction contract (read-only vs action-capable,
+destination, local settings, background refresh).
+
+**Registry metadata never touches business data.** There is no `load()`, no
+query and no transport on a definition, and a test asserts no definition holds a
+callable at all. A definition describes a widget; the domain layer supplies
+typed facts to what gets rendered.
+
+**`planned` and `retired` are metadata only.** The active catalogue offers only
+`available` and `experimental` definitions whose surface, role and requirements
+are all satisfied. There is no "coming soon" card, no placeholder, and nothing
+greyed out — an advertisement is indistinguishable from a broken feature. There
+is also no tier, entitlement, purchase or upsell: those belong to the rejected
+prototype.
+
+**Presentation families are orthogonal to truth state.** `metric` is a bare
+figure, `instrument` a bounded operational module, `workspace` a larger tool
+surface with stronger separation. A Metric that could not load is still a
+Metric — it does not become an "error family". The frame owns visual weight;
+the S1.6.3 `TruthState` presentation owns what is claimed, and tests hold the
+family constant across loading, empty, unavailable and error.
+
+**Semantic sizes carry information hierarchy.** Compact · Standard · Expanded ·
+Wide · Full. Each definition declares which it supports, its default, and what
+each one *shows* — and a test requires those descriptions to be distinct, so a
+larger size cannot be the same content stretched wider. An unsupported size is
+never offered in the size control and is refused by the layout model, so it
+cannot be persisted and repaired later.
+
+**The layout instance model holds presentation preference only.** A persisted
+instance is `{definitionId, instanceId, size, settings?}` — no counts, no money,
+no API responses, no authorization or provenance facts. Settings accept scalars
+only, which is the one place a cached response could otherwise survive. The
+browser adapter serialises field by field rather than handing the object to
+`JSON.stringify`, and a test pollutes a layout with a count, a total and an API
+response and proves none of them reach storage.
+
+**`allowMultiple` defaults to false.** A second instance requires an explicit
+`allowMultiple: true` plus a stated `allowMultipleReason`; the catalogue
+disables Add rather than silently ignoring it. Every widget shipped in this
+slice is single-instance.
+
+**LayoutStore identity is user × workspace × surface × schema version.** All
+four are in the key, so two operators sharing a tablet do not inherit each
+other's arrangement, two workspaces stay separate, and Home and Daily Workbench
+are separate surfaces rather than one blob. An unresolved user or workspace gets
+an explicit `anonymous` / `no-workspace` segment rather than an omitted one,
+because omitting a segment merges two identities onto one key. The user scope is
+the authenticated user id already carried by `workspaceContext` — never a
+display name, never an email.
+
+**Device-local interim persistence, and the UI says so.** The browser adapter is
+the only file in the Workbench that knows `localStorage` exists, and edit mode
+states "Saved on this device only. Your layout does not follow you to other
+devices." No claim of cross-device sync is made anywhere; governed cross-device
+preference persistence needs a server-side model and is deliberately not part of
+this slice. No database preference table was created.
+
+**Recovery is repair-where-possible, reset-where-not.** A non-object payload,
+a schema-version mismatch or a foreign surface resets to defaults. Within a
+valid layout: an unknown or retired widget id is dropped, an unsupported size is
+repaired to the widget's default, duplicate single-instance entries keep the
+**first** occurrence deterministically, and a reused instance id is regenerated.
+Every correction is reported to the operator, so "nothing was wrong" and "we
+quietly discarded your layout" are distinguishable. Corrupt JSON, a throwing
+`getItem` and a throwing `setItem` all cost durability and nothing else.
+
+**CSS Grid, one order, many geometries.**
+
+| Viewport | Logical columns |
+| --- | --- |
+| Phone `<640` | 2 — ordered, effectively full-width stack |
+| Tablet portrait `sm` | 6 |
+| Tablet landscape `lg` | 12 |
+| Desktop `xl` | 12 |
+| Wide `2xl` | 12, wider gutters |
+
+Exactly ONE semantic order is persisted. Narrower screens change how much
+horizontal space a size buys; they never change which widget comes first, and
+there is no second per-breakpoint arrangement to drift out of step with the
+first. Every size spans full width on a phone — a "compact" widget in half a
+390px screen is unreadable, not compact.
+
+**One dnd-kit containment boundary.** `@dnd-kit/react@0.5.0` and
+`@dnd-kit/dom@0.5.0`, both pinned exactly. `0.5.0` is the package's `latest`
+dist-tag and its newest **stable** release; the registry also publishes a stream
+of `0.5.1-beta-*` builds, and a prerelease is not adopted for being newest
+because a beta drag library is a beta reorder for the operator.
+`workbench/interaction/WorkbenchInteractionAdapter.tsx` is the only file in the
+application that imports either package. Widgets, pages and definitions speak
+`items` and `onReorder(from, to)`; the adapter translates. `react-grid-layout`
+was not ported.
+
+**Normal mode versus edit mode.** In normal mode there is no drag handle, no
+size control, no remove control, and no drag context mounted at all — nothing is
+listening, so scrolling a queue on a tablet cannot reorder anything. Edit mode
+is entered through Customize and left through Done, and only then does the
+furniture appear. Drag begins only from the visible grip; the grip is
+`aria-hidden` because the accessible path is the buttons. Touch activation uses
+a 200 ms delay with an 8 px tolerance plus a 6 px distance constraint, so a
+finger landing on the handle to scroll does not start a drag.
+
+**Keyboard/button reorder is first class, not a fallback.** Every movable widget
+carries Move earlier / Move later buttons whose accessible names identify the
+widget. They drive the same canonical order the drag path drives — a test proves
+`applyReorder` and the layout model's `reorderInstances` compute identical
+results, and another proves repeated button moves equal one drag reorder.
+Boundaries disable, and every movement is announced in a polite live region.
+"dnd-kit has keyboard sensors" was not accepted as proof; the button path is
+independent of the package and would survive its removal.
+
+**The Widget Catalog** uses the S1.6.3 `Dialog`: modal semantics, search across
+title and description, domain filtering, add/remove, in-layout state visible,
+supported-size summary, and several operations without closing. Its footer
+control is "Close catalog", not "Done", because the surface behind it has its
+own Done that leaves edit mode.
+
+### Daily Workbench migration, and the truth defect it repaired
+
+The page kept every business source and lost its layout. `workQueueCounts`,
+`workQueue`, `operationsQueueCounts`, `operationsQueueRows`,
+`openCorrectionCount`, the listing-prep summary and the intake session list are
+the same calls with the same arguments against the same transports.
+
+What changed is the truth model. The old page initialised every count to `0`
+and loaded them together under one shared `catch`, so between mount and response
+— and after any failure — it displayed a confident zero for facts it had not
+established, and one failing query blanked seven working ones.
+
+Each source now carries its own `TruthState`:
+
+- nothing starts at zero; everything starts at `loading`, rendered as an em dash
+  and an explicit "reading" state, never as `0`;
+- a rejection becomes `error` with a bounded code, never `0`;
+- an unconfigured transport becomes `notConfigured`, never `0`;
+- a proven zero becomes `empty`, which states that it is a confirmed result;
+- sources settle independently, so corrections and listing prep can both fail
+  while the inventory queues keep showing their real numbers.
+
+There is deliberately no `Promise.all` over the whole set: a single rejection
+there rejects the batch, which is exactly how the old page lost seven panels to
+one failure.
+
+### Home stays mixed source
+
+The governed awareness region on Home uses the Workbench architecture and reads
+governed transports only. Everything below it is fixed: the governed operations
+panels, and then the legacy spreadsheet-imported section.
+
+The legacy panel is **never a widget**. It is not in the catalogue, it has no
+drag handle, no move controls and no remove control even in edit mode, and it
+cannot be rearranged into the governed region — letting an operator drop
+non-authoritative SQLite figures into the same arrangement as governed ones
+would teach exactly the equivalence this programme exists to break. Home's
+layout is stored under the `home` surface, separate from Daily Workbench's.
+
+### Widgets shipped, and widgets deliberately absent
+
+Nine definitions, every one over a fact the application already read before this
+slice: Needs location, Needs photos, Unclassified category, Needs condition
+details, Open corrections, Inventory records, Listing preparation, Open intake
+sessions, Quick actions. No server query was invented to manufacture a widget.
+
+Absent on purpose, and asserted absent by test: valuation, pricing and market
+value (no governed source exists, and a number nobody can defend is worse than a
+missing panel); AI or recommendation widgets; S2 receiving, landed-cost and
+cost-basis widgets (S2.1 shipped schema, not an owner-facing read model);
+orders, returns and fulfilment; and any widget over the legacy store.
+
+### What the tests cannot prove
+
+jsdom performs no layout and produces no real pointer or touch events. No
+assertion in this slice demonstrates that a drag gesture works; what is proved
+is that a reorder REPORTED by the adapter drives the same canonical order the
+buttons drive. `@dnd-kit/dom` constructs a `ResizeObserver` at module load,
+which jsdom does not implement, so `client/vitest.setup.ts` installs no-op
+observer stubs purely so the module can be imported — they simulate no geometry
+and prove no gesture. Responsive behaviour is proved at the class/contract
+level, not at a measured viewport. Real pointer, touch and geometry proof
+remains S1.6.7's browser quality gate.
 
 ## Explicitly deferred
 
