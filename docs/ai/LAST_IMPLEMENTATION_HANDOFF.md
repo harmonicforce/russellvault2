@@ -1,5 +1,183 @@
 # Last Implementation Handoff
 
+## S1.6.3 — Data and Overlay Primitives
+
+The shared UI primitives the remaining S1.6 slices are built from, proved
+behaviourally, with one small existing surface migrated as proof. No business
+semantics, no server code, no database object, and no route changed.
+
+### Lineage and base
+
+- Branch: `claude/s1-6-3-primitives-gg3s0a`.
+- Base SHA: `e843f8d2c3061fa68bb6ac7ffcd7de98dee8fd14` — current `main` matched the expected PR #55 merge commit exactly. **No drift.**
+- Branch-name note: the work order named `claude/s1-6-3-data-overlay-primitives`; the session's designated branch is `claude/s1-6-3-primitives-gg3s0a` and that is what was used. Same base, same content.
+
+### What was built
+
+All under `client/src/design-system`. Nothing in that directory imports
+Supabase, calls a transport, knows a workspace id, computes a status, or
+aggregates money.
+
+| Module | Contract |
+| --- | --- |
+| `data/DataTable.tsx` | Governed table taking `TruthState<readonly T[]>` |
+| `data/ResponsiveRecordList.tsx` | Stacked records for narrow viewports |
+| `overlays/useOverlayBehavior.ts` | Shared focus entry/containment/restoration, Escape, dismissal |
+| `overlays/Dialog.tsx` | Native `<dialog>` modal |
+| `overlays/Drawer.tsx` | Native `<dialog>` edge panel |
+| `overlays/MutationConfirmation.tsx` | Governed mutation confirmation composition |
+| `controls/ReasonField.tsx` | Accessible mutation-reason field |
+| `feedback/TruthStates.tsx` | `LoadingState`, `EmptyState`, `DependencyState`, `PartialState`, `StaleState` |
+| `feedback/CoverageNotice.tsx` | Renders a `CoverageGap`; never computes one |
+| `feedback/ProvenanceLabel.tsx` | Six authority kinds, meaning carried in words |
+
+Evolved rather than duplicated:
+
+- `foundations/truthState.ts` — constructors now return their own union member
+  instead of the whole union, and `isIndeterminate` is a type predicate. Every
+  narrowed member is still assignable to `TruthState<T>`, so no existing caller
+  is constrained, but a component accepting only the four indeterminate kinds
+  can be handed `unavailable(...)` with no cast. Additive; no behaviour change.
+- `components/DataTable.tsx` and `components/Drawer.tsx` — rewritten as
+  compatibility wrappers delegating to the governed components. Same call
+  signatures; six legacy pages (Sales, Inventory, Purchases, CostLinks,
+  Listings) carried, not migrated.
+
+The wrapper's honesty is bounded and the code says so: the old
+`rows: T[]` + `loading: boolean` shape cannot distinguish a failed query from a
+zero, because the failure was flattened to `[]` before it arrived. It maps an
+empty array to `empty` — which those pages already displayed — and cannot do
+better. A surface needing that distinction calls the governed table directly.
+
+### DataTable truth-state contract
+
+`loading`/`ready`/`empty` render inside the table with headers intact.
+`partial`/`stale` render their notice above the rows. The four indeterminate
+states render the notice and **no table at all** — a header row above nothing
+reads as a table that merely happens to be short.
+
+There is no `rows: T[]` prop, so a failed fetch cannot arrive as `[]`. Sorting,
+paging, filtering and searching are callbacks. Sort direction is announced both
+as `aria-sort` and inside the control's accessible name. An unknown pagination
+total renders as unknown, never as 0.
+
+**Row activation is a real button in the first cell.** A `<tr>` with `onClick`
+is unreachable by keyboard; wrapping the row makes every per-row action a button
+inside a button. The activation control has its own cell, other actions are
+siblings, and the row's pointer handler ignores events from inside interactive
+elements — so a row action never also opens the record.
+
+### Overlay accessibility contract
+
+Both overlays are native `<dialog>` elements opened with `showModal()` where the
+platform supports it, which supplies top layer, background inertness and
+`::backdrop` with no framework added. Where it does not, they render their own
+backdrop and keep `aria-modal`. One shared hook owns focus entry, containment,
+restoration, Escape and dismissal.
+
+`dismissible={false}` blocks Escape and the backdrop while a mutation is in
+flight and leaves the explicit close control live — preventing accidental
+dismissal must not become trapping the operator. `closeDisabled` is the separate
+opt-in for that.
+
+The S1.6.2 shell drawer is **unchanged**. It has shell behaviour a record panel
+does not, and rebuilding it here would trade real risk for a cosmetic saving.
+
+### Mutation-reason pattern
+
+`ReasonField` replaces `window.prompt()`. It validates nothing itself and never
+trims or normalises, so the recorded reason and the displayed reason are the
+same string. `MutationConfirmation` composes action title, plain-language
+consequence, an immutable-facts slot, the reason field, confirm/cancel, pending
+and a bounded error, and encodes no acquisition, payment, exclusion, shipment or
+inventory rule.
+
+### Proof migration
+
+`client/src/pages/InventoryIdentity.tsx` — read-only, no business risk, not the
+S1.6.5 or S1.6.6 reference surface.
+
+Transports, their arguments, the read-only guarantee and every displayed fact
+are unchanged, and the rendered test asserts each. What changed:
+
+- the disabled build renders `notConfigured` — the deployment is not set up,
+  rather than something having broken;
+- a failed lookup renders a bounded `Alert`;
+- every diagnostic input has a real accessible label;
+- the lot list carries a truth state. **Previously an empty workspace and a
+  failed lot read both rendered nothing at all**; they are now distinct;
+- one page-level `ProvenanceLabel` marks the surface as imported source
+  evidence, matching what `STAGING_NOTICE` has always said, and is deliberately
+  not repeated per row.
+
+### Tests
+
+149 rendered tests added across six files, all asserting against the DOM and
+accessibility tree. Nothing reads module source.
+
+| File | Tests |
+| --- | --- |
+| `design-system/data/dataTable.test.tsx` | 39 |
+| `design-system/overlays/overlays.test.tsx` | 36 |
+| `design-system/feedback/truthPresentation.test.tsx` | 29 |
+| `pages/InventoryIdentity.render.test.tsx` | 16 |
+| `design-system/data/responsiveRecordList.test.tsx` | 15 |
+| `design-system/controls/reasonField.test.tsx` | 14 |
+
+### Verification — every command run, every exit code checked
+
+| Command | Result |
+| --- | --- |
+| `npm ci`, `npm ci --prefix client`, `npm ci --prefix server` | exit 0 |
+| `npm run lint` | exit 0 (7 pre-existing warnings, none new) |
+| `npm run typecheck` | exit 0 (server + client) |
+| `npm run build:ci` | exit 0 (client + server) |
+| `npm test` | exit 0 — server 593, client 1056, node guards 23 |
+| `node --test scripts/db/guard.test.mjs` | exit 0 — 9 pass |
+| `node --test scripts/ci/client-audit-gate.test.mjs` | exit 0 — 14 pass |
+| `npm run db:reset` | exit 0 |
+| `npm run db:test` | exit 0 — **2300 assertions**, all files passed |
+| `git diff --check` | exit 0 |
+
+DB suites were run sequentially, never concurrently. The local PostgreSQL 16
+cluster and `postgresql-16-pgtap` had to be started/installed in this container
+first; that is environment setup, not a repository change.
+
+### Remaining risks
+
+- **Real-browser overlay behaviour is unproven.** jsdom implements neither
+  `HTMLDialogElement.showModal()` nor the top layer, so the overlay suites
+  exercise the FALLBACK path. Top-layer placement, `::backdrop` rendering, and
+  platform-supplied background inertness remain unverified until S1.6.7. The
+  suite asserts `supportsModalDialog() === false` explicitly, so if jsdom ever
+  gains the API the tests report that they are exercising a different path
+  rather than silently claiming coverage they never had.
+- **Responsive geometry is unproven.** The tests prove the handoff exists and
+  carries the right visibility classes, not that a 390px viewport renders as
+  intended.
+- **Touch-target sizes are asserted as classes, not measured.** `min-h-11` /
+  `min-w-11` are present; jsdom performs no layout.
+- **The legacy wrapper cannot distinguish a failure from a zero**, by
+  construction. Six legacy pages therefore still show a failed query as an
+  authoritative empty. That is unchanged from before this slice and is fixed
+  per page, when the page is migrated.
+- `15_acquisition_digest_parity.sql` intermittent in-suite slowdown noted in
+  `CURRENT_STATE.md` did not reproduce in this run.
+
+### Scope confirmation
+
+No database migration. No server change. No route, auth, workspace, acquisition,
+payment, shipment, exclusion, inventory or Supabase-function change. No
+Acquisitions migration, no Acquisition Detail migration, no Workbench, no
+widget registry, no dnd-kit, no Playwright, no axe, no S2 work. No edit to
+`docs/ai/CURRENT_STATE.md`.
+
+### Next checkpoint
+
+**S1.6.4 Workbench Foundation** — layout store and CSS Grid mechanics, per the
+customization boundary already recorded in
+`docs/programs/commercial-core-legacy-retirement/07_S1_6_GOVERNED_UI_FOUNDATION.md`.
+
 ## S1.6.2 post-merge repair — Navigation Source-Truth Model
 
 Bounded corrective PR for the already-merged S1.6.2 shell. **Not a CI repair** —

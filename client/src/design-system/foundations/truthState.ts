@@ -69,6 +69,22 @@ export type TruthState<T> =
 
 export type TruthStateKind = TruthState<unknown>['kind'];
 
+/** One named member of the union, e.g. `TruthStateOf<'unavailable'>`. */
+export type TruthStateOf<K extends TruthStateKind> = Extract<TruthState<never>, { kind: K }>;
+
+/**
+ * The states in which a surface could not establish the truth at all.
+ *
+ * `empty` is deliberately NOT one of them: it is a successful answer. `loading`
+ * is not one either — the answer has not arrived, which is not the same as
+ * having failed to arrive.
+ */
+export type IndeterminateTruthState =
+  | TruthStateOf<'unavailable'>
+  | TruthStateOf<'unauthorized'>
+  | TruthStateOf<'notConfigured'>
+  | TruthStateOf<'error'>;
+
 /** Every state, for exhaustiveness checks and tests. */
 export const TRUTH_STATE_KINDS = [
   'loading',
@@ -87,24 +103,34 @@ export const TRUTH_STATE_KINDS = [
 // `fromResponse(data, error)` convenience that could quietly pick `empty` when
 // it should have picked `unavailable`.
 
-export const loading = (): TruthState<never> => ({ kind: 'loading' });
-export const ready = <T>(value: T): TruthState<T> => ({ kind: 'ready', value });
-export const empty = (): TruthState<never> => ({ kind: 'empty' });
-export const partial = <T>(value: T, coverage: CoverageGap): TruthState<T> => ({ kind: 'partial', value, coverage });
+// Each constructor returns its OWN member of the union rather than the whole
+// union. Every narrowed member is still assignable to `TruthState<T>`, so no
+// caller is constrained by this — but a component that accepts only some of the
+// kinds (a dependency notice takes the four indeterminate ones, never
+// `loading`) can now be handed `unavailable(...)` directly, without a cast that
+// would let the wrong state through unchecked.
+export const loading = (): TruthStateOf<'loading'> => ({ kind: 'loading' });
+export const ready = <T>(value: T): Extract<TruthState<T>, { kind: 'ready' }> => ({ kind: 'ready', value });
+export const empty = (): TruthStateOf<'empty'> => ({ kind: 'empty' });
+export const partial = <T>(value: T, coverage: CoverageGap): Extract<TruthState<T>, { kind: 'partial' }> => ({
+  kind: 'partial',
+  value,
+  coverage,
+});
 export const stale = <T>(
   value: T,
   options: { lastRefreshedAt?: string | null; label: string; canRefresh?: boolean },
-): TruthState<T> => ({
+): Extract<TruthState<T>, { kind: 'stale' }> => ({
   kind: 'stale',
   value,
   lastRefreshedAt: options.lastRefreshedAt ?? null,
   label: options.label,
   canRefresh: options.canRefresh ?? false,
 });
-export const unavailable = (reason: string): TruthState<never> => ({ kind: 'unavailable', reason });
-export const unauthorized = (reason: string): TruthState<never> => ({ kind: 'unauthorized', reason });
-export const notConfigured = (reason: string): TruthState<never> => ({ kind: 'notConfigured', reason });
-export const failed = (code: string, message: string): TruthState<never> => ({ kind: 'error', code, message });
+export const unavailable = (reason: string): TruthStateOf<'unavailable'> => ({ kind: 'unavailable', reason });
+export const unauthorized = (reason: string): TruthStateOf<'unauthorized'> => ({ kind: 'unauthorized', reason });
+export const notConfigured = (reason: string): TruthStateOf<'notConfigured'> => ({ kind: 'notConfigured', reason });
+export const failed = (code: string, message: string): TruthStateOf<'error'> => ({ kind: 'error', code, message });
 
 // --- Inspection -------------------------------------------------------------
 
@@ -118,7 +144,7 @@ export function hasValue<T>(state: TruthState<T>): state is Extract<TruthState<T
  *
  * `empty` is deliberately NOT in this set: it is a successful answer.
  */
-export function isIndeterminate<T>(state: TruthState<T>): boolean {
+export function isIndeterminate<T>(state: TruthState<T>): state is IndeterminateTruthState {
   return (
     state.kind === 'unavailable' ||
     state.kind === 'unauthorized' ||
