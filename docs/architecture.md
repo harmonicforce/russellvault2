@@ -744,6 +744,111 @@ failed lookup renders a bounded alert, and the lot list carries a real truth
 state — previously an empty workspace and a failed lot read both rendered
 nothing at all.
 
-The full S1.6 program, its seven slices, and the deferred Workbench
-customization boundary are recorded in
+## S1.6.4 Workbench foundation
+
+**A widget definition describes; it never fetches.** `WidgetDefinition` declares
+identity, lifecycle, required role and named requirements, supported surfaces, a
+data contract (governed source, provenance, coverage, refresh, **what a genuine
+zero means**), a presentation contract (family, supported sizes, default, what
+each size shows), and an interaction contract. There is no `load()`, no query
+and no transport on a definition — a test asserts no definition holds a callable
+at all — so registry metadata can never become a second place business rules
+live.
+
+**The active catalogue offers only what an operator can actually use.**
+`planned` and `retired` are metadata; they are absent from the catalogue rather
+than shown as "coming soon", because an advertisement is indistinguishable from
+a broken feature. Availability is a conjunction of lifecycle, surface, role and
+satisfied requirements, all supplied by the host. There is no tier, entitlement,
+purchase or upsell — those belonged to the rejected prototype.
+
+**Presentation family and truth state are orthogonal.** `metric`, `instrument`
+and `workspace` govern visual weight. A Metric that could not load is still a
+Metric; it does not become an "error family". The frame owns the family, the
+S1.6.3 `TruthState` presentation owns what is claimed, and tests hold the family
+constant across loading, empty, unavailable and error.
+
+**Semantic sizes change information, not scale.** Compact · Standard · Expanded ·
+Wide · Full. Each definition declares which it supports and what each one
+*shows*, and those descriptions must be distinct — a larger size cannot be the
+same content stretched wider. An unsupported size is never offered and is
+refused by the layout model, so it cannot be persisted and repaired later.
+
+**A persisted layout is presentation preference only.** An instance is
+`{definitionId, instanceId, size, settings?}`. No counts, no money, no API
+responses, no authorization or provenance facts; settings accept scalars only.
+The browser adapter serialises field by field rather than trusting
+`JSON.stringify` on a caller's object, and a test pollutes a layout with a count,
+a total and an API response to prove none of it reaches storage.
+`allowMultiple` defaults to false and requires a stated reason to be true.
+
+**LayoutStore identity is user × workspace × surface × schema version.** Two
+operators sharing a tablet do not inherit each other's arrangement, two
+workspaces stay separate, and Home and Daily Workbench are separate surfaces —
+explicitly not one global `layout-dashboard` key, which would be wrong in all
+four dimensions at once. An unresolved user or workspace gets its own explicit
+key segment rather than an omitted one. The user scope is the authenticated user
+id `workspaceContext` already carries, never a display name or email.
+
+**Persistence is device-local, and the UI says so.** The browser adapter is the
+only file in the Workbench that touches `localStorage`, and edit mode states that
+the layout does not follow the operator to other devices. No database preference
+table was created; cross-device persistence remains a separately reviewed slice.
+
+**Recovery repairs where it can and resets where it cannot.** A non-object
+payload, a schema-version mismatch or a foreign surface resets to defaults.
+Inside a valid layout, an unknown or retired widget is dropped, an unsupported
+size is repaired to the widget default, duplicate single-instance entries keep
+the first occurrence deterministically, and a reused instance id is regenerated.
+Every correction is reported, so "nothing was wrong" and "your layout was
+discarded" are distinguishable. Corrupt JSON and throwing storage cost
+durability, never the Workbench.
+
+**CSS Grid: one order, many geometries.** 2 logical columns on a phone, 6 at
+tablet portrait, 12 from tablet landscape up. Exactly one semantic order is
+persisted; narrower screens change how much space a size buys, never which
+widget comes first, and there is no per-breakpoint arrangement to drift out of
+step. `react-grid-layout` was not ported and there is no free-pixel resize.
+
+**One dnd-kit containment boundary.** `@dnd-kit/react@0.5.0` and
+`@dnd-kit/dom@0.5.0`, pinned exactly — the `latest` dist-tag and newest stable
+release, chosen over the newer `0.5.1-beta-*` stream because a beta drag library
+is a beta reorder for the operator. `WorkbenchInteractionAdapter.tsx` is the only
+file in the application importing either package; everything else speaks `items`
+and `onReorder(from, to)`.
+
+**Normal mode carries no customization furniture at all** — no handle, no size
+control, no remove control, and no drag context mounted, so nothing is listening
+and scrolling a queue on a tablet cannot reorder anything. Edit mode is entered
+through Customize and left through Done. Drag starts only from the visible grip,
+under a 200 ms touch delay so a finger landing to scroll does not start a drag.
+
+**Button reorder is the primary accessible path, not a fallback.** Move earlier
+and Move later name the widget they move, disable at the boundaries, announce
+into a polite live region, and drive the same canonical order the drag path
+drives. They depend on nothing from the package and would survive its removal;
+"dnd-kit has keyboard sensors" was not accepted as proof.
+
+**The Daily Workbench kept its sources and lost its fake zeros.** The same
+transports are called with the same arguments. What changed is that the page no
+longer initialises every count to `0` under one shared `catch` — each source
+carries its own `TruthState`, so an unresolved read shows an em dash, a failure
+shows a bounded code, an unconfigured transport says so, a proven zero says it is
+confirmed, and one failing source cannot blank the others. There is deliberately
+no `Promise.all` over the whole set.
+
+**Home stays mixed source.** The governed awareness region is customizable and
+reads governed transports only. The governed operations panels and the legacy
+spreadsheet-imported section beneath it are fixed. The legacy panel is never a
+widget, never in the catalogue, and cannot be rearranged into the governed
+region — combining them would teach exactly the equivalence the legacy
+retirement programme exists to break.
+
+**Nine widgets ship, each over a fact the application already read.** Absent on
+purpose, and asserted absent: valuation, pricing, market value, AI, S2
+receiving/cost-basis, orders/returns, and anything over the legacy store. No
+server query was invented to manufacture a widget.
+
+The full S1.6 program, its seven slices, and the Workbench customization
+boundary are recorded in
 `docs/programs/commercial-core-legacy-retirement/07_S1_6_GOVERNED_UI_FOUNDATION.md`.

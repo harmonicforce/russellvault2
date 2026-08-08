@@ -15,6 +15,56 @@ import { createShadowClient } from '../lib/supabaseShadow';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createOperationsDashboardTransport } from '../lib/operationsDashboardApi';
+import { WorkbenchSurfaceRegion } from '../workbench/WorkbenchSurface';
+import { useWorkbenchLayout } from '../workbench/useWorkbenchLayout';
+import { useWorkbenchWiring } from '../workbench/useWorkbenchContext';
+import { useWorkbenchFacts } from '../workbench/data/workbenchFacts';
+import { createBrowserLayoutStore } from '../workbench/layout/browserLayoutStore';
+import { findDefinition } from '../workbench/registry/widgetRegistry';
+import { renderWidgetAccessory, renderWidgetBody } from '../workbench/widgets/widgetRenderers';
+import type { WidgetSize } from '../workbench/registry/widgetDefinition';
+
+const layoutStore = createBrowserLayoutStore();
+
+/**
+ * The governed, customizable awareness region on Home.
+ *
+ * HOME IS MIXED SOURCE, AND STAYS MIXED SOURCE.
+ *
+ * This region reads governed transports only, and it is the ONLY customizable
+ * region on this page. Everything below it — the governed operations panels and
+ * then the legacy spreadsheet-imported section — is fixed. In particular the
+ * legacy panel is never a widget and never enters the catalogue: it is
+ * non-authoritative SQLite data, and letting an operator drop it into the same
+ * arrangement as governed widgets would teach exactly the equivalence the
+ * program exists to break.
+ *
+ * Its layout is stored under the `home` surface, separate from Daily
+ * Workbench's, so arranging one never rearranges the other.
+ */
+function GovernedAwarenessRegion() {
+  const { context, sources, userId, workspaceId } = useWorkbenchWiring('home');
+  const { facts } = useWorkbenchFacts(sources);
+  const controller = useWorkbenchLayout(layoutStore, 'home', userId, workspaceId);
+
+  return (
+    <WorkbenchSurfaceRegion
+      surface="home"
+      controller={controller}
+      context={context}
+      label="Your governed overview"
+      description="Governed facts only. Arrange what you want to see first."
+      renderBody={(definitionId: string, size: WidgetSize) => {
+        const definition = findDefinition(definitionId);
+        return definition ? renderWidgetBody(definition, size, facts) : null;
+      }}
+      renderAccessory={(definitionId: string) => {
+        const definition = findDefinition(definitionId);
+        return definition ? renderWidgetAccessory(definition, facts) : null;
+      }}
+    />
+  );
+}
 
 /** The Supabase-workspace-scoped section: current-system counts and quick
  * actions. Kept separate from the legacy panel below (clearly labeled) so
@@ -147,7 +197,7 @@ export default function Dashboard() {
   });
 
   if (isLoading || !data) {
-    return <div className="p-6 flex flex-col gap-6 max-w-[1400px]"><div><h1 className="text-2xl font-semibold">Today at a glance</h1></div>{config && <WorkspaceSummarySection />}<section aria-label="Legacy spreadsheet-imported inventory" className="text-sm text-ink-muted">{error ? 'Legacy dashboard unavailable.' : 'Loading legacy spreadsheet-imported inventory…'}</section></div>;
+    return <div className="p-6 flex flex-col gap-6 max-w-[1400px]"><div><h1 className="text-2xl font-semibold">Today at a glance</h1></div>{config && <GovernedAwarenessRegion />}{config && <WorkspaceSummarySection />}<section aria-label="Legacy spreadsheet-imported inventory" className="text-sm text-ink-muted">{error ? 'Legacy dashboard unavailable.' : 'Loading legacy spreadsheet-imported inventory…'}</section></div>;
   }
 
   const maxVerticalValue = Math.max(1, ...data.topVerticals.map((v) => v.value));
@@ -162,9 +212,15 @@ export default function Dashboard() {
         </p>
       </div>
 
+      {config && <GovernedAwarenessRegion />}
+
       {config && <WorkspaceSummarySection />}
 
-      <div>
+      {/* Everything below this point is FIXED. The legacy region is
+          non-authoritative SQLite data; it is not a widget, it is not in the
+          catalogue, and it can never be rearranged into the governed region
+          above. */}
+      <div data-legacy-region="">
         <h2 className="text-sm font-semibold text-ink-secondary">Legacy spreadsheet-imported inventory</h2>
       </div>
 
