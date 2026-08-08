@@ -8,7 +8,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { allDestinations, buildNavigation } from './navigationModel';
+import { domainsFor, isAuthoritative } from '../../lib/dataTopology';
+import { allDestinations, buildNavigation, compositionOf } from './navigationModel';
 
 /**
  * Every path AppRoutes mounts, read from the router source.
@@ -70,34 +71,109 @@ describe('navigation model — governed deployment', () => {
   });
 });
 
+describe('navigation model — source composition is verified, not assumed', () => {
+  const model = buildNavigation('governed');
+  const byPath = new Map(allDestinations(model).map((d) => [d.to, d]));
+  const compositionFor = (path: string) => compositionOf(byPath.get(path)!);
+
+  // THE DEFECT THIS SUITE REPLACED.
+  //
+  // The previous version required every primary destination to be
+  // `authority === 'governed'`. It was green, and it was proving something
+  // false: it forced Dashboard — which renders the legacy `/dashboard` panel
+  // alongside the governed sections — to be labelled uniformly governed.
+  //
+  // Primary membership is an OPERATIONAL grouping. It is not a proof of data
+  // authority, and no assertion here treats it as one.
+
+  it('records Dashboard as mixed, because it renders governed and legacy sections', () => {
+    expect(compositionFor('/')).toBe('mixed');
+  });
+
+  it('records Health Checks as legacy-only, because /api/checks is SQLite-backed', () => {
+    expect(compositionFor('/checks')).toBe('legacy-only');
+  });
+
+  it.each(['/inventory', '/purchases', '/cost-links', '/listings', '/sales'])(
+    'records %s as legacy-only',
+    (path) => {
+      expect(compositionFor(path)).toBe('legacy-only');
+    },
+  );
+
+  it.each([
+    '/workbench', '/inventory/current', '/scan', '/intake-sessions', '/locations',
+    '/cycle-counts', '/corrections', '/photo-issues', '/acquisitions', '/quick-add',
+    '/listing-prep', '/import-review', '/acquisition-review', '/inventory-identity',
+  ])('records %s as governed-only', (path) => {
+    expect(compositionFor(path)).toBe('governed-only');
+  });
+
+  // Grouping is a navigational role, never a source claim. The Tools group is
+  // the proof: it legitimately holds three governed diagnostics and one
+  // legacy-backed one, and encoding "tool" as an authority is precisely what
+  // let /checks go unmarked.
+  it('lets one group hold both governed and legacy-backed diagnostics', () => {
+    const tools = model.secondary.find((g) => g.id === 'tools')!;
+    const compositions = tools.destinations.map(compositionOf);
+    expect(compositions).toContain('governed-only');
+    expect(compositions).toContain('legacy-only');
+  });
+
+  it('exposes no authority field, so a menu role can never be read as a truth claim', () => {
+    for (const destination of allDestinations(model)) {
+      expect(destination).not.toHaveProperty('authority');
+      expect(destination.reads.length).toBeGreaterThan(0);
+    }
+  });
+
+  // Navigation keeps no authority table of its own; it asks dataTopology.
+  // These two models answer different questions and neither proves the other.
+  it('derives authority from dataTopology rather than restating it', () => {
+    expect(domainsFor('legacy-sqlite-rest').every((d) => !isAuthoritative(d))).toBe(true);
+    expect(domainsFor('governed-supabase').every((d) => isAuthoritative(d))).toBe(true);
+  });
+
+  it('names exactly two backends, so "mixed" is a composition and not a third system', () => {
+    const backends = new Set(allDestinations(model).flatMap((d) => d.reads));
+    expect([...backends].sort()).toEqual(['governed-supabase', 'legacy-sqlite-rest']);
+  });
+});
+
 describe('navigation model — governed and legacy stay separated', () => {
   const model = buildNavigation('governed');
 
-  it('keeps every legacy destination out of the governed domains', () => {
+  // Legacy-only surfaces are what must stay out of the governed domains.
+  // Dashboard is mixed and legitimately belongs in Home: it is the operator's
+  // daily starting point and its legacy region is labelled in the page.
+  it('keeps every legacy-only destination out of the governed domains', () => {
     for (const group of model.primary) {
       for (const destination of group.destinations) {
-        expect(destination.authority, `${destination.label} sits inside ${group.id}`).toBe('governed');
+        expect(
+          compositionOf(destination),
+          `${destination.label} is legacy-only but sits inside ${group.id}`,
+        ).not.toBe('legacy-only');
       }
     }
   });
 
-  // The specific defect being corrected: legacy /inventory sat in the primary
-  // governed list, directly above the governed inventory destinations.
+  // The specific defect corrected in S1.6.2: legacy /inventory sat in the
+  // primary governed list, directly above the governed inventory destinations.
   it('files legacy /inventory under the legacy group, not under Inventory', () => {
     const inventoryDomain = model.primary.find((g) => g.id === 'inventory')!;
     expect(inventoryDomain.destinations.map((d) => d.to)).not.toContain('/inventory');
 
     const legacy = model.secondary.find((g) => g.id === 'legacy')!;
     const entry = legacy.destinations.find((d) => d.to === '/inventory')!;
-    expect(entry.authority).toBe('legacy');
+    expect(compositionOf(entry)).toBe('legacy-only');
     // Exact match, or every governed /inventory/* route lights it up.
     expect(entry.end).toBe(true);
   });
 
-  it('carries tools and legacy in the secondary area only', () => {
+  it('carries the legacy application and the tools group in the secondary area only', () => {
     expect(model.secondary.map((g) => g.id)).toEqual(['legacy', 'tools']);
-    const authorities = model.secondary.flatMap((g) => g.destinations.map((d) => d.authority));
-    expect(authorities).not.toContain('governed');
+    const legacy = model.secondary.find((g) => g.id === 'legacy')!;
+    expect(legacy.destinations.every((d) => compositionOf(d) === 'legacy-only')).toBe(true);
   });
 });
 
@@ -125,6 +201,21 @@ describe('navigation model — legacy-only deployment', () => {
 
   it('offers no Tools & legacy area, because the whole deployment is legacy', () => {
     expect(model.secondary).toEqual([]);
+  });
+
+  // Dashboard is mixed in governed mode but legacy-only here: without governed
+  // configuration `WorkspaceSummarySection` never mounts, so the legacy
+  // aggregate is the entire page. Calling it mixed would claim a governed
+  // section this deployment cannot render.
+  it('records Dashboard as legacy-only, because the governed sections cannot mount', () => {
+    const dashboard = allDestinations(model).find((d) => d.to === '/')!;
+    expect(compositionOf(dashboard)).toBe('legacy-only');
+    expect(compositionOf(allDestinations(buildNavigation('governed')).find((d) => d.to === '/')!)).toBe('mixed');
+  });
+
+  it('reads nothing from the governed backend at all', () => {
+    const backends = new Set(allDestinations(model).flatMap((d) => d.reads));
+    expect([...backends]).toEqual(['legacy-sqlite-rest']);
   });
 });
 
