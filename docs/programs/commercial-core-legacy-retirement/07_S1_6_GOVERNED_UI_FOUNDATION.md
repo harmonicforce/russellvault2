@@ -203,7 +203,7 @@ can never quietly become a business-rule change.
 | **S1.6.2 Shell** ✅ | Governed application shell, navigation, theme control integration, storage adapter for the theme port. |
 | **S1.6.3 Data and overlay primitives** ✅ | Table, responsive record list, dialog, drawer, truth-state presentation, coverage, provenance, mutation-reason pattern, and one proof migration. |
 | **S1.6.4 Workbench foundation** ✅ | Widget registry, layout store, semantic sizes, CSS Grid, dnd-kit adapter, edit mode, catalog, and the Daily Workbench / Home migration. |
-| **S1.6.5 Governed-list reference migration** | Acquisitions list migrated onto the system as the reference implementation. |
+| **S1.6.5 Governed-list reference migration** ✅ | Acquisitions list migrated onto the system as the reference implementation. |
 | **S1.6.6 Governed-detail reference migration** | Acquisition detail migrated onto the system. |
 | **S1.6.7 Browser quality gate** | Playwright and axe; end-to-end and automated accessibility checks. |
 
@@ -821,6 +821,157 @@ observer stubs purely so the module can be imported — they simulate no geometr
 and prove no gesture. Responsive behaviour is proved at the class/contract
 level, not at a measured viewport. Real pointer, touch and geometry proof
 remains S1.6.7's browser quality gate.
+
+## The governed list reference (S1.6.5, implemented)
+
+`/acquisitions` is the canonical governed-list experience. Later governed list
+surfaces copy this page. It changed **no** acquisition semantics, no server
+route, no RPC and no SQL — the same transport is called with the same closed
+vocabularies, the same 50-row page size and the same search predicate.
+
+### The URL is the list state
+
+`query`, `classification`, `seller`, `businessVertical`, `method`,
+`classificationState`, `exclusionState`, `sort`, `order` and `page` live in the
+address bar and nowhere else. There is no parallel component state holding any
+of them, so back, forward, reload and a pasted link all recover exactly the list
+the operator was looking at.
+
+Changing anything except the page resets to page 1 — page 4 of the previous
+filter is not page 4 of this one, and an operator who lands on an empty page 4
+reads it as "there are none". Changing only the page preserves everything else.
+A workspace switch clears the whole list state rather than applying workspace
+A's filters to workspace B's records.
+
+`pages/acquisitions/listState.ts` owns this as pure functions: parse, validate,
+rewrite. It does not fetch and it does not render.
+
+### Fail closed, and say so
+
+Every closed vocabulary is mirrored from `server/src/routes/acquisition.ts`, so
+the client cannot offer a filter the server rejects or hide one it supports. An
+unsupported value never reaches the transport, is stripped from the URL, and is
+reported.
+
+The notice is deliberately **sticky**. Stripping the parameter is what makes the
+"unsupported" set empty again, so a notice derived from it would erase itself in
+the same tick it appeared and the operator would never learn their filter was
+dropped. It clears on a workspace switch, the one moment the whole list state is
+rebuilt.
+
+### The classification-method filter is a surfaced capability, not a new rule
+
+`method` was already carried by the transport, already validated by the route
+against exactly `rule`, `owner_override`, `seller_specialization`,
+`explicit_evidence`, `system_fallback` (anything else answers `invalid_filter`,
+400), and already counted by the facets. It had no operator control. It has one
+now. No backend filter semantics were created.
+
+### Lines and facets are independent dependencies
+
+This is the defect the migration repaired. The previous page evaluated
+`lines.isError || facets.isError` and rendered one "Acquisition data could not
+be loaded" screen — so a failed FACETS request, which supplies only filter
+suggestions and a classification summary, destroyed a perfectly good page of
+governed acquisition lines.
+
+Now each dependency is derived independently in `listTruth.ts`:
+
+| Condition | Result |
+| --- | --- |
+| lines loading | no count, no rows, no zero |
+| lines ready, facets failed | **rows and exact total survive**; a scoped notice explains the facet failure |
+| lines failed | bounded server code shown; the empty presentation is never rendered |
+| facets failed | no zero facet counts; the applied filter stays selected and truthful |
+| no workspace | `notConfigured` — nothing has been asked yet |
+
+A facet failure costs the operator their suggestions and their summary. It does
+not cost them the list, the exact total, or the truthfulness of the filter they
+already have applied — the select keeps its current value even when the
+suggestion list could not be read, because a select that dropped its own value
+would display "All sellers" while the URL still filtered by one.
+
+Retrying the summary re-issues only the facets query; the lines query is not
+re-run and no filter, search term or page is cleared.
+
+### The exact total is the server's
+
+Derived separately from the rows, because the header must be able to say "137
+filtered lines" while this page happens to be short. It is never computed from
+`rows.length`, which pagination makes false. Four distinct answers for four
+distinct facts: loading shows no count at all, ready shows the server total, a
+genuine zero says it is *a confirmed zero from the governed backend*, and a
+failure says the count is unavailable and no total has been assumed.
+
+Pagination uses that exact total. Next is disabled only when the total proves
+there is no next page — deriving it from `rows.length` would offer a page that
+does not exist whenever the last page happens to be full.
+
+### Coverage
+
+`CoverageNotice` renders the contract the transport reports
+(`governed_native_committed`, `historicalLegacyImported: false`) as: committed
+governed-native lines are included, historical legacy Whatnot purchases are
+missing, and — unconditionally, because the subset is unsafe to aggregate — *do
+not total these figures*. Governed and legacy counts describe different
+populations; added together they produce a total that is true of neither.
+
+### Presentation
+
+The desktop `DataTable` carries classification, eligibility, date, recorded
+date, seller, product/title, quantity, vertical, source line identity, source
+order reference and classification method. All six server sort keys are
+exposed as sortable columns — including `created_at`, which got its own
+"Recorded" column rather than being reachable only by hand-editing the URL.
+Nothing else is sortable, because a control that cannot map onto a server key
+would either do nothing or re-sort locally and disagree with the ordering the
+next page was computed against.
+
+Below `lg` the table hands over to `ResponsiveRecordList`. The breakpoint is
+`lg`, not the component default of `md`: nine columns on a tablet held in
+portrait is a horizontally scrolling strip, which is exactly what the responsive
+handoff exists to prevent. `DataTable` gained an optional
+`responsiveBreakpoint` for this — presentation only, and it teaches the
+component nothing about acquisitions.
+
+Every record keeps classification, eligibility, quantity, seller, date, vertical
+and the source-qualified identity as primary facts; only the order reference and
+the method are secondary, and neither is hidden.
+
+**Excluded is a decision, not a deletion.** An excluded line stays visible,
+searchable and linkable, and is marked with the word "Excluded" — never colour
+alone. "Unclassified" is likewise a word, and absent values render as bounded
+unknowns ("Unknown seller", "No source order") because a blank cell cannot be
+told apart from a rendering gap.
+
+### Source-qualified addressing
+
+Every list-to-detail link is `/acquisitions/:sourceSystemPublicId/:linePublicId`
+with both values encoded. An acquisition line public id is unique only *within*
+its source system, so a single-segment path addresses the wrong record the
+moment a second source exists. No internal UUID appears in any link. Each link
+carries the current list URL — query string included — as `state.from`, so
+Acquisition Detail returns to the exact filtered, searched, sorted page.
+
+### The design system learned nothing about acquisitions
+
+`pages/acquisitions/listPresentation.tsx` is the domain adapter. Field values,
+labels, classification and exclusion presentation, the detail URL and the filter
+values are all decided there and handed over as typed facts. `DataTable` and
+`ResponsiveRecordList` remain domain-agnostic.
+
+### Tests
+
+Client 1177 → 1229. The 20 S1.5 assertions in
+`Acquisitions.render.test.tsx` are all preserved — two selectors were updated
+for the new accessible DOM (the failure copy, and the empty state that now
+renders in both the table and the record list), and no business assertion was
+weakened or deleted. `Acquisitions.reference.test.tsx` adds 52 covering the
+reference patterns above.
+
+What jsdom cannot prove remains unproven: it applies no CSS, so the table and
+the record list are both in the document at once and no test demonstrates which
+one a real viewport shows. Real responsive geometry is S1.6.7's browser gate.
 
 ## Explicitly deferred
 

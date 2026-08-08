@@ -1,5 +1,166 @@
 # Last Implementation Handoff
 
+## S1.6.5 — Governed Acquisitions List Reference
+
+`/acquisitions` migrated onto the S1.6 design system as the canonical
+governed-list experience. No database change, no server change, no acquisition
+semantics changed.
+
+### Lineage and base
+
+- Branch: `claude/s1-6-5-acquisitions-list-reference`.
+- Base SHA: `14276f9ec5ed521d8a374ca3ca0445f66e3923fb` — current `main` matched the expected PR #58 merge commit exactly. **No drift.**
+- `git merge-base --is-ancestor 701b97a…(S1.6.4 impl head) HEAD` → true.
+- **S2.2 did not merge during this work.** `origin/main` was still `14276f9` at push time, so no rebase was required.
+
+### Parallel isolation held
+
+`supabase/**`, `server/**`, `docs/programs/.../08_S2_RECEIVING_AND_COST_BASIS.md`
+and `docs/ai/CURRENT_STATE.md` are untouched — `git status` reports zero changes
+across all four. No receiving, no cost basis.
+
+### Regression baseline recorded before editing
+
+`Acquisitions.render.test.tsx`: **20 passing**. Client total: **1177**. Both were
+captured before any change and treated as a preservation contract.
+
+### Page architecture, before → after
+
+| Before | After |
+| --- | --- |
+| One 43-line minified-style file | `Acquisitions.tsx` composition + `pages/acquisitions/{listState,listTruth,listPresentation,AcquisitionsFilters}` |
+| Bespoke `<table>` + bespoke mobile cards | S1.6.3 `DataTable` + `ResponsiveRecordList` |
+| `lines.isError \|\| facets.isError` → one error screen | independent per-dependency TruthState |
+| Hand-built unlabelled filter row | labelled `Field` controls + clear affordance |
+| Sort readable from URL, no operator control | all six server sort keys as announced column controls |
+| Amber `role="note"` coverage block | `CoverageNotice` |
+
+### The URL is the list state
+
+`query`, `classification`, `seller`, `businessVertical`, `method`,
+`classificationState`, `exclusionState`, `sort`, `order`, `page` — in the
+address bar, nowhere else. No parallel component state. Changing anything but
+the page resets to page 1; changing the page preserves everything else; a
+workspace switch clears the lot. `listState.ts` owns this as pure functions.
+
+### Fail closed, and the sticky notice
+
+Closed vocabularies are mirrored from `server/src/routes/acquisition.ts`, so the
+client cannot offer a filter the server rejects or hide one it supports. An
+unsupported value never reaches the transport, is stripped from the URL, and is
+reported.
+
+The notice had to be made **sticky**: stripping the parameter is what makes the
+"unsupported" set empty again, so a notice derived from it erased itself in the
+same tick it appeared. It clears on a workspace switch.
+
+### Method filter — evidence
+
+`server/src/routes/acquisition.ts` validates `req.query.method` against exactly
+`rule`, `owner_override`, `seller_specialization`, `explicit_evidence`,
+`system_fallback` and answers `invalid_filter` (400) otherwise. The transport
+already carried `method`; the facets already counted methods. It had no operator
+control. Surfacing it exposes an existing capability and invents no rule.
+
+### Lines and facets are independent
+
+The defect repaired. Previously a failed FACETS request — filter suggestions and
+a summary — destroyed a working page of governed lines.
+
+- lines ready + facets failed → rows, exact total and applied filters all survive; a scoped notice explains the facet failure; retry re-issues only facets
+- facets failed → no zero facet counts; the applied filter stays selected and truthful
+- lines failed → bounded server code shown; the empty presentation never renders
+- no workspace → `notConfigured`
+
+### Exact total
+
+Derived separately from the rows, read from the server payload, never from
+`rows.length`. Loading shows no count; ready shows the total; a genuine zero
+says it is *a confirmed zero from the governed backend*; a failure says no total
+has been assumed. Pagination disables Next from that total, so a full final page
+does not offer a page that does not exist.
+
+### Presentation
+
+Desktop `DataTable`: classification, date, recorded, seller, product/title,
+quantity, vertical, source line identity + order reference, method. All six
+server sort keys sortable — `created_at` got its own Recorded column rather than
+being URL-only. Nothing else is sortable.
+
+The table hands over at `lg`, not the component default `md`: nine columns on a
+tablet in portrait is the sideways-scrolling strip the handoff exists to
+prevent. `DataTable` gained an optional `responsiveBreakpoint` — presentation
+only, no domain knowledge.
+
+Excluded stays visible, searchable and linkable, marked in words. Unclassified is
+a word. Absent values are bounded unknowns.
+
+### Source-qualified addressing
+
+`/acquisitions/:sourceSystemPublicId/:linePublicId`, both `encodeURIComponent`'d,
+proved for every link on the page including encoded identifiers. No internal
+UUID appears in any link. `state.from` carries the current list URL with its
+query string.
+
+### Tests
+
+| File | Before | After |
+| --- | --- | --- |
+| `Acquisitions.render.test.tsx` | 20 | 20 (all preserved) |
+| `Acquisitions.reference.test.tsx` | — | 52 (new) |
+| **Client total** | **1177** | **1229** |
+
+Two selectors in the preserved file were updated for the new accessible DOM —
+the failure copy, and the empty state that now renders in both the table and the
+record list. No business assertion was weakened or deleted.
+
+### Verification — every command run, every exit code checked
+
+| Command | Result |
+| --- | --- |
+| `npm ci`, `npm ci --prefix client`, `npm ci --prefix server` | exit 0 |
+| `npm run lint` | exit 0 |
+| `npm run typecheck` | exit 0 |
+| `npm run build:ci` | exit 0 |
+| `npm test` | exit 0 — server 593, client 1229, node guards 23 |
+| `node --test scripts/db/guard.test.mjs` | exit 0 — 9 pass |
+| `node --test scripts/ci/client-audit-gate.test.mjs` | exit 0 — 14 pass |
+| `npm run db:reset` | exit 0 |
+| `npm run db:test` | exit 0 — **2468 assertions**, unchanged |
+| `git diff --check` | exit 0 |
+
+Migrations **71**, unchanged. DB assertions unchanged — the evidence this branch
+touched no database object.
+
+### Remaining risks
+
+- **No real responsive geometry proof.** jsdom applies no CSS, so the table and
+  the record list are both in the document at once; nothing here demonstrates
+  which one a 768px or 1024px viewport actually shows. The `lg` handoff is proved
+  at the class/contract level only. S1.6.7 owns the browser gate.
+- **Touch and keyboard interaction on real hardware is unproven**, including the
+  sort controls and the filter selects on a tablet.
+- **The exact total is briefly `loading` during a page change** rather than
+  showing the previous page's total. That is deliberate — a stale total presented
+  as current would be the failure this contract exists to prevent — but it means
+  the count flickers on paging. If that proves annoying in use, the honest fix is
+  an explicit `stale` representation, not `keepPreviousData`.
+- A page beyond the last one renders an authoritative-empty table while the
+  header still reports the real total. Truthful, but the copy is worth a second
+  look once someone hits it in practice.
+
+### Scope confirmation
+
+No database migration. No server route, RPC or SQL change. No pagination, search,
+classification or exclusion semantic change. No historical import, no legacy
+reconciliation. No Acquisition Detail migration. No Workbench redesign, no new
+widget, no LayoutStore change, no dnd-kit work. No Playwright, no axe. No S2.
+No edit to `docs/ai/CURRENT_STATE.md` or the S2 receiving document.
+
+### Next checkpoint
+
+**S1.6.6 — Governed Acquisition Detail Reference.**
+
 ## S1.6.4 — Workbench Foundation
 
 The customizable Workbench architecture, with the Daily Workbench and the

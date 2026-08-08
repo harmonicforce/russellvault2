@@ -163,13 +163,21 @@ describe('acquisitions list — unsupported URL filters',()=>{
 });
 
 describe('acquisitions list — system states',()=>{
+ // Selectors updated for the S1.6.5 governed presentation; the business
+ // assertion is unchanged — a failure must never be shown as an empty result.
  it('surfaces a load failure without assuming an empty result',async()=>{
   linesError=new Error('dependency_failed');renderList();
-  expect(await screen.findByText(/No empty result has been assumed/)).toBeTruthy();
-  expect(screen.queryByText('No acquisitions match these filters.')).toBeNull();
+  expect(await screen.findAllByText(/The request failed/i)).toBeTruthy();
+  // No zero has been assumed anywhere: not as an empty table, and not as a
+  // total in the header.
+  expect(screen.queryAllByText('No acquisitions match these filters.')).toHaveLength(0);
+  expect(document.querySelector('[data-truth-state="empty"]')).toBeNull();
+  expect(screen.getByText(/Exact line count unavailable/)).toBeTruthy();
  });
+ // The page renders the empty state twice — once in the table and once in the
+ // responsive record list — for the same CSS reason the rows appear twice.
  it('states plainly when nothing matches the filters',async()=>{rows=[];total=0;renderList();
-  expect(await screen.findByText('No acquisitions match these filters.')).toBeTruthy();
+  expect((await screen.findAllByText('No acquisitions match these filters.')).length).toBeGreaterThan(0);
  });
  // A workspace switch must not carry the previous workspace's filters over
  // onto a different workspace's data.

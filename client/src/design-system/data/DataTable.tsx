@@ -135,6 +135,15 @@ export interface DataTableProps<T> {
    * supplied, the table is hidden below `md` and this is shown instead.
    */
   readonly responsive?: ReactNode;
+  /**
+   * The viewport at which the table gives way to `responsive`.
+   *
+   * A caller chooses this because only the caller knows how wide its own table
+   * is: a four-column table is comfortable on a tablet in portrait, and a
+   * nine-column one is a horizontally scrolling strip. Presentation only — the
+   * component still learns nothing about what the columns mean.
+   */
+  readonly responsiveBreakpoint?: 'md' | 'lg';
   readonly className?: string;
 }
 
@@ -163,6 +172,7 @@ export function DataTable<T>({
   onRetry,
   onRefresh,
   responsive,
+  responsiveBreakpoint = 'md',
   className = '',
 }: DataTableProps<T>) {
   const searchId = useId();
@@ -242,7 +252,7 @@ export function DataTable<T>({
 
       {!indeterminate && (
         <>
-          <div className={responsive ? 'hidden md:block' : undefined}>
+          <div className={responsive ? (responsiveBreakpoint === 'lg' ? 'hidden lg:block' : 'hidden md:block') : undefined}>
             <div className="overflow-x-auto rounded-instrument border border-subtle bg-surface-base">
               <table className="w-full border-collapse text-sm">
                 <caption className={captionVisibility === 'assistive' ? 'sr-only' : 'px-3 py-2 text-left text-sm font-semibold text-ink'}>
@@ -399,7 +409,9 @@ export function DataTable<T>({
             </div>
           </div>
 
-          {responsive && <div className="md:hidden">{responsive}</div>}
+          {responsive && (
+            <div className={responsiveBreakpoint === 'lg' ? 'lg:hidden' : 'md:hidden'}>{responsive}</div>
+          )}
         </>
       )}
 

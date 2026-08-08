@@ -1,42 +1,345 @@
+// The governed Acquisitions list — the S1.6.5 reference implementation.
+//
+// This is the pattern later governed list surfaces copy. What makes it the
+// reference is not the table; it is four properties the previous page did not
+// have:
+//
+//   1. THE URL IS THE LIST STATE. No parallel component state holds a filter,
+//      a sort or a page, so back, forward, reload and a pasted link all recover
+//      exactly the list the operator was looking at.
+//
+//   2. DEPENDENCIES ARE INDEPENDENT. Lines and facets fail separately. A failed
+//      facets request costs the operator their filter suggestions and their
+//      classification summary; it no longer destroys a working page of governed
+//      acquisition lines.
+//
+//   3. THE EXACT TOTAL COMES FROM THE SERVER, and is derived separately from
+//      the rows, so the header can say "137 filtered lines" while this page
+//      happens to be short, and can never say "0" merely because nothing has
+//      arrived yet.
+//
+//   4. EVERY LINK IS SOURCE-QUALIFIED. An acquisition line public id is unique
+//      only within its source system.
+//
+// NO BUSINESS SEMANTICS CHANGED. Same transport, same closed vocabularies, same
+// server contract, same page size, same search predicate. This slice changes
+// how the page tells the truth, not what the truth is.
+
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
-import { createAcquisitionLinesTransport, type AcquisitionOrder, type AcquisitionSort, type AcquisitionExclusionState } from '../lib/acquisitionLinesApi';
+import { useSearchParams } from 'react-router-dom';
+import {
+  Alert,
+  Button,
+  CoverageNotice,
+  DataTable,
+  ResponsiveRecordList,
+  StatusPill,
+  hasValue,
+  isIndeterminate,
+  ready,
+  type TruthState,
+} from '../design-system';
+import { createAcquisitionLinesTransport, type AcquisitionSort } from '../lib/acquisitionLinesApi';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createShadowClient } from '../lib/supabaseShadow';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
+import {
+  PAGE_SIZE,
+  applySort,
+  clearFilters,
+  readListState,
+  setParam,
+  stripUnsupported,
+  toLineParams,
+} from './acquisitions/listState';
+import { facetsState, linesState, totalState } from './acquisitions/listTruth';
+import { acquisitionColumns, acquisitionRecords } from './acquisitions/listPresentation';
+import { AcquisitionsFilters } from './acquisitions/AcquisitionsFilters';
 
-const sorts=new Set<AcquisitionSort>(['occurred_at','created_at','seller','title','quantity','classification']);
-const orders=new Set<AcquisitionOrder>(['asc','desc']); const states=new Set(['classified','needs_review','unclassified']);
-// The governed eligibility filter is a CLOSED vocabulary, exactly like the
-// others above. Anything else is an unsupported filter, not a silent no-op.
-const exclusions=new Set<AcquisitionExclusionState>(['included','excluded']);
-const PAGE_SIZE=50;
-export default function Acquisitions(){
- const {workspace}=useWorkspace(); const [url,setUrl]=useSearchParams(); const [invalid,setInvalid]=useState(false);
- const api=useMemo(()=>createAcquisitionLinesTransport(tokenProviderFromClient(createShadowClient(import.meta.env as unknown as Record<string,string|undefined>))),[]);
- const rawSort=url.get('sort')??'occurred_at',rawOrder=url.get('order')??'desc',rawState=url.get('classificationState'),rawExclusion=url.get('exclusionState');
- const sort=(sorts.has(rawSort as AcquisitionSort)?rawSort:'occurred_at') as AcquisitionSort;
- const order=(orders.has(rawOrder as AcquisitionOrder)?rawOrder:'desc') as AcquisitionOrder;
- const page=Math.max(1,Number(url.get('page'))||1);
- useEffect(()=>{const badExclusion=rawExclusion!==null&&!exclusions.has(rawExclusion as AcquisitionExclusionState);const bad=rawSort!==sort||rawOrder!==order||(rawState!==null&&!states.has(rawState))||badExclusion||String(page)!==(url.get('page')??'1');if(bad){setInvalid(true);const n=new URLSearchParams(url);if(rawSort!==sort)n.delete('sort');if(rawOrder!==order)n.delete('order');if(rawState&&!states.has(rawState))n.delete('classificationState');if(badExclusion)n.delete('exclusionState');if(String(page)!==(url.get('page')??'1'))n.delete('page');setUrl(n,{replace:true})}},[rawSort,rawOrder,rawState,rawExclusion,sort,order,page,url,setUrl]);
- const previousWorkspace=useRef(workspace?.id);
- useEffect(()=>{if(previousWorkspace.current&&previousWorkspace.current!==workspace?.id){setUrl(new URLSearchParams(),{replace:true});}previousWorkspace.current=workspace?.id},[workspace?.id,setUrl]);
- const params={query:url.get('query')||undefined,classification:url.get('classification')||undefined,seller:url.get('seller')||undefined,businessVertical:url.get('businessVertical')||undefined,method:url.get('method')||undefined,classificationState:rawState&&states.has(rawState)?rawState:undefined,exclusionState:rawExclusion!==null&&exclusions.has(rawExclusion as AcquisitionExclusionState)?rawExclusion as AcquisitionExclusionState:undefined,sort,order,limit:PAGE_SIZE,offset:(page-1)*PAGE_SIZE};
- const enabled=Boolean(workspace); const lines=useQuery({queryKey:['acquisition-lines',workspace?.id,params],queryFn:()=>api.lines(workspace!.id,params),enabled,placeholderData:undefined});
- const facets=useQuery({queryKey:['acquisition-facets',workspace?.id],queryFn:()=>api.facets(workspace!.id),enabled,placeholderData:undefined});
- const change=(key:string,value:string)=>{const n=new URLSearchParams(url);if(value){n.set(key,value)}else{n.delete(key)}if(key!=='page')n.delete('page');setUrl(n)};
- return <div className="space-y-5 p-4 md:p-6">
-  <header><h1 className="text-2xl font-semibold">Acquisitions</h1><p className="text-sm text-ink-muted">{lines.isLoading?'Loading exact line count…':lines.data?`${lines.data.total.toLocaleString()} filtered lines`:'Exact line count unavailable'}</p></header>
-  <div role="note" className="flex gap-3 rounded-xl border border-amber-400/50 bg-amber-400/10 p-4 text-sm"><AlertTriangle className="h-5 w-5 shrink-0 text-amber-600"/><p><strong>Governed-native coverage.</strong> This page contains committed governed-native acquisition lines. Historical legacy Whatnot purchases have not yet been imported; do not add legacy and governed counts together. Historical import occurs in a later reconciliation slice.</p></div>
-  {invalid&&<div role="alert" className="rounded border border-amber-400 p-3 text-sm">Unsupported URL filters were removed.</div>}
-  <section aria-label="Classification summary" className="flex flex-wrap gap-2">{facets.data?.facets.classificationOptions.map(x=><span key={x.key} className={`rounded-full border px-3 py-1 text-xs ${x.key==='unreviewed'?'border-amber-400 bg-amber-400/10':''}`}>{x.label}: {x.count}{x.key==='unreviewed'?' · review work':''}</span>)}{facets.data&&<span className="rounded-full border px-3 py-1 text-xs">Unclassified: {facets.data.facets.unclassified}</span>}</section>
-  <form onSubmit={e=>{e.preventDefault();change('query',String(new FormData(e.currentTarget).get('query')??''))}} className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5"><input name="query" defaultValue={params.query} placeholder="Search acquisitions" className="rounded border border-hairline bg-surface-1 px-3 py-2"/><select value={params.classification??''} onChange={e=>change('classification',e.target.value)} className="rounded border border-hairline bg-surface-1 px-2"><option value="">All classifications</option><option value="unclassified">Unclassified</option>{facets.data?.facets.classificationOptions.map(x=><option key={x.key} value={x.key}>{x.label}</option>)}</select><select value={params.seller??''} onChange={e=>change('seller',e.target.value)} className="rounded border border-hairline bg-surface-1 px-2"><option value="">All sellers</option>{facets.data?.facets.sellers.map(x=><option key={x.value}>{x.value}</option>)}</select><select value={params.businessVertical??''} onChange={e=>change('businessVertical',e.target.value)} className="rounded border border-hairline bg-surface-1 px-2"><option value="">All verticals</option>{facets.data?.facets.businessVerticals.map(x=><option key={x.value}>{x.value}</option>)}</select><select value={params.classificationState??''} onChange={e=>change('classificationState',e.target.value)} className="rounded border border-hairline bg-surface-1 px-2"><option value="">All review states</option><option value="classified">Classified</option><option value="needs_review">Needs review</option><option value="unclassified">Unclassified</option></select><select value={params.exclusionState??''} onChange={e=>change('exclusionState',e.target.value)} className="rounded border border-hairline bg-surface-1 px-2"><option value="">All eligibility states</option><option value="included">Included</option><option value="excluded">Excluded</option></select><button className="rounded bg-accent px-3 py-2 text-on-accent">Search</button></form>
-  {(lines.isLoading||facets.isLoading)&&<p role="status">Loading acquisitions…</p>}
-  {(lines.isError||facets.isError)&&<div role="alert" className="rounded border border-red-400 p-4"><p>Acquisition data could not be loaded. No empty result has been assumed.</p><button onClick={()=>{void lines.refetch();void facets.refetch()}} className="mt-2 flex items-center gap-1"><RefreshCw className="h-4 w-4"/>Retry</button></div>}
-  {lines.data&&lines.data.rows.length===0&&<p>No acquisitions match these filters.</p>}
-  {lines.data&&lines.data.rows.length>0&&<><div className="hidden overflow-x-auto lg:block"><table className="w-full text-sm"><thead><tr className="text-left"><th>Classification</th><th>Date</th><th>Seller</th><th>Product / title</th><th>Qty</th><th>Vertical</th><th>Line / order</th><th>Method</th></tr></thead><tbody>{lines.data.rows.map(r=><tr key={`${r.source_system_public_id}:${r.acquisition_line_public_id}`} className="border-t border-hairline"><td>{r.classification_label??'Unclassified'}{r.exclusion_state==='excluded'&&<span className="ml-2 rounded-full bg-amber-100 px-2 py-1 text-xs">Excluded</span>}</td><td>{new Date(r.occurred_at??r.created_at).toLocaleDateString()}</td><td>{r.seller_normalized??'Unknown'}</td><td>{r.full_title??r.delivered_item_title??'Untitled'}</td><td>{r.quantity}</td><td>{r.business_vertical??'Unknown'}</td><td><Link className="text-accent underline" to={`/acquisitions/${encodeURIComponent(r.source_system_public_id)}/${encodeURIComponent(r.acquisition_line_public_id)}`} state={{from:`/acquisitions?${url}`}}>{r.acquisition_line_public_id}</Link><br/>{r.source_order_reference??'No source order'}</td><td>{r.classification_method??'—'}</td></tr>)}</tbody></table></div><div className="grid gap-3 lg:hidden">{lines.data.rows.map(r=><article key={`${r.source_system_public_id}:${r.acquisition_line_public_id}`} className="rounded-xl border border-hairline bg-surface-1 p-4"><div className="flex justify-between"><strong>{r.classification_label??'Unclassified'}{r.exclusion_state==='excluded'&&<span className="ml-2 rounded-full bg-amber-100 px-2 py-1 text-xs">Excluded</span>}</strong><span>Qty {r.quantity}</span></div><h2 className="mt-2 font-medium"><Link to={`/acquisitions/${encodeURIComponent(r.source_system_public_id)}/${encodeURIComponent(r.acquisition_line_public_id)}`} state={{from:`/acquisitions?${url}`}}>{r.full_title??r.delivered_item_title??'Untitled'}</Link></h2><p className="text-sm text-ink-secondary">{r.seller_normalized??'Unknown seller'} · {r.business_vertical??'Unknown vertical'}</p><p className="mt-2 text-xs text-ink-muted">{r.acquisition_line_public_id} · {r.source_order_reference??'No source order'} · {r.classification_method??'No classification method'}</p></article>)}</div></>}
-  {lines.data&&<nav className="flex justify-between"><button disabled={page===1} onClick={()=>change('page',String(page-1))}>Previous</button><span>Page {page}</span><button disabled={page*PAGE_SIZE>=lines.data.total} onClick={()=>change('page',String(page+1))}>Next</button></nav>}
- </div>
+export default function Acquisitions() {
+  const { workspace } = useWorkspace();
+  const [url, setUrl] = useSearchParams();
+
+  const api = useMemo(
+    () =>
+      createAcquisitionLinesTransport(
+        tokenProviderFromClient(createShadowClient(import.meta.env as unknown as Record<string, string | undefined>)),
+      ),
+    [],
+  );
+
+  const { state, unsupported } = readListState(url);
+
+  // Fail closed. An unsupported value never reaches the transport (it was
+  // already replaced above), is removed from the address bar, and is reported —
+  // because a silently ignored filter leaves the URL claiming a filter is
+  // applied while an unfiltered page is on screen.
+  //
+  // The notice is STICKY. Stripping the parameter is what makes `unsupported`
+  // empty again, so a notice derived from it would erase itself in the same
+  // tick it appeared and the operator would never learn their filter was
+  // dropped. It clears when the workspace changes, which is the one moment the
+  // whole list state is rebuilt.
+  const [removedFilters, setRemovedFilters] = useState(false);
+  const unsupportedKey = unsupported.join(',');
+  useEffect(() => {
+    if (unsupported.length === 0) return;
+    setRemovedFilters(true);
+    setUrl(stripUnsupported(url, unsupported), { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unsupportedKey]);
+
+  // A workspace switch clears the previous workspace's list state rather than
+  // applying workspace A's filters to workspace B's records.
+  const previousWorkspace = useRef(workspace?.id);
+  useEffect(() => {
+    if (previousWorkspace.current && previousWorkspace.current !== workspace?.id) {
+      setUrl(new URLSearchParams(), { replace: true });
+      setRemovedFilters(false);
+    }
+    previousWorkspace.current = workspace?.id;
+  }, [workspace?.id, setUrl]);
+
+  const params = toLineParams(state);
+  const enabled = Boolean(workspace);
+  const lines = useQuery({
+    queryKey: ['acquisition-lines', workspace?.id, params],
+    queryFn: () => api.lines(workspace!.id, params),
+    enabled,
+  });
+  const facets = useQuery({
+    queryKey: ['acquisition-facets', workspace?.id],
+    queryFn: () => api.facets(workspace!.id),
+    enabled,
+  });
+
+  const rowsTruth = linesState(lines, enabled);
+  const totalTruth = totalState(lines, enabled);
+  const facetsTruth = facetsState(facets, enabled);
+
+  // The CURRENT list URL, so Acquisition Detail returns to this exact filtered,
+  // searched, sorted page rather than to an unfiltered list.
+  const returnTo = `/acquisitions${url.toString() ? `?${url}` : ''}`;
+
+  const change = (key: string, value: string) => setUrl(setParam(url, key, value));
+  const columns = useMemo(() => acquisitionColumns(returnTo), [returnTo]);
+  const records = useMemo(
+    () => (hasValue(rowsTruth) ? acquisitionRecords(rowsTruth.value, returnTo) : []),
+    [rowsTruth, returnTo],
+  );
+
+  const total = hasValue(totalTruth) ? totalTruth.value : null;
+  const lastPage = total === null ? null : Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  return (
+    <div className="space-y-5 p-4 md:p-6">
+      <header className="grid gap-2">
+        <h1 className="text-2xl font-semibold text-ink">Acquisitions</h1>
+        <ExactTotal state={totalTruth} />
+        <CoverageNotice
+          // The coverage the transport actually reports:
+          // `governed_native_committed`, `historicalLegacyImported: false`.
+          coverage={{
+            included: 'Committed governed-native acquisition lines in this workspace.',
+            missing: 'Historical legacy Whatnot purchases, which have not been imported yet.',
+            // The load-bearing flag. Governed and legacy counts describe
+            // different populations; added together they produce a total that
+            // is true of neither.
+            safeToAggregate: false,
+          }}
+          timeBasis="current"
+        />
+      </header>
+
+      {removedFilters && (
+        <Alert tone="warning" title="The address bar claimed a filter this list does not support">
+          Unsupported URL filters were removed.
+        </Alert>
+      )}
+
+      <AcquisitionsFilters
+        state={state}
+        facets={facetsTruth}
+        onFilterChange={change}
+        onSearchSubmit={(query) => change('query', query)}
+        onClearFilters={() => setUrl(clearFilters(url))}
+      />
+
+      <ClassificationSummary state={facetsTruth} onRetry={() => void facets.refetch()} />
+
+      <DataTable
+        caption="Governed acquisition lines"
+        columns={columns}
+        state={rowsTruth}
+        rowKey={(line) => `${line.source_system_public_id}:${line.acquisition_line_public_id}`}
+        sort={{ key: state.sort, direction: state.order === 'asc' ? 'ascending' : 'descending' }}
+        // Sorting is the SERVER's. The press writes `sort`/`order` to the URL,
+        // the query re-runs, and the rows come back ordered. Nothing here
+        // re-sorts what the server returned, which would silently disagree with
+        // the ordering the next page was computed against.
+        onSortChange={(key) => setUrl(applySort(url, state, key as AcquisitionSort))}
+        empty={{
+          title: 'No acquisitions match these filters.',
+          description:
+            total !== null && total > 0
+              ? `The governed backend reports ${total.toLocaleString()} matching lines, but none on this page.`
+              : 'The governed backend answered and returned no matching acquisition lines.',
+        }}
+        onRetry={() => void lines.refetch()}
+        // Nine columns is a horizontally scrolling strip on a tablet held in
+        // portrait, so this table hands over at `lg` rather than `md` — the
+        // same breakpoint the previous page used, and the reason iPad portrait
+        // gets records instead of a sideways scroll.
+        responsiveBreakpoint="lg"
+        responsive={
+          <ResponsiveRecordList
+            label="Governed acquisition lines"
+            state={hasValue(rowsTruth) ? ready(records) : (rowsTruth as TruthState<never>)}
+            empty={{ title: 'No acquisitions match these filters.' }}
+            onRetry={() => void lines.refetch()}
+          />
+        }
+      />
+
+      <Pagination
+        page={state.page}
+        total={total}
+        onChange={(page) => change('page', String(page))}
+        lastPage={lastPage}
+      />
+    </div>
+  );
+}
+
+/**
+ * The exact filtered total.
+ *
+ * Four distinct answers, because they are four distinct facts. Loading is not
+ * zero, a failure is not zero, and a genuine zero says that it is confirmed.
+ */
+function ExactTotal({ state }: { readonly state: TruthState<number> }) {
+  if (state.kind === 'loading') {
+    return (
+      <p role="status" className="text-sm text-ink-muted">
+        Loading exact line count…
+      </p>
+    );
+  }
+  if (isIndeterminate(state)) {
+    return (
+      <p className="text-sm text-ink-secondary">
+        Exact line count unavailable. No total has been assumed.
+      </p>
+    );
+  }
+  if (!hasValue(state)) return null;
+  return (
+    <p className="text-sm text-ink-secondary">
+      <span className="font-semibold tabular-nums text-ink">{state.value.toLocaleString()} filtered lines</span>
+      {state.value === 0 ? ' — a confirmed zero from the governed backend.' : ' matching the current search and filters.'}
+    </p>
+  );
+}
+
+/**
+ * The classification summary.
+ *
+ * These are CATEGORIES, not health states, so they render neutral. The one
+ * exception is the review queue, which is genuinely work waiting to be done and
+ * earns an attention treatment for that reason rather than for contrast.
+ *
+ * Counts come from facets and only from facets. When facets fail the summary
+ * says so — it does not render zeroes, which would claim there are no sealed
+ * acquisitions when the truth is that nobody counted them.
+ */
+function ClassificationSummary({
+  state,
+  onRetry,
+}: {
+  readonly state: TruthState<import('../lib/acquisitionLinesApi').AcquisitionFacets>;
+  readonly onRetry: () => void;
+}) {
+  if (state.kind === 'loading') {
+    return (
+      <p role="status" className="text-xs text-ink-muted">
+        Loading the classification summary…
+      </p>
+    );
+  }
+
+  if (isIndeterminate(state)) {
+    return (
+      <Alert
+        tone="warning"
+        title="Filter suggestions and the classification summary are unavailable"
+        action={
+          <Button size="small" onClick={onRetry}>
+            Retry summary
+          </Button>
+        }
+      >
+        <p>
+          The acquisition lines below are unaffected and remain usable. No classification counts have been assumed, and
+          any filter you already have applied is still applied.
+        </p>
+      </Alert>
+    );
+  }
+
+  if (!hasValue(state)) return null;
+  const facets = state.value;
+
+  return (
+    <section aria-label="Classification summary" className="flex flex-wrap gap-2">
+      {facets.classificationOptions.map((option) => (
+        <StatusPill key={option.key} tone={option.key === 'unreviewed' ? 'warning' : 'neutral'}>
+          {option.label}: {option.count.toLocaleString()}
+          {option.key === 'unreviewed' ? ' · review work' : ''}
+        </StatusPill>
+      ))}
+      <StatusPill tone="neutral">Unclassified: {facets.unclassified.toLocaleString()}</StatusPill>
+    </section>
+  );
+}
+
+/**
+ * Pagination against the EXACT server total.
+ *
+ * Next is disabled only when the authoritative total proves there is no next
+ * page. Deriving that from `rows.length` would offer a next page that does not
+ * exist whenever the last page happens to be full, and hide one that does
+ * whenever a page comes back short.
+ */
+function Pagination({
+  page,
+  total,
+  lastPage,
+  onChange,
+}: {
+  readonly page: number;
+  readonly total: number | null;
+  readonly lastPage: number | null;
+  readonly onChange: (page: number) => void;
+}) {
+  const atEnd = lastPage === null ? true : page >= lastPage;
+  return (
+    <nav aria-label="Pagination" className="flex flex-wrap items-center justify-between gap-2">
+      <Button size="small" disabled={page <= 1} onClick={() => onChange(page - 1)}>
+        Previous
+      </Button>
+      <p className="text-sm tabular-nums text-ink-secondary">
+        {lastPage === null ? `Page ${page}` : `Page ${page} of ${lastPage.toLocaleString()}`}
+        {total !== null && total > 0 && (
+          <span className="ml-2 text-ink-muted">
+            {((page - 1) * PAGE_SIZE + 1).toLocaleString()}–{Math.min(total, page * PAGE_SIZE).toLocaleString()} of{' '}
+            {total.toLocaleString()}
+          </span>
+        )}
+      </p>
+      <Button size="small" disabled={atEnd} onClick={() => onChange(page + 1)}>
+        Next
+      </Button>
+    </nav>
+  );
 }
