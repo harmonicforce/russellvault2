@@ -1,20 +1,52 @@
-import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, Search } from 'lucide-react';
 import type { ReactNode } from 'react';
+import {
+  DataTable as GovernedDataTable,
+  empty,
+  loading,
+  ready,
+  type DataColumn,
+} from '../design-system';
 
-export interface Column<T> {
+/**
+ * COMPATIBILITY WRAPPER for the pre-S1.6 DataTable.
+ *
+ * The six legacy pages that use this component (Sales, Inventory, Purchases,
+ * CostLinks, Listings) keep their exact call signature and behaviour while the
+ * markup underneath becomes the governed design-system table — semantic
+ * `<caption>`, `<th scope>`, announced sort direction, keyboard-reachable row
+ * activation and accessible pagination controls. They are not migrated here;
+ * they are carried.
+ *
+ * THE LIMIT OF WHAT THIS WRAPPER CAN PROMISE
+ *
+ * The old contract is `rows: T[]` plus `loading: boolean`. That shape cannot
+ * distinguish "the query returned nothing" from "the query failed", because by
+ * the time a failure reaches this component it has already been flattened to
+ * `[]`. So this wrapper maps an empty array to `empty` — which is what these
+ * pages already displayed — and it CANNOT do better, since the missing fact
+ * never arrived.
+ *
+ * That is precisely why the governed contract takes a `TruthState` instead. A
+ * surface that needs to tell a failure from a zero must call
+ * `design-system/DataTable` directly and say which one it means. Nothing here
+ * upgrades a legacy page's honesty; it upgrades its markup, and the honesty
+ * gets fixed when the page itself is migrated.
+ */
+
+export type Column<T> = {
   key: string;
   header: string;
   render?: (row: T) => ReactNode;
   sortable?: boolean;
   align?: 'left' | 'right' | 'center';
   width?: string;
-}
+};
 
 export function DataTable<T extends Record<string, any>>({
   columns,
   rows,
   rowKey,
-  loading,
+  loading: isLoading,
   total,
   page,
   pageSize,
@@ -28,6 +60,7 @@ export function DataTable<T extends Record<string, any>>({
   onRowClick,
   filters,
   emptyLabel = 'No records found.',
+  caption = 'Records',
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -46,114 +79,40 @@ export function DataTable<T extends Record<string, any>>({
   onRowClick?: (row: T) => void;
   filters?: ReactNode;
   emptyLabel?: string;
+  caption?: string;
 }) {
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const end = Math.min(total, page * pageSize);
+  const governedColumns: DataColumn<T>[] = columns.map((col) => ({
+    key: col.key,
+    header: col.header,
+    // The legacy contract falls back to the raw row property when no renderer
+    // is supplied, and several pages rely on it.
+    render: col.render ?? ((row: T) => row[col.key] as ReactNode),
+    sortable: col.sortable,
+    align: col.align,
+    width: col.width,
+  }));
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        {onSearchChange && (
-          <div className="relative flex-1 min-w-[220px]">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-muted" />
-            <input
-              value={search ?? ''}
-              onChange={(e) => onSearchChange(e.target.value)}
-              placeholder={searchPlaceholder}
-              className="w-full rounded-lg border border-hairline bg-surface-1 pl-8 pr-3 py-2 text-sm outline-none focus:border-accent"
-            />
-          </div>
-        )}
-        {filters}
-      </div>
-
-      <div className="overflow-auto rounded-xl border border-hairline bg-surface-1">
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="border-b border-hairline bg-surface-2 sticky top-0 z-10">
-              {columns.map((col) => (
-                <th
-                  key={col.key}
-                  style={{ width: col.width }}
-                  className={`px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-ink-muted whitespace-nowrap ${
-                    col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
-                  } ${col.sortable ? 'cursor-pointer select-none hover:text-ink-secondary' : ''}`}
-                  onClick={() => col.sortable && onSortChange?.(col.key)}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    {col.header}
-                    {col.sortable && sortKey === col.key && (
-                      sortOrder === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />
-                    )}
-                  </span>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={columns.length} className="px-3 py-8 text-center text-ink-muted">
-                  Loading…
-                </td>
-              </tr>
-            ) : rows.length === 0 ? (
-              <tr>
-                <td colSpan={columns.length} className="px-3 py-8 text-center text-ink-muted">
-                  {emptyLabel}
-                </td>
-              </tr>
-            ) : (
-              rows.map((row) => (
-                <tr
-                  key={rowKey(row)}
-                  onClick={() => onRowClick?.(row)}
-                  className={`border-b border-hairline last:border-0 ${
-                    onRowClick ? 'cursor-pointer hover:bg-surface-2' : ''
-                  }`}
-                >
-                  {columns.map((col) => (
-                    <td
-                      key={col.key}
-                      className={`px-3 py-2 align-middle ${
-                        col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
-                      }`}
-                    >
-                      {col.render ? col.render(row) : row[col.key]}
-                    </td>
-                  ))}
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="flex items-center justify-between text-sm text-ink-secondary">
-        <span>
-          {total === 0 ? '0 results' : `${start.toLocaleString()}–${end.toLocaleString()} of ${total.toLocaleString()}`}
-        </span>
-        <div className="flex items-center gap-2">
-          <button
-            disabled={page <= 1}
-            onClick={() => onPageChange(page - 1)}
-            className="rounded-lg border border-hairline p-1.5 disabled:opacity-30 hover:bg-surface-2"
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-          <span className="tabular-nums">
-            {page} / {totalPages}
-          </span>
-          <button
-            disabled={page >= totalPages}
-            onClick={() => onPageChange(page + 1)}
-            className="rounded-lg border border-hairline p-1.5 disabled:opacity-30 hover:bg-surface-2"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-    </div>
+    <GovernedDataTable<T>
+      caption={caption}
+      columns={governedColumns}
+      state={isLoading ? loading() : rows.length > 0 ? ready(rows) : empty()}
+      rowKey={rowKey}
+      sort={
+        sortKey && sortOrder
+          ? { key: sortKey, direction: sortOrder === 'asc' ? 'ascending' : 'descending' }
+          : null
+      }
+      onSortChange={onSortChange}
+      pagination={{ page, pageSize, total, onPageChange }}
+      search={
+        onSearchChange
+          ? { value: search ?? '', onChange: onSearchChange, label: 'Search records', placeholder: searchPlaceholder }
+          : undefined
+      }
+      filters={filters}
+      onRowActivate={onRowClick}
+      empty={{ title: emptyLabel }}
+    />
   );
 }

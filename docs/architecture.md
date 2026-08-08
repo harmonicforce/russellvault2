@@ -647,6 +647,103 @@ our own origin with no third-party runtime font request, and is opt-in through
 a single utility so it cannot leak into tables, form fields, money, long prose,
 or error text.
 
+## S1.6.3 data and overlay primitives
+
+**A table takes a truth state, not a row array.** `design-system/DataTable`
+accepts `TruthState<readonly T[]>`, so a caller cannot express "no rows"
+without choosing between `empty` — an authoritative zero — and one of the
+indeterminate states. There is no `rows: T[]` prop through which a failed fetch
+could arrive as `[]`. Loading, ready and empty render inside the table with the
+column headers intact; partial and stale render their notice above the rows;
+the four indeterminate states render the notice and **no table at all**, because
+a header row above nothing reads as a table that merely happens to be short.
+
+**The table owns presentation and nothing else.** Sorting, paging, filtering
+and searching are callbacks the domain answers, because only the domain knows
+whether an order is computed in the database or in memory. Sort direction is
+announced twice — `aria-sort` on the column and the direction in the control's
+own accessible name — since an attribute alone is not reliably spoken. An
+unknown pagination total renders as unknown; no page count is derived from it
+and it is never shown as 0.
+
+**Row activation is a real button in the first cell.** A `<tr>` with an
+`onClick` is unreachable by keyboard, and wrapping the row in a control makes
+every per-row action a button inside a button — invalid markup, and
+unreachable. The activation control sits in its own cell; other cells' actions
+are siblings. The row keeps a pointer handler for convenience that ignores any
+event originating inside an interactive element, so using a row action never
+also opens the record.
+
+**Narrow viewports get records, not a scrolling strip.**
+`ResponsiveRecordList` stacks each record with identity, status and provenance
+together at the top, then primary fields, then secondary fields, then actions.
+The failure it prevents is specific: in a horizontally scrolling table the
+columns pushed off the right-hand edge are systematically the ones carrying the
+warnings, so critical truth is lost by structure rather than by accident. The
+page supplies identity, status tone and words, provenance kind, and which
+fields are primary; the component invents none of them.
+
+**Both overlays share one focus contract.** `Dialog` and `Drawer` are native
+`<dialog>` elements opened with `showModal()` where the platform supports it,
+which supplies the top layer, background inertness and `::backdrop` without a UI
+framework. Where it does not, they render their own backdrop and keep
+`aria-modal`. Focus entry, focus containment, focus restoration, Escape, and
+backdrop dismissal live in one shared hook — S1.6.2's shell drawer deliberately
+left this to S1.6.3 rather than growing a second overlay system, and the shell
+drawer itself is unchanged. `dismissible={false}` blocks Escape and the backdrop
+while a mutation is in flight but leaves the explicit close control live:
+preventing accidental dismissal must not become trapping the operator.
+
+**Truth states have distinct presentations, and the distinctions are asserted.**
+`LoadingState`, `EmptyState`, `DependencyState`, `PartialState` and
+`StaleState` render nine kinds as nine different texts. `EmptyState` states
+that the zero is confirmed. `unavailable` says nothing is being claimed about
+how many records exist; `unauthorized` shows no protected content and reports
+neither a count nor an absence, since both are disclosures; `notConfigured`
+says nothing has failed, because a configuration gap is not a fault; `error`
+carries a bounded code. Only `unavailable`, `notConfigured` and `error` offer a
+retry — repeating an unauthorized request cannot change the answer.
+
+**CoverageNotice renders a coverage gap; it never computes one.** It states
+what is included, what is missing (or that the missing part is not known), and
+whether the subset may be totalled — the aggregation warning is unconditional
+when `safeToAggregate` is false. Dependency availability and current/historical
+basis are rendered only when the caller supplies them; an unknown flag renders
+nothing rather than a guess.
+
+**ProvenanceLabel is for where authority matters, not for every row.** Six
+kinds — governed, legacy, imported, marketplace, current, historical — each
+with distinct words and a fuller sentence available to assistive technology.
+Stamping "Governed" on every line teaches that the word means nothing, and then
+the one row that is not governed reads like the rest.
+
+**Governed mutations collect their reason through a real field.** `ReasonField`
+replaces `window.prompt()`, which cannot be labelled, described, required,
+validated, disabled, or usefully reached by assistive technology. It validates
+nothing itself — required-ness and length are the workflow's rules — and it
+never trims or normalises, so the recorded reason and the displayed reason are
+the same string. `MutationConfirmation` composes action title, plain-language
+consequence, an immutable-facts slot, the reason field, confirm/cancel, pending,
+and a bounded error, and encodes no acquisition, payment, exclusion or shipment
+rule.
+
+**Legacy consumers were carried, not migrated.** `components/DataTable` and
+`components/Drawer` keep their exact call signatures and now delegate to the
+governed components, so six legacy pages gain semantic markup and the overlay
+contract without a page migration. The wrapper's honesty is bounded and says so:
+the old `rows: T[]` + `loading: boolean` shape cannot distinguish a failed query
+from a zero, because the failure was already flattened to `[]` before it
+arrived, so it maps an empty array to `empty` and cannot do better. A surface
+that needs that distinction calls the governed table directly.
+
+**Inventory Identity Diagnostics is the proof migration.** Read-only, no
+business risk, and it carried exactly the patterns the primitives replace. Its
+transports, arguments and displayed facts are unchanged; what changed is that a
+disabled build now reports a configuration state instead of implying breakage, a
+failed lookup renders a bounded alert, and the lot list carries a real truth
+state — previously an empty workspace and a failed lot read both rendered
+nothing at all.
+
 The full S1.6 program, its seven slices, and the deferred Workbench
 customization boundary are recorded in
 `docs/programs/commercial-core-legacy-retirement/07_S1_6_GOVERNED_UI_FOUNDATION.md`.
