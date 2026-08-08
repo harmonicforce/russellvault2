@@ -849,6 +849,77 @@ purpose, and asserted absent: valuation, pricing, market value, AI, S2
 receiving/cost-basis, orders/returns, and anything over the legacy store. No
 server query was invented to manufacture a widget.
 
+## S1.6.5 governed list reference
+
+**`/acquisitions` is the canonical governed list.** Later governed list surfaces
+copy it. The migration changed no acquisition semantics, no server route, no RPC
+and no SQL — same transport, same closed vocabularies, same 50-row page, same
+search predicate.
+
+**The URL is the list state.** Query, all six filters, sort, order and page live
+in the address bar and nowhere else; there is no parallel component state for
+any of them, so back, forward, reload and a pasted link recover the exact list.
+Changing anything but the page resets to page 1, because page 4 of the previous
+filter is not page 4 of this one. A workspace switch clears the whole list state.
+
+**Closed vocabularies are mirrored from the route,** so the client can neither
+offer a filter the server rejects nor hide one it supports. An unsupported value
+never reaches the transport, is stripped from the URL, and is reported — and the
+notice is sticky, because stripping the parameter is what would otherwise erase
+the notice in the same tick it appeared.
+
+**`method` is a surfaced capability, not a new rule.** It was already carried by
+the transport, already validated by the route against five values, and already
+counted by the facets; it simply had no operator control. It has one now.
+
+**Lines and facets are independent dependencies.** The previous page evaluated
+`lines.isError || facets.isError` and rendered one error screen, so a failed
+facets request — which supplies only filter suggestions and a summary —
+destroyed a working page of governed lines. Now a facet failure costs the
+operator their suggestions and their summary and nothing else: the rows, the
+exact total, and the truthfulness of the filter already applied all survive, and
+the applied filter stays selected even when its suggestion list could not be
+read. Retrying the summary re-issues only the facets query.
+
+**The exact total is the server's, derived separately from the rows,** so the
+header can say "137 filtered lines" while this page is short, and can never say
+"0" because nothing has arrived. Loading shows no count, a genuine zero says it
+is confirmed, a failure says no total has been assumed. Pagination disables Next
+from that total, never from `rows.length`, which would offer a page that does not
+exist whenever the last page is full.
+
+**Coverage is stated and totalling is forbidden.** `CoverageNotice` renders the
+transport's own contract — governed-native committed lines included, historical
+legacy Whatnot purchases missing — and states unconditionally that these figures
+must not be totalled, because governed and legacy describe different populations.
+
+**All six server sort keys are exposed as sortable columns**, including
+`created_at`, which got its own Recorded column rather than being reachable only
+by editing the URL. Nothing else is sortable: a control that cannot map onto a
+server key would either do nothing or re-sort locally and disagree with the
+ordering the next page was computed against.
+
+**The table hands over to records at `lg`, not `md`.** Nine columns on a tablet
+in portrait is the horizontally scrolling strip the responsive handoff exists to
+prevent, so `DataTable` gained an optional `responsiveBreakpoint` — presentation
+only, teaching the component nothing about acquisitions.
+
+**Excluded is a decision, not a deletion.** An excluded line stays visible,
+searchable and linkable, marked with the word "Excluded" rather than colour.
+Absent values render as bounded unknowns, because a blank cell cannot be told
+apart from a rendering gap.
+
+**Every link is source-qualified** —
+`/acquisitions/:sourceSystemPublicId/:linePublicId`, both encoded — because a
+line public id is unique only within its source system. No internal UUID appears
+in any link, and each carries the current list URL as `state.from` so Detail
+returns to the exact filtered page.
+
+**The design system learned nothing about acquisitions.** A domain adapter
+decides field values, labels, classification and exclusion presentation, the
+detail URL and the filter values; `DataTable` and `ResponsiveRecordList` stay
+domain-agnostic.
+
 The full S1.6 program, its seven slices, and the Workbench customization
 boundary are recorded in
 `docs/programs/commercial-core-legacy-retirement/07_S1_6_GOVERNED_UI_FOUNDATION.md`.
