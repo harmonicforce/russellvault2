@@ -92,7 +92,11 @@
 
   /* Status primitives. Two independent ramps, one per theme, chosen for
      contrast against that theme's surfaces. Nothing here is gold. */
-  --rv-success-on-light: #1e7a4a;
+  /* Darkened in S1.6.7: measured 4.46:1 as pill text on the inset-surface tint
+     in a real browser — a hair under the 4.5:1 minimum, which is exactly the
+     kind of miss no amount of reading the palette reveals. Now 5.1:1 there, and
+     better everywhere else it is already used. */
+  --rv-success-on-light: #1b7044;
   --rv-warning-on-light: #8b5500;
   --rv-serious-on-light: #a84722;
   --rv-critical-on-light: #b3261e;
@@ -131,6 +135,12 @@
   /* The readable foreground for a SOLID brand fill. Light theme fills with a
      dark gold, so the label is white. */
   --on-accent: var(--rv-parchment-000);
+  /* Paired foreground for a CRITICAL FILL, on the same principle as
+     --on-accent. `--status-critical` is tuned to be readable as TEXT on this
+     theme's surfaces, which makes it the wrong luminance to pair with a fixed
+     white in both themes: in dark it is a light coral, and white on it measured
+     3.15:1 in a real browser. The pairing flips with the theme instead. */
+  --on-critical: var(--rv-parchment-000);
   --focus-ring: var(--rv-gold-dark);
 
   --status-success: var(--rv-success-on-light);
@@ -166,6 +176,7 @@
     /* Dark theme fills with a BRIGHT gold, so the label must be dark ink. A
        white label on bright gold is roughly 1.9:1 and unreadable. */
     --on-accent: var(--rv-ink-900);
+    --on-critical: var(--rv-ink-900);
     --focus-ring: var(--rv-gold-brighter);
 
     --status-success: var(--rv-success-on-dark);
@@ -195,6 +206,7 @@
   --brand-accent-strong: var(--rv-gold-brighter);
   --brand-accent-soft: var(--rv-gold-shadow);
   --on-accent: var(--rv-ink-900);
+  --on-critical: var(--rv-ink-900);
   --focus-ring: var(--rv-gold-brighter);
 
   --status-success: var(--rv-success-on-dark);
@@ -243,6 +255,7 @@
   --color-accent-strong: var(--brand-accent-strong);
   --color-accent-soft: var(--brand-accent-soft);
   --color-on-accent: var(--on-accent);
+  --color-on-critical: var(--on-critical);
   --color-focus-ring: var(--focus-ring);
 
   /* Status — independent of brand. */

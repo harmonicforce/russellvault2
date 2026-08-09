@@ -25,7 +25,10 @@ const VARIANT: Record<ButtonVariant, string> = {
   primary: 'bg-accent text-on-accent hover:opacity-90',
   secondary: 'border border-strong bg-surface-raised text-ink hover:bg-surface-inset',
   quiet: 'text-ink-secondary hover:bg-surface-inset hover:text-ink',
-  destructive: 'bg-critical text-white hover:opacity-90',
+  // Paired foreground, not a fixed white. `--status-critical` is a light coral
+  // in the dark theme, where white on it measured 3.15:1 in a real browser —
+  // below the 4.5:1 minimum for the one control that destroys something.
+  destructive: 'bg-critical text-on-critical hover:opacity-90',
 };
 
 const SIZE: Record<ButtonSize, string> = {

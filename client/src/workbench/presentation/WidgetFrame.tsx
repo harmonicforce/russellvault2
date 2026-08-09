@@ -80,6 +80,21 @@ export function WidgetFrame({
   dragHandleProps,
   dragHandleRef,
 }: WidgetFrameProps) {
+  // S1.6.7 REPAIR — the handle is a real control, so it is named as one.
+  //
+  // It shipped as `aria-hidden="true"` on the reasoning that it was a
+  // decorative grip. A real browser disagreed: @dnd-kit writes `tabindex="0"`
+  // and `role="button"` straight onto the node, and the adapter configures a
+  // KeyboardSensor — so the handle IS keyboard-operable and IS a tab stop.
+  // An aria-hidden element that is focusable is a hole in the tab order that
+  // announces nothing, which axe reports as a serious violation.
+  //
+  // Suppressing the focusability would have removed a working capability. The
+  // honest repair is to stop hiding a control that exists, and give it the
+  // accessible name it always needed. It does not duplicate Move earlier/later:
+  // those move a widget one position, this one drags it.
+  const dragHandleLabel = `Drag ${definition.title} to reorder`;
+
   const family = definition.presentation.family;
   const isFirst = position ? position.index === 0 : false;
   const isLast = position ? position.index === position.total - 1 : false;
@@ -103,11 +118,13 @@ export function WidgetFrame({
             <span
               ref={dragHandleRef}
               data-drag-handle=""
-              aria-hidden="true"
-              className="-ml-1 cursor-grab touch-none rounded-control p-1 text-ink-muted"
+              aria-label={dragHandleLabel}
+              title={dragHandleLabel}
+              className="-ml-1 cursor-grab touch-none rounded-control p-1 text-ink-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
               {...dragHandleProps}
             >
-              <GripVertical className="h-4 w-4" />
+              {/* The glyph is decorative; the name is on the handle itself. */}
+              <GripVertical className="h-4 w-4" aria-hidden="true" />
             </span>
           )}
           <h3 className={`truncate font-semibold ${family === 'metric' ? 'text-xs text-ink-muted' : 'text-sm text-ink'}`}>

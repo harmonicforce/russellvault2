@@ -1288,7 +1288,7 @@ hardware, and a missing WebKit build fails the suite rather than skipping it.
 
 ### Defects the browser found, and the repairs
 
-Five, all invisible to jsdom and all repaired client-side with a failing
+Eight, all invisible to jsdom and all repaired client-side with a failing
 browser reproduction first.
 
 1. **The shell navigation drawer had no focus containment at all.** It shipped
@@ -1311,6 +1311,30 @@ browser reproduction first.
    the pressed button, so a keyboard operator moving a widget twice was thrown
    to the top of the page between presses. Focus is now restored to the same
    control on the same widget instance.
+6. **Every Workbench widget was a nested interactive control.** @dnd-kit marks
+   the sortable element itself `role="button"` with a tabindex so it can be
+   dragged from anywhere. This surface drags only from the handle by design, so
+   that wrapper announced a button that does nothing — and it CONTAINS the
+   reorder, resize and remove buttons. The generated attributes are removed
+   after every render, because the package rewrites them on each one.
+7. **Two theme contrast failures, both measured rather than eyeballed.** White
+   on the destructive fill measured **3.15:1** in Dark Vault, because
+   `--status-critical` is a light coral there — tuned to be read as TEXT, which
+   makes it the wrong luminance to pair with a fixed white. It now uses a
+   paired `--on-critical` token that flips with the theme, exactly as
+   `--on-accent` already did for the brand. Separately, the success pill
+   measured **4.46:1** on the inset-surface tint in Light Vault Ledger — a hair
+   under the 4.5:1 minimum, and precisely the kind of miss no amount of reading
+   the palette reveals. `--rv-success-on-light` was darkened to clear 5.1:1.
+8. **The drag handle was `aria-hidden` and focusable at the same time.** It
+   shipped as a decorative grip. A real browser disagreed: @dnd-kit writes
+   `tabindex="0"` and `role="button"` onto the node and the adapter configures
+   a KeyboardSensor, so the handle genuinely is a tab stop and genuinely is
+   keyboard-operable. Hiding it left a stop that announced nothing. Suppressing
+   the focus would have removed a working capability, so the repair was to stop
+   hiding a control that exists and give it the name it always needed. The
+   jsdom test that asserted the old behaviour is inverted, and that inversion
+   is the finding.
 
 ### CI
 

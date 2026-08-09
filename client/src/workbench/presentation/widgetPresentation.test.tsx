@@ -113,14 +113,27 @@ describe('edit furniture appears only in edit mode', () => {
     expect(screen.getByRole('button', { name: 'Remove Needs location' })).toBeTruthy();
   });
 
-  it('hides the decorative grip from assistive technology', () => {
+  // INVERTED IN S1.6.7, and the inversion is the finding.
+  //
+  // This used to assert the grip was `aria-hidden`, on the reasoning that it
+  // was a decorative pointer affordance. A real browser disproved it: @dnd-kit
+  // writes `tabindex="0"` and `role="button"` onto the node, and the adapter
+  // configures a KeyboardSensor — so the grip is genuinely focusable and
+  // genuinely keyboard-operable. Hiding a working control from assistive
+  // technology left a tab stop that announced nothing, which axe reports as a
+  // serious violation. jsdom could not catch it: it has no tab order.
+  it('names the drag handle rather than hiding a control that is really there', () => {
     render(
       <WidgetFrame definition={INSTRUMENT} size="standard" editing position={{ index: 0, total: 1 }}>
         <p>body</p>
       </WidgetFrame>,
     );
-    // The grip is a pointer affordance; the accessible path is the buttons.
-    expect(document.querySelector('[data-drag-handle]')!.getAttribute('aria-hidden')).toBe('true');
+    const handle = document.querySelector('[data-drag-handle]')!;
+    expect(handle.getAttribute('aria-hidden')).toBeNull();
+    expect(handle.getAttribute('aria-label')).toBe('Drag Needs location to reorder');
+    // The discrete keyboard path stays separate — dragging and moving one
+    // position are different operations — and is asserted by the test above,
+    // which renders the frame with those handlers attached.
   });
 });
 
