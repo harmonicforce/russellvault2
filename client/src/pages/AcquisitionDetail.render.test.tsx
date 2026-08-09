@@ -375,6 +375,13 @@ describe('acquisition detail — retry lifecycle',()=>{
   await waitFor(()=>expect(screen.getByText('Stop retrying and verify')).toBeTruthy());
   const before=calls.length;
   fireEvent.click(screen.getByText('Stop retrying and verify'));
+  // Waits for the RESOLVED state, not for the button label to change.
+  // While the authoritative re-read is in flight the control reads
+  // "Verifying…", so a wait keyed on the old label passes the instant the
+  // click lands — before the outcome exists. That raced green locally and
+  // failed on a slower CI runner, which is exactly the kind of test that
+  // looks like a product bug when it finally breaks.
+  await waitFor(()=>expect(screen.queryByText(/still unknown|could not be re-read|Verification failed/)).toBeTruthy());
   await waitFor(()=>expect(screen.queryByText('Stop retrying and verify')).toBeNull());
   // Stopping sends no further governed mutation. That much WAS true before.
   expect(calls).toHaveLength(before);
@@ -408,6 +415,13 @@ describe('acquisition detail — retry lifecycle',()=>{
   await startPayment();
   await waitFor(()=>expect(screen.getByText('Stop retrying and verify')).toBeTruthy());
   fireEvent.click(screen.getByText('Stop retrying and verify'));
+  // Waits for the RESOLVED state, not for the button label to change.
+  // While the authoritative re-read is in flight the control reads
+  // "Verifying…", so a wait keyed on the old label passes the instant the
+  // click lands — before the outcome exists. That raced green locally and
+  // failed on a slower CI runner, which is exactly the kind of test that
+  // looks like a product bug when it finally breaks.
+  await waitFor(()=>expect(screen.queryByText(/still unknown|could not be re-read|Verification failed/)).toBeTruthy());
   await waitFor(()=>expect(screen.queryByText('Stop retrying and verify')).toBeNull());
   await startShipment();
   await waitFor(()=>expect(calls.filter(c=>c.fn==='createShipment')).toHaveLength(1));
@@ -650,6 +664,13 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
   await waitFor(()=>expect(screen.getByText('Stop retrying and verify')).toBeTruthy());
   const before=calls.length;
   fireEvent.click(screen.getByText('Stop retrying and verify'));
+  // Waits for the RESOLVED state, not for the button label to change.
+  // While the authoritative re-read is in flight the control reads
+  // "Verifying…", so a wait keyed on the old label passes the instant the
+  // click lands — before the outcome exists. That raced green locally and
+  // failed on a slower CI runner, which is exactly the kind of test that
+  // looks like a product bug when it finally breaks.
+  await waitFor(()=>expect(screen.queryByText(/still unknown|could not be re-read|Verification failed/)).toBeTruthy());
   await waitFor(()=>expect(screen.queryByText('Stop retrying and verify')).toBeNull());
   expect(calls).toHaveLength(before);
   expect(document.body.textContent).not.toContain('Nothing was sent');
