@@ -1026,12 +1026,16 @@ serious and zero critical violations across six surface states in both themes,
 with no `disableRules` list. Forty committed screenshot baselines cover four
 surfaces x two themes x five viewports.
 
-**Five real defects surfaced, all invisible to jsdom:** the shell drawer had no
+**Eight real defects surfaced, all invisible to jsdom:** the shell drawer had no
 focus containment despite claiming `aria-modal`; the shared focus trap counted
 every radio in a group, so its computed last stop was one the browser never
 focuses; `Button size="small"` was 36px for primary touch actions; the sign-out
-control was 28x28; and Workbench reorder dropped focus to `document.body`. All
-five are repaired client-side, each with a failing browser reproduction first.
+control was 28x28; Workbench reorder dropped focus to `document.body`; every
+widget wrapper was marked `role="button"` by @dnd-kit, nesting the real buttons
+inside a fake one; white on the destructive fill measured 3.15:1 in Dark Vault
+and the success pill measured 4.46:1 in Light Vault Ledger; and the drag handle
+was `aria-hidden` while genuinely focusable and keyboard-operable. All eight are
+repaired client-side, each with a failing browser reproduction first.
 
 **The gate is load-bearing.** It runs inside `build-and-verify` — one of the four
 required jobs — not as a fifth status and not as an optional workflow. CI

@@ -38,6 +38,25 @@ skip when the browser is absent.
 3. `Button size="small"` was **36px** for primary touch actions.
 4. Sign-out control measured **28x28**; now `IconButton` (44x44).
 5. Workbench reorder dropped focus to **`document.body`**.
+6. @dnd-kit marked every widget wrapper `role="button"` — a **nested
+   interactive control** wrapping the real reorder/resize/remove buttons.
+7. **Contrast, measured:** white on the destructive fill was **3.15:1** in dark
+   (now a paired `--on-critical` token), and the success pill was **4.46:1** in
+   light (now 5.1:1).
+8. The drag handle was **`aria-hidden` and focusable**. Named rather than
+   hidden, because @dnd-kit's KeyboardSensor makes it a real control; the jsdom
+   test asserting the old behaviour is inverted.
+
+### Verification
+
+`npm ci` x3, lint, typecheck, `build:ci` all 0. Server **593**, client **1325**,
+node guards **23**/9/14. `db:reset` 0, `db:test` **2493 assertions**, migrations
+**72** — both matching the stated baseline, with S2.2's work untouched.
+Browser gate: **360 Chromium tests pass** across all five reference viewports;
+axe reports **zero serious and zero critical** across six surface states in both
+themes, with no rule exclusions; 40 screenshot baselines committed. The ten
+WebKit specs fail locally because the browser cannot be downloaded in this
+sandbox, and run in CI.
 
 ### CI
 
