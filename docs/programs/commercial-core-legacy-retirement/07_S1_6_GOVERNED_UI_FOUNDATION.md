@@ -1203,6 +1203,136 @@ What jsdom cannot prove remains unproven: it applies no CSS, so the responsive
 tests assert class-level architecture and the presence of evidence, never real
 geometry. Real responsive and accessibility proof is S1.6.7's browser gate.
 
+## Browser quality gate (S1.6.7, implemented — S1.6 complete)
+
+S1.6.1 through S1.6.6 each deferred real-browser proof, and each said so in
+writing. jsdom applies no CSS, performs no layout, implements no top layer, has
+no `showModal()`, evaluates no media query and has no tab order. Everything
+those slices could not prove is proved here, or is not proved at all.
+
+### Versions, and why
+
+| Package | Version | Why |
+| --- | --- | --- |
+| `@playwright/test` | **1.56.1** (exact) | latest patch of the stable line whose Chromium build (r1194) is executable in the development sandbox |
+| `@axe-core/playwright` | **4.12.1** (exact) | current `latest`; not beta/rc/next |
+| `axe-core` | **4.12.1** (exact) | inside the integration's own `~4.12.1` range |
+| `playwright-core` | **1.56.1** (npm `overrides`) | the axe integration declares `playwright-core >= 1.0.0`, which hoists a second copy beside the runner — two `Page` types and two browser registries |
+
+**Deviation, stated plainly.** The latest stable Playwright is 1.62.1. It
+requires Chromium r1234, and this sandbox's egress policy blocks Playwright's
+CDN, so 1.62.1 cannot launch a browser here at all. Pinning 1.56.1 — whose
+r1194 build is pre-installed — is what makes it possible to write, run and
+validate the suite rather than commit an unexecuted gate. Upgrading is a
+mechanical bump plus a baseline refresh once the CDN is reachable.
+
+### The harness runs the real application
+
+The gate serves the REAL production bundle: the same `vite build`, the same
+`main.tsx`, `AuthShell`, `AppShell`, routes, pages and design system. There is
+no browser-test mode, no compile-time branch, no alternate entry point and no
+cloned "test version" of any page. Only the four governed environment variables
+differ, and they point the app at a Supabase origin that does not exist.
+
+Determinism comes from two places, both OUTSIDE the application:
+
+1. `addInitScript` seeds the browser's own `localStorage` with the session and
+   theme a returning operator's browser would already hold;
+2. `page.route` answers the network at the browser boundary.
+
+**Production authentication is not weakened.** `AuthShell` resolves its own
+configuration, constructs a real `@supabase/supabase-js` client and asks it for
+a session exactly as in production. A production browser has neither the storage
+seed nor the interception, so it resolves `signed-out` and renders the sign-in
+form — which is what the harness saw before its route ordering was fixed. No
+application code has a test branch this harness can reach.
+
+Anything the harness does not explicitly answer is **aborted**, so a fixture gap
+fails loudly instead of reaching a real host.
+
+### Reference matrix
+
+Chromium exercises all five approved viewports — 390x844, 834x1194, 1194x834,
+1440x900, 1728x1117 — declared in the repository rather than taken from
+Playwright's device presets, which change between releases for reasons that are
+not product changes.
+
+WebKit smokes the two iPad geometries. **WebKit is a Safari-engine
+approximation, not an iPad**: no touch hardware, no Safari UI, no iPadOS, no
+momentum scrolling. It catches the class of defect only Safari's layout, focus
+and `<dialog>` implementation produce. It is not evidence about physical
+hardware, and a missing WebKit build fails the suite rather than skipping it.
+
+### What the gate measures
+
+- **Overflow** — `documentElement.scrollWidth` vs `clientWidth` on every
+  canonical surface at every Chromium viewport, not a search for
+  `overflow-x-hidden`, which hides the symptom.
+- **Touch targets** — real `getBoundingClientRect()` measurements, scoped to
+  controls an operator drives by thumb at the widths where they do.
+- **Themes** — explicit Light and Dark each override the OS preference; System
+  stamps no `data-theme` and follows a LIVE `prefers-color-scheme` change.
+- **Top layer and focus** — real `<dialog>` + `showModal()`, background
+  inertness by hit test, Tab and Shift+Tab containment, focus restoration.
+- **Keyboard** — a pointer-free journey across shell, Workbench, catalog,
+  Acquisitions and Detail, with a visible focus treatment checked at each stop.
+- **axe** — zero serious and zero critical violations across six surface states
+  in both themes at a narrow and a wide viewport. There is **no `disableRules`
+  list**.
+- **Visual** — 40 committed baselines (4 surfaces x 2 themes x 5 viewports).
+  Viewport captures, not `fullPage`: the shell is a fixed-height frame whose
+  content scrolls inside it, and stitching a full-page capture of a
+  non-scrolling document bakes duplicated bands into the baseline. Tolerance is
+  `threshold: 0.2`, `maxDiffPixelRatio: 0.01` — enough for antialiasing, far
+  less than any real layout regression.
+
+### Defects the browser found, and the repairs
+
+Five, all invisible to jsdom and all repaired client-side with a failing
+browser reproduction first.
+
+1. **The shell navigation drawer had no focus containment at all.** It shipped
+   in S1.6.2 claiming `aria-modal="true"`, deferring the trap to S1.6.3 — which
+   built it, onto a primitive the shell was never migrated to. A real browser
+   walked out of the "modal" drawer into the page behind it on the seventeenth
+   Tab while assistive technology was still told the rest was inert. Repaired by
+   reusing `containTabWithin` rather than growing a second trap.
+2. **The shared focus trap counted every radio in a group.** A browser gives a
+   same-named radio group ONE tab stop; the trap's computed "last focusable" was
+   an element the browser never focuses, so the wrap never fired. This was the
+   mechanism behind (1) and it affected `Dialog` and `Drawer` too.
+3. **`Button size="small"` was a flat 36px.** Customize, Acquisitions
+   pagination and the Acquisition Detail eligibility control are all primary
+   operator actions rendered at `small`. The floor now rises on a coarse
+   pointer or below `lg`; desktop density is unchanged.
+4. **The sign-out control measured 28x28.** Replaced with `IconButton`, which
+   already owns the 44x44 minimum.
+5. **Workbench reorder dropped focus to `document.body`.** Reordering unmounts
+   the pressed button, so a keyboard operator moving a widget twice was thrown
+   to the top of the page between presses. Focus is now restored to the same
+   control on the same widget instance.
+
+### CI
+
+The gate runs inside **`build-and-verify`** — one of the four required jobs —
+not in a fifth status and not in an optional workflow. Browser failures,
+screenshot regressions and serious/critical axe violations all fail the required
+job. CI installs Chromium and WebKit with `--with-deps`, compares committed
+baselines and never rewrites them; `browser:test:update` is a local command.
+The test server binds to `127.0.0.1` only.
+
+### Remaining limitations
+
+- **No physical iPad has been tested.** WebKit at iPad geometry is the closest
+  CI can run.
+- Screenshot baselines are engine- and font-sensitive; they are pinned by the
+  exact Playwright version and are refreshed deliberately, in a reviewable diff.
+- axe is a static analysis of a rendered state. It does not replace the
+  behavioural focus, keyboard and containment assertions, which is why both are
+  in this suite.
+- Touch geometry is measured in an emulated coarse-pointer context, not under a
+  real finger.
+
 ## Explicitly deferred
 
 Not part of S1.6.1, and in several cases not part of S1.6 at all:
@@ -1212,6 +1342,7 @@ Not part of S1.6.1, and in several cases not part of S1.6 at all:
 - Workbench implementation, `@dnd-kit`, and the LayoutStore (S1.6.4).
 - Page migrations beyond Acquisitions list (S1.6.5) and Acquisition Detail
   (S1.6.6).
-- Playwright and axe (S1.6.7).
+- Nothing further in S1.6: S1.6.7 is the final slice and the program is
+  complete.
 - Any database, acquisition, exclusion, receiving, cost, historical-import, or
   marketplace change (S2 and beyond).

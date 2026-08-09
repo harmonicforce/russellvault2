@@ -61,6 +61,35 @@ jobs:
       - name: Test (client audit-gate policy)
         run: node --test scripts/ci/client-audit-gate.test.mjs
 
+      # --- S1.6.7 browser quality gate (LOAD-BEARING) ---
+      # Deliberately inside build-and-verify rather than in a fifth job. The
+      # repository's four required checks are the merge contract; a separate
+      # optional workflow would be a browser gate anyone could ignore, which is
+      # the opposite of what S1.6.7 exists to establish.
+      #
+      # Chromium exercises all five reference viewports; WebKit smokes the two
+      # iPad geometries. The suite serves the REAL production bundle from
+      # 127.0.0.1 only, and every request leaving the page is answered or
+      # aborted by the harness, so this step reaches no external host and no
+      # database.
+      - name: Install browsers for the browser gate
+        run: npx --prefix client playwright install --with-deps chromium webkit
+      - name: Browser quality gate (Chromium matrix, WebKit iPad smoke, axe, screenshots)
+        # Failure here fails the required job: a browser regression, a screenshot
+        # regression, or a serious/critical axe violation all block the merge.
+        # `--update-snapshots` is never used in CI — the committed baselines are
+        # the gate, and CI compares against them rather than rewriting them.
+        run: npm run browser:test --prefix client
+      - name: Upload browser gate report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-gate-report
+          path: |
+            client/browser/.report
+            client/browser/.results
+          retention-days: 7
+
       # --- Production dependency audits (BLOCKING on high/critical) ---
       # A high or critical PRODUCTION advisory fails the job. Dev-only advisories
       # do not fail these steps because --omit=dev excludes them.

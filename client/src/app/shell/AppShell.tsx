@@ -46,7 +46,7 @@ export function AppShell({ config, themeStore, children }: AppShellProps) {
   const [preference, chooseTheme] = useThemePreference(themeStore);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-surface-0 text-ink">
+    <div data-shell-root="" className="flex h-screen w-screen flex-col overflow-hidden bg-surface-0 text-ink">
       {/*
         Outside the routed subtree, so navigating cannot unmount it and no page
         — or any future arrangeable surface — can suppress it.

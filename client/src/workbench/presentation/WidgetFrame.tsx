@@ -39,6 +39,14 @@ const FAMILY_FRAME: Record<WidgetFrameFamily, string> = {
 
 export interface WidgetFrameProps {
   readonly definition: WidgetDefinition;
+  /**
+   * The layout instance this frame renders.
+   *
+   * Emitted as `data-widget-instance` so the surface can restore focus to the
+   * SAME widget after a reorder re-render. The definition id is not enough:
+   * a widget that allows multiple instances would be ambiguous.
+   */
+  readonly instanceId?: string;
   readonly size: WidgetSize;
   readonly children: ReactNode;
   /** Rendered in the header, e.g. a count pill the widget owns. */
@@ -59,6 +67,7 @@ export interface WidgetFrameProps {
 
 export function WidgetFrame({
   definition,
+  instanceId,
   size,
   children,
   headerAccessory,
@@ -78,6 +87,7 @@ export function WidgetFrame({
   return (
     <section
       data-widget-id={definition.id}
+      data-widget-instance={instanceId}
       data-widget-family={family}
       data-widget-size={size}
       data-editing={editing ? 'true' : undefined}
@@ -119,13 +129,20 @@ export function WidgetFrame({
               size="small"
               onClick={onMoveEarlier}
               disabled={isFirst}
+              data-reorder="earlier"
               aria-label={`Move ${definition.title} earlier`}
             >
               <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" /> Earlier
             </Button>
           )}
           {onMoveLater && (
-            <Button size="small" onClick={onMoveLater} disabled={isLast} aria-label={`Move ${definition.title} later`}>
+            <Button
+              size="small"
+              onClick={onMoveLater}
+              disabled={isLast}
+              data-reorder="later"
+              aria-label={`Move ${definition.title} later`}
+            >
               <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" /> Later
             </Button>
           )}
