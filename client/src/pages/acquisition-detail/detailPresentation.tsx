@@ -166,7 +166,7 @@ export function Fact({
 }) {
   return (
     <div className="min-w-0">
-      <dt className="text-xs font-medium uppercase tracking-wide text-ink-muted">{label}</dt>
+      <dt className="text-xs font-medium uppercase tracking-wide text-ink-secondary">{label}</dt>
       <dd className="mt-0.5 break-words text-sm text-ink">{children}</dd>
       {hint && <dd className="mt-0.5 text-xs text-ink-muted">{hint}</dd>}
     </div>

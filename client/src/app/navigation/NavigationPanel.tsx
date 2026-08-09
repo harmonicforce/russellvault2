@@ -56,7 +56,7 @@ function Destination({ item, onNavigate }: { item: NavDestination; onNavigate?: 
 function NavMarker({ composition }: { composition: NavDataComposition }) {
   if (composition === 'governed-only') return null;
   return (
-    <span className="ml-auto shrink-0 rounded-pill border border-hairline px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-muted">
+    <span className="ml-auto shrink-0 rounded-pill border border-hairline px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">
       {composition === 'legacy-only' ? 'Non-authoritative' : 'Includes legacy data'}
     </span>
   );
