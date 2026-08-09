@@ -10,8 +10,8 @@ have to re-derive them from SQL.
 
 | PR | Scope | State |
 |---|---|---|
-| **S2.1** | Governed receiving schema — `acquisition_receipts`, `acquisition_receipt_lines`, `acquisition_discrepancies` | **this PR** |
-| S2.2 | Receiving mutation functions + behavioural pgTAP | not started |
+| **S2.1** | Governed receiving schema — `acquisition_receipts`, `acquisition_receipt_lines`, `acquisition_discrepancies` | complete |
+| **S2.2** | Receiving mutation functions + behavioural pgTAP | **implemented** |
 | S2.3 | Receiving UI (`/receiving`) | not started |
 | S2.4 | Cost-basis schema + `recompute_inventory_cost_basis` + pgTAP (**the critical PR**) | not started |
 | S2.5 | Cost-allocation owner surface (`/cost`) | not started |
@@ -230,3 +230,83 @@ direct `INSERT`/`UPDATE`/`DELETE`/`TRUNCATE` denied for `authenticated` and for
 undeclared privileged sessions alike; foreign-workspace and anonymous reads
 returning nothing; and the acquisition, classification, exclusion, payment, and
 shipment evidence being byte-identical after all receiving activity.
+
+## 5. S2.2 governed receiving behavior
+
+Migration `20260808000100_s2_receiving_functions.sql` adds the public receiving
+contract: `open_acquisition_receipt`, `record_acquisition_receipt_line`,
+`correct_acquisition_receipt_line`, `submit_acquisition_receipt`,
+`cancel_acquisition_receipt`, `link_acquisition_receipt_inventory`,
+`reconcile_acquisition_receipt`, `raise_acquisition_discrepancy`, and
+`transition_acquisition_discrepancy`. Every entry point re-derives the actor
+from `auth.uid()`. Owners and operators may receive; reconciliation and terminal
+discrepancy decisions require an owner; viewers and anonymous callers cannot
+mutate.
+
+The receipt graph is exactly `open -> submitted -> reconciled` or
+`open -> cancelled`. Receipt lines can be corrected only while open, using an
+expected/current compare-and-set contract with a required reason. An already
+applied desired quantity is a response-loss replay and does not emit a second
+audit event. Submitted line evidence is frozen, and reconciled/cancelled
+receipts are terminal. Discrepancies enforce `open -> claimed` and
+`open|claimed -> resolved|written_off` below the public functions; resolution
+and write-off require a note, actor, and timestamp.
+
+Line addressing remains source-qualified. The mutation takes the source-system
+public identity and acquisition-line public identity, resolves exactly one
+line, then obtains the same workspace/line advisory lock used by S1.5 exclusion.
+Under that lock it proves exactly one active placement, follows the placement
+through its acquisition lot to the receipt's exact order, and invokes
+`app.assert_acquisition_line_eligible_for_downstream`. Record, submit, and
+reconcile repeat this proof, so a missing, ambiguous, cross-order, or excluded
+placement fails closed.
+
+### 5.1 Inventory provenance and conservation
+
+`acquisition_receipt_line_inventory_links` is the dedicated child relation at
+the grain `receipt line x governed inventory subject`. A link names exactly one
+existing `inventory_lot` or `inventory_item`; receiving never creates a Product,
+SKU, Lot, Item, tracking mode, condition, or location from incomplete purchase
+evidence. Lot-managed subjects accept attributed quantities, while serialized
+items accept exactly one unit and can have only one acquisition origin.
+Same-workspace composite foreign keys protect every relationship.
+
+A row trigger locks the parent receipt line before calculating its linked sum.
+Consequently direct privileged SQL and concurrent inserts cannot make the sum
+exceed `quantity_received`. Reconciliation locks the receipt and all lines and
+requires every line's linked sum to equal its observed quantity. A cumulative
+over-receipt additionally requires explicit `over_shipped` discrepancy evidence;
+it is never clamped or silently treated as expected. Link rows cannot change or
+be deleted after reconciliation.
+
+### 5.2 Idempotency and audit
+
+Open uses a normalized payload fingerprint behind its workspace/key unique
+constraint and advisory key lock: exact retries return the original receipt;
+changed payloads raise `idempotency_conflict`. Receipt-line natural retries
+compare all stored payload, corrections use compare-and-set, and receipt/link
+transitions return replay results without duplicate state or audit. Human-raised
+discrepancies intentionally have no artificial idempotency key.
+
+The emitted vocabulary is: `acquisition_receipt_opened`,
+`acquisition_receipt_line_recorded`, `acquisition_receipt_line_corrected`,
+`acquisition_receipt_submitted`, `acquisition_receipt_cancelled`,
+`acquisition_receipt_inventory_linked`, `acquisition_receipt_reconciled`,
+`acquisition_discrepancy_raised`, `acquisition_discrepancy_claimed`,
+`acquisition_discrepancy_resolved`, and
+`acquisition_discrepancy_written_off`. Metadata carries governed public
+identities, transition facts, actor (through the audit row), and human reasons.
+
+`supabase/tests/65_acquisition_receiving_behavior.sql` begins with the complete
+public success path: open and replay, record two lines, correct and replay,
+submit, select existing governed inventory, link exact quantities, reconcile
+and replay, then prove source acquisition and shipment evidence stayed intact.
+It also exercises changed-payload conflicts, terminal freezes, direct-SQL
+quantity conservation, audit uniqueness, and direct-grant denial.
+
+S2.3 must provide the owner-facing selection/creation workflow for governed
+inventory subjects before reconciliation, discrepancy raise/claim/resolution
+surfaces, visible shortage/overage evidence, stable error mapping, and retry
+states. It must not guess identity or expose internal UUIDs. The pre-existing
+S1.4 NULL-GUC defect in `app.guard_acquisition_event_rows` remains documented
+debt and is intentionally not repaired by S2.2.
