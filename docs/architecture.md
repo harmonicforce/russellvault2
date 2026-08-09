@@ -920,6 +920,84 @@ decides field values, labels, classification and exclusion presentation, the
 detail URL and the filter values; `DataTable` and `ResponsiveRecordList` stay
 domain-agnostic.
 
+## S1.6.6 governed detail reference
+
+**Acquisition Detail is the canonical governed-detail and governed-mutation
+surface.** Later consequential workflows copy it. The migration changed no
+database, no server route, no RPC, no SQL, no error code, no authorization rule
+and no payment, shipment, classification, exclusion or idempotency semantic.
+
+**It is a FIXED transactional surface.** No Customize control, no widget, no
+drag handle, no LayoutStore, no Workbench embedding. An operator may customise
+their perspective; they may never customise the structure of a consequential
+transaction.
+
+**Read truth is derived once and stays distinct.** `ready`, `empty` (a 404 — the
+backend looked and there is no such line), `unauthorized` (a 403 and a
+signed-out session, phrased differently), `notConfigured` (the read contract is
+not deployed), `unavailable` (5xx), `error` (a named refusal), and `stale` — a
+failed *re-read* of a record already held. `stale` keeps the record and the
+recovery controls on screen instead of blanking the page at the exact moment an
+operator is resolving an unconfirmed mutation. The unauthorized presentation
+offers no retry and discloses nothing about whether the record exists.
+
+**Identity stays source-qualified** — `sourceSystemPublicId` + `linePublicId` in
+the route, the query key, the read and every line-targeted mutation. No internal
+UUID is exposed. Back returns to the exact list URL the operator arrived from,
+and only when `state.from` really is an in-app acquisitions URL; anything else
+falls back to `/acquisitions` rather than manufacturing a return.
+
+**Money keeps S1.4 semantics.** Currency-qualified integer minor units at the
+domain boundary, decimal only for display. Mixed currencies produce no combined
+total, a difference is shown only within one currency, and an absent total reads
+"No active recorded total" rather than `0` — while an authoritative zero count
+still renders as `0`. Tabular numerals throughout.
+
+**Delivered is not received.** `delivered` is carrier-reported arrival at an
+explicitly recorded time — not reconciled, not counted into inventory, not
+governed receiving. The page says so where the shipments are, and offers no
+receiving control. Only the server's `allowedNextTransitions` is offered; the
+state graph is never reconstructed client-side.
+
+**One unresolved governed operation at a time.** Each consequential mutation
+carries an idempotency key minted where the operator confirms it — never in
+transport, never inside a retry. A retry resends the retained operation object,
+so target, source qualification, payload and key are byte-for-byte the
+originals. Two unresolved keys would mean two unknown outcomes and no way to
+tell which the server took. A stale transition is never retained: its expected
+status is already known to be wrong, so a fresh confirmation mints a new key.
+
+**"Nothing was sent" was false and is gone.** The page used to offer "Discard
+retry" and claim the request never reached the server. An unconfirmed request
+may have committed and lost only its reply, and an owner who believes otherwise
+records the payment again under a new key the server will not collapse. The
+action is now about the retained retry: "Stop retrying and verify" preserves the
+unknown-outcome warning, re-reads the authoritative record **before** unlocking
+anything, and — when that re-read fails — keeps the lock and the retained retry
+and says the current state could not be verified. Unlocking while both the
+earlier outcome and the current state are unknown is how the duplicate gets
+written.
+
+**Feedback is bounded per operation.** One global "Saved." became a sentence
+naming the record that changed. A mutation that succeeded but whose re-read
+failed says exactly that, rather than presenting an unverified record as
+refreshed. No optimistic payment or shipment row is ever inserted.
+
+**Every governed reason is a real labelled field.** No `window.prompt()`
+anywhere. Consequential decisions use `MutationConfirmation`: what is about to
+happen, what it does to the records, exactly which record, whether it is
+reversible, and why. Classification is deliberately outside the coordinator lock
+— it carries no idempotency key, so it has no unconfirmed-outcome hazard.
+
+**`placement.integrityState = missing_active_placement` is an integrity alert,**
+not a blank metadata row. No lot is invented and downstream readiness is not
+implied.
+
+**Source evidence keeps two identity types distinct.** `sourceRecordRowKey` is a
+raw source row key and is labelled as not being an RV governed identity;
+`sourceImportJobPublicId` is the *source* import job's id. Neither is linked,
+because the application cannot navigate to source evidence.
+
 The full S1.6 program, its seven slices, and the Workbench customization
 boundary are recorded in
 `docs/programs/commercial-core-legacy-retirement/07_S1_6_GOVERNED_UI_FOUNDATION.md`.
