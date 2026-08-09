@@ -7,6 +7,20 @@
 // recovery by what a Retry actually resends. Nothing here searches the page's
 // source text — a page that merely mentions a control but never wires it must
 // fail this file.
+//
+// S1.6.6 REBUILT THE PRESENTATION AND THIS FILE KEPT ITS ASSERTIONS.
+//
+// Every business claim proved here in S1.4 is still proved here. What changed
+// is how each one is REACHED: labelled fields carry a "(required)" suffix in
+// their computed label text, the eligibility confirmation is the shared
+// governed overlay rather than an inline form, system states are rendered by
+// the truth-state vocabulary, and one global "Saved." became bounded
+// per-operation feedback. Selectors moved; assertions did not.
+//
+// One assertion was deliberately INVERTED, and it is the point of the slice:
+// stopping a retained retry used to claim "Nothing was sent". That was false,
+// so the test that demanded it now forbids it. See
+// AcquisitionDetail.reference.test.tsx for the load-bearing regression suite.
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react';
 import {MemoryRouter,Route,Routes} from 'react-router-dom';
@@ -182,8 +196,8 @@ describe('acquisition detail — classification',()=>{
 
 describe('acquisition detail — payment and shipment forms',()=>{
  async function fillPayment(over:{amount?:string;paidAt?:string}={}){
-  fireEvent.change(screen.getByLabelText('Payment amount'),{target:{value:over.amount??'12.34'}});
-  fireEvent.change(screen.getByLabelText('Payment date and time'),{target:{value:over.paidAt??'2026-08-06T12:00'}});
+  fireEvent.change(screen.getByLabelText(/Payment amount/),{target:{value:over.amount??'12.34'}});
+  fireEvent.change(screen.getByLabelText(/Payment date and time/),{target:{value:over.paidAt??'2026-08-06T12:00'}});
   fireEvent.submit(screen.getByLabelText('Record payment'));
  }
  it('sends a valid payment with minor units, uppercase currency, and a key',async()=>{renderPage();await ready();
@@ -311,13 +325,13 @@ describe('acquisition detail — retry lifecycle',()=>{
  // One case per operation class: fail once, Retry, and prove the retry carried
  // the IDENTICAL payload and the IDENTICAL idempotency key.
  async function startPayment(){
-  fireEvent.change(screen.getByLabelText('Payment amount'),{target:{value:'12.34'}});
-  fireEvent.change(screen.getByLabelText('Payment date and time'),{target:{value:'2026-08-06T12:00'}});
+  fireEvent.change(screen.getByLabelText(/Payment amount/),{target:{value:'12.34'}});
+  fireEvent.change(screen.getByLabelText(/Payment date and time/),{target:{value:'2026-08-06T12:00'}});
   fireEvent.submit(screen.getByLabelText('Record payment'));
  }
  async function startReversal(){
   fireEvent.click(screen.getByText('Reverse (preserve history)'));
-  fireEvent.change(screen.getByLabelText('Reversal reason'),{target:{value:'duplicate charge'}});
+  fireEvent.change(screen.getByLabelText(/Reversal reason/),{target:{value:'duplicate charge'}});
   fireEvent.click(screen.getByText('Confirm reversal'));
  }
  async function startShipment(){fireEvent.submit(screen.getByLabelText('Create shipment'))}
@@ -325,11 +339,14 @@ describe('acquisition detail — retry lifecycle',()=>{
   fireEvent.click(screen.getByRole('button',{name:'in transit'}));
   fireEvent.click(screen.getByText('Confirm transition'));
  }
- const CASES:Array<[string,string,()=>Promise<void>]>=[
-  ['payment','recordPayment',startPayment],
-  ['payment reversal','reversePayment',startReversal],
-  ['shipment','createShipment',startShipment],
-  ['shipment transition','transitionShipment',startTransition],
+ // The fourth element is the operation's OWN confirmation sentence. S1.6.6
+ // replaced one global "Saved." with bounded per-operation feedback, so each
+ // case now asserts that the page named the record that actually changed.
+ const CASES:Array<[string,string,()=>Promise<void>,string]>=[
+  ['payment','recordPayment',startPayment,'Payment recorded and the governed detail was re-read.'],
+  ['payment reversal','reversePayment',startReversal,'Payment reversal recorded and the governed detail was re-read.'],
+  ['shipment','createShipment',startShipment,'Shipment created and the governed detail was re-read.'],
+  ['shipment transition','transitionShipment',startTransition,'Shipment transition recorded and the governed detail was re-read.'],
  ];
  it.each(CASES)('retries a failed %s with the identical payload and key',async(_label,fn,start)=>{
   outcomes={[fn]:[failure()]};renderPage();await ready();
@@ -341,23 +358,30 @@ describe('acquisition detail — retry lifecycle',()=>{
   await waitFor(()=>expect(calls.filter(c=>c.fn===fn)).toHaveLength(2));
   expect(calls.filter(c=>c.fn===fn)[1].args).toEqual(first[0].args);
  });
- it.each(CASES)('clears the retained %s once the retry succeeds',async(_label,fn,start)=>{
+ it.each(CASES)('clears the retained %s once the retry succeeds',async(_label,fn,start,confirmed)=>{
   outcomes={[fn]:[failure()]};renderPage();await ready();
   await start();
   await waitFor(()=>expect(screen.getByText('Retry exact request')).toBeTruthy());
   fireEvent.click(screen.getByText('Retry exact request'));
   await waitFor(()=>expect(screen.queryByText('Retry exact request')).toBeNull());
-  expect(await screen.findByText('Saved.')).toBeTruthy();
+  expect(await screen.findByText(confirmed)).toBeTruthy();
  });
- it.each(CASES)('discards a retained %s without sending anything',async(_label,fn,start)=>{
+ // S1.6.6: the retained retry can be STOPPED, but the request cannot be
+ // un-sent. Stopping re-reads the governed record and says so; it never claims
+ // the earlier request failed to arrive.
+ it.each(CASES)('stops the retained %s retry without sending anything and never claims nothing was sent',async(_label,fn,start)=>{
   outcomes={[fn]:[failure()]};renderPage();await ready();
   await start();
-  await waitFor(()=>expect(screen.getByText('Discard retry')).toBeTruthy());
+  await waitFor(()=>expect(screen.getByText('Stop retrying and verify')).toBeTruthy());
   const before=calls.length;
-  fireEvent.click(screen.getByText('Discard retry'));
-  await waitFor(()=>expect(screen.queryByText('Discard retry')).toBeNull());
+  fireEvent.click(screen.getByText('Stop retrying and verify'));
+  await waitFor(()=>expect(screen.queryByText('Stop retrying and verify')).toBeNull());
+  // Stopping sends no further governed mutation. That much WAS true before.
   expect(calls).toHaveLength(before);
-  expect(screen.getByText('Unconfirmed request discarded. Nothing was sent.')).toBeTruthy();
+  // What was false before, and is now load-bearing: the page must not tell the
+  // operator the request never reached the server.
+  expect(document.body.textContent).not.toContain('Nothing was sent');
+  expect(screen.getByText(/still unknown/)).toBeTruthy();
  });
  // Two unresolved idempotency keys must never coexist: the owner would have no
  // way to know which one the server accepted.
@@ -377,11 +401,14 @@ describe('acquisition detail — retry lifecycle',()=>{
   await startShipment();
   expect(calls.filter(c=>c.fn==='createShipment')).toHaveLength(0);
  });
- it('lets work continue once the retained operation is discarded',async()=>{
+ // Unlocking is allowed only AFTER the authoritative re-read succeeded, which
+ // it does here. The failed-verification case is proved in the S1.6.6 suite.
+ it('lets work continue once the retained operation is stopped and the record re-read',async()=>{
   outcomes={recordPayment:[failure()]};renderPage();await ready();
   await startPayment();
-  await waitFor(()=>expect(screen.getByText('Discard retry')).toBeTruthy());
-  fireEvent.click(screen.getByText('Discard retry'));
+  await waitFor(()=>expect(screen.getByText('Stop retrying and verify')).toBeTruthy());
+  fireEvent.click(screen.getByText('Stop retrying and verify'));
+  await waitFor(()=>expect(screen.queryByText('Stop retrying and verify')).toBeNull());
   await startShipment();
   await waitFor(()=>expect(calls.filter(c=>c.fn==='createShipment')).toHaveLength(1));
  });
@@ -411,12 +438,23 @@ describe('acquisition detail — system states',()=>{
   expect(screen.getByRole('status').textContent).toContain('Loading governed acquisition detail');
   expect(screen.queryByText('Sealed booster box')).toBeNull();
  });
+ // Each system state is rendered by the S1.6 truth-state vocabulary, so the
+ // assertions moved from three ad hoc headings to the three DISTINCT states
+ // themselves. A 404 is `empty` — the governed backend looked and proved there
+ // is no such line — which is a different answer from "we could not find out".
  it('renders a distinct not-found state',async()=>{detailError=new AcquisitionDetailError('acquisition_not_found',404);renderPage();
-  expect(await screen.findByText('Acquisition not found')).toBeTruthy()});
+  expect(await screen.findByText('Acquisition line not found')).toBeTruthy();
+  expect(document.querySelector('[data-truth-state="empty"]')).toBeTruthy();
+  expect(document.querySelector('[data-truth-state="unavailable"]')).toBeNull()});
  it('renders a distinct unauthorized state',async()=>{detailError=new AcquisitionDetailError('unauthorized_workspace',403);renderPage();
-  expect(await screen.findByText('Not authorized')).toBeTruthy()});
+  expect(await screen.findByText('You do not have access to this')).toBeTruthy();
+  expect(document.querySelector('[data-truth-state="unauthorized"]')).toBeTruthy();
+  // Never rendered as an authoritative zero.
+  expect(document.querySelector('[data-truth-state="empty"]')).toBeNull()});
  it('renders a distinct dependency-unavailable state',async()=>{detailError=new AcquisitionDetailError('dependency_failed',502);renderPage();
-  expect(await screen.findByText('Acquisition dependency unavailable')).toBeTruthy()});
+  expect(await screen.findByText('Could not be loaded')).toBeTruthy();
+  expect(document.querySelector('[data-truth-state="unavailable"]')).toBeTruthy();
+  expect(document.querySelector('[data-truth-state="empty"]')).toBeNull()});
  it('states plainly when no payment has been recorded',async()=>{
   detail=makeDetail({payments:[],paymentSummary:{activeCount:0,activeCurrencies:[],mixedCurrencies:false,activeTotalMinor:null,sourceReportedTotalMinor:5000,differenceMinor:null}});
   renderPage();await ready();
@@ -443,16 +481,25 @@ describe('acquisition detail — system states',()=>{
 });
 
 describe('acquisition detail — coverage and scope',()=>{
+ // The four claims are unchanged; they are now carried by the shared
+ // CoverageNotice plus the page's own scope sentence, in a named region.
  it('states the committed governed-native scope and its limits',async()=>{renderPage();await ready();
-  const notice=screen.getByRole('note').textContent??'';
-  expect(notice).toContain('committed governed-native record');
-  expect(notice).toContain('Historical legacy purchases have not yet been imported');
+  const notice=screen.getByLabelText('Governed coverage').textContent??'';
+  expect(notice).toContain('governed-native acquisition evidence');
+  expect(notice).toContain('Historical legacy Whatnot acquisition history, which has not been imported');
   expect(notice).toContain('must not be added together');
   expect(notice).toContain('Recorded payments may be incomplete before reconciliation');
+  // Nothing may imply the historical reconciliation has actually happened.
+  expect(notice).toContain('record-level historical reconciliation has been performed');
  });
  it('names the source evidence truthfully',async()=>{renderPage();await ready();
-  expect(screen.getByText(/Source record row key: a-row-1/)).toBeTruthy();
-  expect(screen.getByText(/Source import job: IMP-A/)).toBeTruthy();
+  const evidence=within(screen.getByLabelText('Source evidence'));
+  expect(evidence.getByText('Source record row key')).toBeTruthy();
+  expect(evidence.getByText('a-row-1')).toBeTruthy();
+  expect(evidence.getByText('Source import job')).toBeTruthy();
+  expect(evidence.getByText('IMP-A')).toBeTruthy();
+  // The raw source row key must never read as a governed RV identity.
+  expect(evidence.getByText(/Not a Russell Vault governed identity/)).toBeTruthy();
  });
  it('shows no receiving, cost-basis, profit, or payout control',async()=>{renderPage();await ready();
   const text=document.body.textContent??'';
@@ -464,12 +511,12 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
  const failure=()=>new AcquisitionDetailError('dependency_failed',502);
  const confirmExclusion=(reason='food and candy, not resale inventory')=>{
   fireEvent.click(screen.getByRole('button',{name:'Exclude from downstream workflows'}));
-  fireEvent.change(screen.getByLabelText('Eligibility decision reason'),{target:{value:reason}});
+  fireEvent.change(screen.getByLabelText(/Eligibility decision reason/),{target:{value:reason}});
   fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
  };
  const confirmRestoration=(reason='owner reviewed: genuinely resale inventory')=>{
   fireEvent.click(screen.getByRole('button',{name:'Restore downstream eligibility'}));
-  fireEvent.change(screen.getByLabelText('Eligibility decision reason'),{target:{value:reason}});
+  fireEvent.change(screen.getByLabelText(/Eligibility decision reason/),{target:{value:reason}});
   fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
  };
 
@@ -477,8 +524,9 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
   role=r as 'viewer'|'operator';
   detail=makeDetail({exclusion:{state:'excluded',current:EXCLUDED_DECISION,history:RESTORED_HISTORY}});
   renderPage();await ready();
-  expect(screen.getByText('Excluded')).toBeTruthy();
-  expect(screen.getByText(/Current reason: food and candy/)).toBeTruthy();
+  const eligibility=within(screen.getByLabelText('Downstream eligibility'));
+  expect(eligibility.getByText('Excluded')).toBeTruthy();
+  expect(eligibility.getByText(/Current reason: food and candy/)).toBeTruthy();
   expect(screen.getByText(/first exclusion/)).toBeTruthy();
   expect(screen.getByText(/owner reviewed/)).toBeTruthy();
   expect(screen.queryByRole('button',{name:'Exclude from downstream workflows'})).toBeNull();
@@ -486,8 +534,9 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
  });
  it('shows an included line as Included with no decision history',async()=>{
   role='viewer';renderPage();await ready();
-  expect(screen.getByText('Included')).toBeTruthy();
-  expect(screen.getByText('No explicit eligibility decisions.')).toBeTruthy();
+  const eligibility=within(screen.getByLabelText('Downstream eligibility'));
+  expect(eligibility.getByText('Included')).toBeTruthy();
+  expect(eligibility.getByText('No explicit eligibility decisions.')).toBeTruthy();
  });
  it('offers an owner the exclusion control on an included line',async()=>{renderPage();await ready();
   expect(screen.getByRole('button',{name:'Exclude from downstream workflows'})).toBeTruthy();
@@ -501,22 +550,23 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
  it('sends nothing when the reason is left empty',async()=>{renderPage();await ready();
   fireEvent.click(screen.getByRole('button',{name:'Exclude from downstream workflows'}));
   fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
-  // The native required attribute blocks submission before any handler runs,
-  // so the form simply stays open and nothing is sent.
+  // The panel's own rule refuses an empty reason, so the confirmation simply
+  // stays open and nothing is sent.
+  expect(await screen.findByText('A reason is required.')).toBeTruthy();
   expect(calls).toHaveLength(0);
-  expect(screen.getByLabelText('Eligibility decision reason')).toBeTruthy();
+  expect(screen.getByLabelText(/Eligibility decision reason/)).toBeTruthy();
  });
  // Whitespace satisfies `required`, so the trim check is the real guard.
  it('rejects a whitespace-only reason and sends nothing',async()=>{renderPage();await ready();
   fireEvent.click(screen.getByRole('button',{name:'Exclude from downstream workflows'}));
-  fireEvent.change(screen.getByLabelText('Eligibility decision reason'),{target:{value:'    '}});
+  fireEvent.change(screen.getByLabelText(/Eligibility decision reason/),{target:{value:'    '}});
   fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
   expect(await screen.findByText('A reason is required.')).toBeTruthy();
   expect(calls).toHaveLength(0);
  });
  it('sends nothing when the confirmation is cancelled',async()=>{renderPage();await ready();
   fireEvent.click(screen.getByRole('button',{name:'Exclude from downstream workflows'}));
-  fireEvent.change(screen.getByLabelText('Eligibility decision reason'),{target:{value:'a reason'}});
+  fireEvent.change(screen.getByLabelText(/Eligibility decision reason/),{target:{value:'a reason'}});
   fireEvent.click(screen.getByRole('button',{name:'Cancel'}));
   expect(calls).toHaveLength(0);
   expect(screen.getByRole('button',{name:'Exclude from downstream workflows'})).toBeTruthy();
@@ -536,7 +586,7 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
  });
  it('closes the confirmation form once the decision is confirmed',async()=>{renderPage();await ready();
   confirmExclusion();
-  await waitFor(()=>expect(screen.queryByLabelText('Eligibility decision reason')).toBeNull());
+  await waitFor(()=>expect(screen.queryByLabelText(/Eligibility decision reason/)).toBeNull());
  });
  it('disables Confirm while the decision is in flight and cannot send a second request',async()=>{
   holdFns.add('exclude');renderPage();await ready();
@@ -551,8 +601,8 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
  // payment or shipment request that happens to be in flight.
  it('does not disable the exclusion control because a payment is in flight',async()=>{
   holdFns.add('recordPayment');renderPage();await ready();
-  fireEvent.change(screen.getByLabelText('Payment amount'),{target:{value:'12.34'}});
-  fireEvent.change(screen.getByLabelText('Payment date and time'),{target:{value:'2026-08-06T12:00'}});
+  fireEvent.change(screen.getByLabelText(/Payment amount/),{target:{value:'12.34'}});
+  fireEvent.change(screen.getByLabelText(/Payment date and time/),{target:{value:'2026-08-06T12:00'}});
   fireEvent.submit(screen.getByLabelText('Record payment'));
   await waitFor(()=>expect(calls.find(c=>c.fn==='recordPayment')).toBeTruthy());
   expect((screen.getByRole('button',{name:'Exclude from downstream workflows'}) as HTMLButtonElement).disabled).toBe(false);
@@ -592,16 +642,17 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
   await waitFor(()=>expect(screen.getByText('Retry exact request')).toBeTruthy());
   fireEvent.click(screen.getByText('Retry exact request'));
   await waitFor(()=>expect(screen.queryByText('Retry exact request')).toBeNull());
-  expect(await screen.findByText('Saved.')).toBeTruthy();
+  expect(await screen.findByText('Eligibility decision confirmed and the governed detail was re-read.')).toBeTruthy();
  });
- it('discards a retained exclusion without sending anything',async()=>{
+ it('stops a retained exclusion retry without sending anything',async()=>{
   outcomes={exclude:[failure()]};renderPage();await ready();
   confirmExclusion();
-  await waitFor(()=>expect(screen.getByText('Discard retry')).toBeTruthy());
+  await waitFor(()=>expect(screen.getByText('Stop retrying and verify')).toBeTruthy());
   const before=calls.length;
-  fireEvent.click(screen.getByText('Discard retry'));
-  await waitFor(()=>expect(screen.queryByText('Discard retry')).toBeNull());
+  fireEvent.click(screen.getByText('Stop retrying and verify'));
+  await waitFor(()=>expect(screen.queryByText('Stop retrying and verify')).toBeNull());
   expect(calls).toHaveLength(before);
+  expect(document.body.textContent).not.toContain('Nothing was sent');
  });
  it('refuses a second eligibility decision while one is unresolved',async()=>{
   outcomes={exclude:[failure()]};renderPage();await ready();
@@ -609,18 +660,21 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
   await waitFor(()=>expect(screen.getByText('Retry exact request')).toBeTruthy());
   // The confirmation stays open after a failure, so the lock is on Confirm.
   expect((screen.getByRole('button',{name:'Confirm'}) as HTMLButtonElement).disabled).toBe(true);
-  // Submitting the form directly bypasses the disabled button and proves the
-  // refusal is enforced in the handler, not only by the disabled attribute.
-  fireEvent.submit(screen.getByLabelText('Exclude from downstream workflows'));
+  // Submitting the payment form directly bypasses every disabled button and
+  // proves the refusal is enforced in the coordinator, not only by markup.
+  fireEvent.change(screen.getByLabelText(/Payment amount/),{target:{value:'12.34'}});
+  fireEvent.change(screen.getByLabelText(/Payment date and time/),{target:{value:'2026-08-06T12:00'}});
+  fireEvent.submit(screen.getByLabelText('Record payment'));
   await waitFor(()=>expect(screen.getByText(/Resolve the unconfirmed exclusion first/)).toBeTruthy());
   expect(calls.filter(c=>c.fn==='exclude')).toHaveLength(1);
+  expect(calls.filter(c=>c.fn==='recordPayment')).toHaveLength(0);
  });
  it('refuses a payment while an unresolved exclusion is retained',async()=>{
   outcomes={exclude:[failure()]};renderPage();await ready();
   confirmExclusion();
   await waitFor(()=>expect(screen.getByText('Retry exact request')).toBeTruthy());
-  fireEvent.change(screen.getByLabelText('Payment amount'),{target:{value:'12.34'}});
-  fireEvent.change(screen.getByLabelText('Payment date and time'),{target:{value:'2026-08-06T12:00'}});
+  fireEvent.change(screen.getByLabelText(/Payment amount/),{target:{value:'12.34'}});
+  fireEvent.change(screen.getByLabelText(/Payment date and time/),{target:{value:'2026-08-06T12:00'}});
   fireEvent.submit(screen.getByLabelText('Record payment'));
   expect(calls.filter(c=>c.fn==='recordPayment')).toHaveLength(0);
  });
@@ -631,7 +685,7 @@ describe('acquisition detail — downstream eligibility decisions',()=>{
   client.invalidateQueries=((args:{queryKey:unknown[]})=>{seen.push(args.queryKey);return original(args)}) as typeof client.invalidateQueries;
   const detailFetchesBefore=detailFetches;
   confirmExclusion();
-  await waitFor(()=>expect(screen.queryByText('Saved.')).toBeTruthy());
+  await waitFor(()=>expect(screen.queryByText('Eligibility decision confirmed and the governed detail was re-read.')).toBeTruthy());
   expect(seen.some(k=>Array.isArray(k)&&k[0]==='acquisition-lines')).toBe(true);
   expect(seen.some(k=>Array.isArray(k)&&k[0]==='acquisition-facets')).toBe(true);
   // The detail is refetched directly rather than invalidated.

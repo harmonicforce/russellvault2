@@ -973,6 +973,236 @@ What jsdom cannot prove remains unproven: it applies no CSS, so the table and
 the record list are both in the document at once and no test demonstrates which
 one a real viewport shows. Real responsive geometry is S1.6.7's browser gate.
 
+## The governed detail reference (S1.6.6, implemented)
+
+Acquisition Detail is the canonical governed-detail and governed-mutation
+surface. Every later consequential workflow — receiving, cost basis, disposal —
+is expected to look and behave like this page.
+
+The page already carried substantial, hard-won business behaviour, and none of
+it was rewritten. Every governed lifecycle, role boundary, idempotency rule,
+source-qualified address and financial rule survives byte-for-byte. What changed
+is the presentation, the information architecture, the accessibility, and one
+sentence that was actively false.
+
+### Acquisition Detail is a FIXED transactional surface
+
+There is no Customize control, no widget, no drag handle, no LayoutStore and no
+Workbench embedding on this page, and none should be added. The rule is:
+
+> An operator may customise their PERSPECTIVE. They may never customise the
+> structure of a consequential transaction.
+
+The Workbench (S1.6.4) exists for perspective. A payment form an operator could
+move, resize, or accidentally remove is a payment form whose absence looks
+exactly like a payment that was never owed.
+
+### Independent read truth
+
+The detail request is translated into the S1.6 truth vocabulary in
+`pages/acquisition-detail/detailTruth.ts`, and the states are genuinely
+distinct because the operator's next action is genuinely different:
+
+| Server answer | Truth state | What it means |
+| --- | --- | --- |
+| record | `ready` | authoritative |
+| 404 | `empty` | the backend looked, and there is no such line |
+| 401 / `signed_out` | `unauthorized` | the session ended |
+| 403 / `unauthorized_workspace` | `unauthorized` | not permitted to read it |
+| `*_contract_missing` | `notConfigured` | the deployment lacks the read contract |
+| 5xx | `unavailable` | the dependency did not answer |
+| other bounded code | `error` | a named refusal |
+| failed **re-read** of a held record | `stale` | the record stays, and says it may not be current |
+
+A 404 is `empty` rather than a failure because it is an authoritative answer,
+and it renders "This is a confirmed result, not a failed request." The
+`unauthorized` presentation offers no retry and discloses nothing about whether
+the record exists — "there is none" and "there is one you may not see" are both
+disclosures.
+
+`stale` is the state the recovery flow depends on. A failed re-read of a record
+already on screen must not blank the page: an operator resolving an unconfirmed
+payment needs the evidence *and* the recovery controls in front of them.
+
+### Coverage and provenance
+
+The transport states `coverage: 'governed_native_committed'` and
+`historicalLegacyImported: false` on every response, so coverage is a property
+of the deployment and is declared once as a constant. `safeToAggregate` is
+false: governed and legacy figures must never be added together.
+
+`ProvenanceLabel` appears exactly once on the page, on source evidence. Stamping
+"Governed" on every row teaches the operator that the word means nothing, and
+then the one row that is not governed reads the same as the rest.
+
+Source evidence keeps two deliberately different identity types visually
+distinct. `sourceRecordRowKey` is a **raw source row key**, not an RV governed
+identity, and is labelled as such; `sourceImportJobPublicId` is the *source*
+import job's public id. Neither is linked, because the application cannot
+navigate to source evidence and a link that goes nowhere is a worse answer than
+plain text.
+
+### Placement integrity
+
+`placement.integrityState` is not one more metadata row. When it is
+`missing_active_placement` the page raises an explicit integrity alert, invents
+no lot, offers no repair action that does not exist, and states that downstream
+readiness must not be assumed.
+
+### Money
+
+Money stays currency-qualified integer minor units at the domain boundary and is
+converted to decimal only for display, never back into a payload. Three rules
+are enforced by the panel rather than by discipline:
+
+- mixed currencies produce **no** combined total — there is no exchange rate
+  here, and inventing one would fabricate a financial fact;
+- a difference is rendered only when both sides share a currency;
+- an absent total reads "No active recorded total", never `0`. An authoritative
+  zero count still renders as `0`, because that one *is* a fact.
+
+Money and counts use tabular numerals so a column aligns on the decimal point.
+
+### Delivered is not received
+
+`delivered` is a carrier-reported arrival at an explicitly recorded time. It is
+not a claim that anything was opened, counted, matched against the order, or
+taken into governed inventory. The sentence saying so is visible on the panel,
+not hidden in a tooltip, and no receiving control appears because a shipment
+says delivered. S2 receiving is a separate domain.
+
+The transition graph is the **server's**: only `allowedNextTransitions` is
+offered, and nothing client-side reconstructs which status may follow which.
+
+### The unresolved governed operation contract
+
+Payments, reversals, shipment creation, shipment transitions, exclusions and
+restorations each carry an idempotency key minted **where the operator confirms
+the semantic operation** — never in transport, never inside a retry, never on a
+rerender. Exactly one such operation may be unresolved at a time, because two
+unresolved keys mean two unknown outcomes and no way to tell which the server
+took.
+
+A retry resends the retained operation object itself, so the workspace, target,
+source qualification, payload and key are byte-for-byte the originals.
+
+A stale transition is the one exception and is never retained: its expected
+status is already known to be wrong, so replaying it under the same key is
+meaningless. The detail is re-read and a fresh confirmation mints a new key.
+
+### The corrected unknown-outcome semantics
+
+This is the truth defect S1.6.6 repaired. The page previously offered "Discard
+retry" and told the operator:
+
+> "Unconfirmed request discarded. Nothing was sent."
+
+That was false. A request whose response never arrived may have reached the
+governed backend, committed, and lost only its reply. An owner who believes
+nothing was sent records the payment again — under a *new* idempotency key the
+server has no reason to collapse — and the vault ends up with two payments for
+one purchase.
+
+The action is now about the **retained retry**, not about the request. An
+operator can stop retrying; they cannot un-send. "Stop retrying and verify":
+
+1. keeps the unconfirmed-outcome warning;
+2. states that stopping does not establish whether the earlier request
+   completed;
+3. re-reads the authoritative record **before** anything is unlocked;
+4. on a successful re-read, clears the retained retry and tells the operator to
+   inspect the current record before submitting a replacement;
+5. on a **failed** re-read, keeps the lock, keeps the retained retry, and says
+   the current state could not be verified.
+
+Step 5 is the one that matters most: unlocking consequential work while both the
+earlier outcome *and* the current state are unknown is precisely how the
+duplicate gets written.
+
+The notice never renders the idempotency key. It is machinery, not evidence.
+
+### Mutation feedback
+
+One global "Saved." became bounded per-operation feedback naming the record that
+changed. If the mutation response succeeded but the authoritative re-read did
+not, the page says so explicitly rather than presenting an unverified record as
+a refreshed one. No optimistic payment or shipment row is ever inserted; success
+is authoritative only after the refetch.
+
+### Component structure
+
+`AcquisitionDetail.tsx` composes. The domain lives in
+`pages/acquisition-detail/`:
+
+| Module | Owns |
+| --- | --- |
+| `detailTruth.ts` | truth derivation and the coverage constant |
+| `operationModel.ts` | the unresolved-operation coordinator and its copy |
+| `detailPresentation.tsx` | money, instants, identities, panels, fact grids, history |
+| `OperationRecovery.tsx` | the unresolved-operation notice |
+| `AcquisitionOverview.tsx` | identity, order facts, placement integrity |
+| `ClassificationPanel.tsx` | classification, classifier, owner override |
+| `EligibilityPanel.tsx` | exclusion and restoration |
+| `PaymentsPanel.tsx` | payment summary, payments, recording, reversal |
+| `ShipmentsPanel.tsx` | shipments, creation, transitions |
+| `SourceEvidencePanel.tsx` | source evidence and its provenance |
+
+Transport and governed semantics stay centralised; no business rule has a second
+copy.
+
+### Mutation reason pattern
+
+Every governed reason is collected in a real labelled `ReasonField` — the owner
+classification override, the eligibility decision, the payment reversal and the
+lost/cancelled transition. There is no `window.prompt()` anywhere on the page.
+Consequential decisions use `MutationConfirmation`, which states what is about
+to happen, what it does to the records, exactly which record, whether it is
+reversible, and why.
+
+Classification is deliberately **not** under the coordinator lock: it carries no
+idempotency key, so it has no unconfirmed-outcome hazard and stays usable while
+a payment is unresolved.
+
+### Role matrix, unchanged
+
+| | viewer | operator | owner |
+| --- | --- | --- | --- |
+| read the governed detail | yes | yes | yes |
+| run the governed classifier | no | yes | yes |
+| record a payment | no | yes | yes |
+| create a shipment | no | yes | yes |
+| transition a shipment | no | yes | yes |
+| owner classification override | no | no | yes |
+| reverse a payment | no | no | yes |
+| exclude / restore | no | no | yes |
+
+No authority was added or removed.
+
+### Responsive architecture
+
+Panels stack on a phone and share width from `sm`, with classification and
+eligibility pairing from `lg`. Public ids and tracking numbers wrap rather than
+push a panel sideways, money never clips, transactional forms go full width on
+narrow screens, actions keep a comfortable touch target, and no history or
+provenance is hidden at any width — governed history is the evidence that a
+decision was made by someone for a reason.
+
+### Tests
+
+Client 1229 → 1324. All 81 assertions in `AcquisitionDetail.render.test.tsx`
+are preserved; selectors moved to the new accessible structure and no business
+assertion was weakened or deleted. **One assertion was deliberately inverted**:
+the test that demanded "Nothing was sent" now forbids it.
+
+`AcquisitionDetail.reference.test.tsx` adds 95. The eight tests in its
+"false discard guarantee" block are load-bearing and were confirmed to fail
+against the pre-S1.6.6 implementation, which renders "Unconfirmed request
+discarded. Nothing was sent."
+
+What jsdom cannot prove remains unproven: it applies no CSS, so the responsive
+tests assert class-level architecture and the presence of evidence, never real
+geometry. Real responsive and accessibility proof is S1.6.7's browser gate.
+
 ## Explicitly deferred
 
 Not part of S1.6.1, and in several cases not part of S1.6 at all:
@@ -980,7 +1210,8 @@ Not part of S1.6.1, and in several cases not part of S1.6 at all:
 - Shell restructuring and navigation redesign (S1.6.2).
 - Table, dialog, and drawer primitives (S1.6.3).
 - Workbench implementation, `@dnd-kit`, and the LayoutStore (S1.6.4).
-- Page migrations (S1.6.5, S1.6.6).
+- Page migrations beyond Acquisitions list (S1.6.5) and Acquisition Detail
+  (S1.6.6).
 - Playwright and axe (S1.6.7).
 - Any database, acquisition, exclusion, receiving, cost, historical-import, or
   marketplace change (S2 and beyond).

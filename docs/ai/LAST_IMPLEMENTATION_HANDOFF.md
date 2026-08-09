@@ -1,5 +1,165 @@
 # Last Implementation Handoff
 
+## S1.6.6 — Governed Acquisition Detail Reference
+
+Acquisition Detail migrated onto the S1.6 design system as the canonical
+governed-detail and governed-mutation surface. No database change, no server
+change, and no acquisition, payment, shipment, classification, exclusion or
+idempotency semantic changed. One truth defect was corrected.
+
+### Lineage and base
+
+- Branch: `claude/s1-6-6-acquisition-detail-reference`.
+- Base SHA: `7787aea1fb1a98fd46befed1683de5bdd31fb2b9` — current `main` matched the expected PR #59 merge commit exactly. **No drift.**
+- `git merge-base --is-ancestor c0fc100…(S1.6.5 impl head) HEAD` → true.
+- **S2.2 did not merge during this work.** `origin/main` was still `7787aea` at push time, so no rebase was required.
+
+### Parallel isolation held
+
+`supabase/**`, `server/**`, `docs/programs/.../08_S2_RECEIVING_AND_COST_BASIS.md`
+and `docs/ai/CURRENT_STATE.md` are untouched — `git status --porcelain` across
+all four reports zero. No receiving, no cost basis.
+
+### Regression baseline recorded before editing
+
+`AcquisitionDetail.render.test.tsx`: **81 passing**. Client total: **1229**.
+Captured before any change and treated as a preservation contract.
+
+### Page architecture, before → after
+
+| Before | After |
+| --- | --- |
+| One 107-line file of ~220-character lines | `AcquisitionDetail.tsx` composition + 9 modules under `pages/acquisition-detail/` |
+| Three outcomes: loading line, one red box, record | seven distinct truth states, incl. `stale` for a failed re-read |
+| Bordered `<section>`s, all identical | named panels with real `h2` headings and `<dl>` fact grids |
+| Unlabelled inline forms | `Field` / `ReasonField` with wired labels, descriptions and errors |
+| Hand-rolled `role="dialog"` divs | `Dialog` and `MutationConfirmation` |
+| Amber `role="note"` coverage block | `CoverageNotice` in a named region |
+| `"Saved."` for every mutation | bounded per-operation confirmation |
+| `"Discard retry"` → **"Nothing was sent."** | `"Stop retrying and verify"` → verified, uncertainty-safe |
+
+### The truth defect, and the correction
+
+The failed-operation path correctly said "was not confirmed". `discard()` then
+said:
+
+> "Unconfirmed request discarded. Nothing was sent."
+
+That was false. An unconfirmed request may have reached the governed backend,
+committed, and lost only its response. An owner who believes nothing was sent
+records the payment again — under a **new** idempotency key the server has no
+reason to collapse — and the vault holds two payments for one purchase.
+
+The action is now about the retained **retry**, not the request:
+
+1. the unconfirmed-outcome warning is preserved;
+2. the copy states that stopping does not establish whether the earlier request
+   completed;
+3. the authoritative record is re-read **before** anything unlocks;
+4. on a successful re-read the retained retry clears, and the operator is told
+   to inspect the current record before submitting a replacement;
+5. on a **failed** re-read the lock and the retained retry both stay, and the
+   page says the current state could not be confirmed.
+
+Step 5 is the one that matters: unlocking while both the earlier outcome and
+the current state are unknown is exactly how the duplicate gets written.
+
+**Evidence that the regression tests are load-bearing.** Main's implementation
+was restored in place (with a one-line shim so the import resolved, making the
+failures behavioural rather than structural) and the eight tests in the
+"false discard guarantee" block were run against it: **8 failed, 0 passed.** One
+failure was captured verbatim — main's rendered body contains
+`"Unconfirmed request discarded. Nothing was sent."` The implementation was then
+restored and re-verified.
+
+### Preservation
+
+Every governed lifecycle, role boundary, idempotency rule, source-qualified
+address and financial rule is unchanged. The role matrix is byte-identical: no
+authority was added or removed. `parseMinorUnits`, uppercase currency
+normalisation, `validLocalDate`, the compare-and-set `expectedStatus`, the
+stale-transition exception, and the one-unresolved-operation lock all behave
+exactly as before.
+
+### What changed beyond presentation
+
+- **`stale` truth state.** A failed re-read of a held record now keeps the
+  record and the recovery controls on screen instead of blanking the page at
+  the moment an operator is resolving an unconfirmed mutation.
+- **404 is `empty`, not an error.** The backend answered; there is no such line.
+- **Signed-out, unauthorized, not-configured, unavailable and named refusals**
+  are five different answers instead of one red box.
+- **Mutation feedback is per-operation**, and a mutation whose re-read failed
+  says so rather than presenting an unverified record as refreshed.
+
+### Two problems the pre-push operator walkthrough caught
+
+Both were found by rendering the page and reading it, not by a failing test:
+
+1. The recovery notice's title said "Payment was not confirmed." and its body
+   immediately restated it. The body now carries only the bounded reference
+   code and the guidance.
+2. The unresolved-operation notice rendered **below** the standing coverage
+   boilerplate. It now sits directly under the header, above coverage, and a
+   test locks that ordering.
+
+A third was caught during implementation: the stale banner and the recovery
+message opened with the same clause ("could not be re-read"), reading as two
+copies of one statement. The operation-level messages now speak about
+verification instead.
+
+### Tests
+
+Client **1229 → 1324** (final **1325** after the ordering test).
+
+- All **81** assertions in `AcquisitionDetail.render.test.tsx` preserved.
+  Selectors moved to the new accessible structure; no business assertion was
+  weakened or deleted.
+- **One assertion deliberately inverted**: the test that demanded
+  "Nothing was sent" now forbids it. That is the point of the slice.
+- `AcquisitionDetail.reference.test.tsx` adds **96**.
+
+### Verification — every command run, every exit code checked
+
+| Command | Result |
+| --- | --- |
+| `npm ci` (root, client, server) | 0, 0, 0 |
+| `npm run lint` | 0 (warnings only, all pre-existing patterns) |
+| `npm run typecheck` | 0 |
+| `npm run build:ci` | 0 |
+| `npm test` | server 593, client 1325, node guards 23 |
+| `node --test scripts/db/guard.test.mjs` | 9 pass |
+| `node --test scripts/ci/client-audit-gate.test.mjs` | 14 pass |
+| `npm run db:reset` | 0 |
+| `npm run db:test` | **2468 assertions**, unchanged |
+| `git diff --check` | 0 |
+
+Migrations: **71**, unchanged.
+
+### Remaining risks
+
+- **jsdom proves no geometry.** It applies no CSS, so the responsive tests
+  assert class-level architecture and the presence of evidence, never layout.
+  Real responsive and accessibility proof is S1.6.7's browser gate.
+- **`<dialog>.showModal()` does not exist in jsdom**, so the overlay runs its
+  fallback path in tests. Top-layer behaviour and true focus containment are
+  unproven here, as recorded in S1.6.3.
+- **Focus restoration on dialog close** is provided by the shared overlay
+  primitive and is not independently re-proved on this page.
+
+### Scope confirmation
+
+No database, no SQL, no migration, no RPC, no server route, no error code, no
+authorization change, no receiving, no cost basis, no S2 semantics, no
+Acquisitions list redesign, no Workbench change, no widget, no dnd-kit, no
+route change, no Playwright, no axe, no new UI dependency, no `CURRENT_STATE`
+edit.
+
+### Next checkpoint
+
+S1.6.7 — Browser Quality Gate.
+
+
 ## S1.6.5 — Governed Acquisitions List Reference
 
 `/acquisitions` migrated onto the S1.6 design system as the canonical
