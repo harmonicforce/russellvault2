@@ -11,7 +11,15 @@
 
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '../fixtures/app';
-import { ACQUISITIONS, ACQUISITION_DETAIL, HOME, WORKBENCH, openSurface } from '../fixtures/surfaces';
+import {
+  ACQUISITIONS,
+  ACQUISITION_DETAIL,
+  HOME,
+  RECEIPT_WORKSPACE,
+  RECEIVING,
+  WORKBENCH,
+  openSurface,
+} from '../fixtures/surfaces';
 import type { ThemeChoice } from '../fixtures/app';
 
 const THEMES: readonly ThemeChoice[] = ['light', 'dark'];
@@ -44,7 +52,7 @@ async function analyse(app: import('@playwright/test').Page) {
 }
 
 for (const theme of THEMES) {
-  for (const surface of [HOME, WORKBENCH, ACQUISITIONS, ACQUISITION_DETAIL]) {
+  for (const surface of [HOME, WORKBENCH, ACQUISITIONS, ACQUISITION_DETAIL, RECEIVING, RECEIPT_WORKSPACE]) {
     test(`${surface.name} has no serious or critical violations in ${theme}`, async ({ app, scenario }, testInfo) => {
       test.skip(!AXE_VIEWPORTS.has(testInfo.project.name), 'axe runs at one narrow and one wide reference viewport');
 

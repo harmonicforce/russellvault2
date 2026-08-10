@@ -379,3 +379,130 @@ wrong-link recovery occur in the submitted review stage; cancellation is
 open-only; reconciled provenance cannot move; and database locks serialize
 conservation and exclusion decisions. S2.3 remains the next checkpoint and is
 not implemented here.
+
+## S2.3 Batch 1 checkpoint — governed receiving UI
+
+Batch 1 turns the S2.2 database contract into the first owner-usable receiving
+workflow. It adds ZERO migrations, ZERO schema changes, and ZERO receiving
+function changes. S2.2 remains the sole owner of receiving semantics.
+
+### Server read/transport architecture
+
+`server/src/receiving/contract.ts` is pure assembly and classification, tested
+directly. `server/src/routes/receiving.ts` is transport only and is mounted at
+`/api/receiving` behind the same two gates as the acquisition router:
+availability (the surface 404s unless the governed deployment is configured) and
+per-request authentication plus workspace authorization through a Supabase
+client bound to the caller's own JWT. There is no service-role key.
+
+No governed receiving READ function exists, and Batch 1 was forbidden to add
+SQL. It was not needed: `acquisition_line_overview`, `acquisition_receipts`,
+`acquisition_receipt_lines`, `acquisition_shipments` and `acquisition_orders`
+are all `select`-granted to `authenticated` under same-workspace RLS, so the
+queue and receipt views are assembled in the application from governed,
+RLS-enforced reads. Internal ids are used as join keys and never emitted; every
+payload carries governed public identities only, and `containsInternalId` proves
+it over whole response bodies in the route tests.
+
+Reads are bounded at 2000 rows per assembly. Reaching a bound sets
+`complete: false`, which the UI renders as the S1.6 `partial` state rather than
+as a short list indistinguishable from a complete one.
+
+### `/receiving` landing contract
+
+`GET /api/receiving/queue` returns one row per acquisition order that has at
+least one receivable line, with `expectedQuantityTotal` (acquisition evidence),
+`observedQuantityTotal` (receiving evidence, excluding cancelled sessions),
+`workflowState`, the order's receipts, and its shipments.
+
+`workflowState` is a fold over authoritative receipt statuses only:
+`not_started`, `receiving_in_progress`, `submitted_pending_review`,
+`reconciled`, `cancelled_only`. There is deliberately NO "needs receiving"
+state. Nothing in the governed contract establishes that a delivery is expected,
+so a state derived from "expected exceeds observed" would be a guess presented
+as a fact.
+
+The page is a fixed operational surface using `DataTable` above `lg` and
+`ResponsiveRecordList` below it, built from one row model.
+
+### Workflows
+
+- **Open** — `POST /api/receiving/orders/:orderPublicId/receipts` →
+  `open_acquisition_receipt`. `receivedAt` is REQUIRED by the transport: S2.2
+  sets it only at open time and `submit` refuses a receipt whose `received_at`
+  is null, so a receipt opened without one is permanently unsubmittable. The
+  shipment is chosen from the order's own shipments or the explicit
+  shipment-null path; free-text shipment identity is not accepted.
+- **Record** — `POST /api/receiving/receipts/:id/lines` →
+  `record_acquisition_receipt_line`, addressed source-qualified.
+- **Correct** — `POST /api/receiving/receipt-lines/:id/correct` →
+  `correct_acquisition_receipt_line`, sending the compare-and-set value the
+  operator was looking at.
+- **Cancel** — `POST /api/receiving/receipts/:id/cancel` →
+  `cancel_acquisition_receipt`, reason required.
+- **Submit** — `POST /api/receiving/receipts/:id/submit` →
+  `submit_acquisition_receipt`.
+
+### Expected, observed, difference
+
+EXPECTED (`acquisition_line_items.quantity`) and OBSERVED
+(`acquisition_receipt_lines.quantity_received`) are separate fields end to end
+and neither is derived from the other. The difference is DISPLAYED for operator
+awareness and recorded nowhere: Batch 1 creates no discrepancy record and never
+rewrites EXPECTED because OBSERVED disagreed.
+
+An overage is legitimate physical truth. The observed-quantity input carries no
+`max`, the transport applies no ceiling, and an overage produces an informational
+notice that does not block confirmation.
+
+### Receipt is not shipment
+
+A receipt references a governed shipment identity and copies no transport truth.
+The shipment's own timestamp is carried as `carrierReceivedAt` so it cannot be
+read as a receipt's `receivedAt`, and the workspace states in words that a
+carrier reporting delivered establishes neither verified quantities, nor
+submission, nor inventory, nor reconciliation.
+
+### Role behaviour
+
+`requireOperator` (owner or operator) guards every mutation, mirroring the
+`array['owner','operator']` assertion inside each S2.2 function; the database
+gate still runs and is the one that counts. Viewers read only. The UI derives
+capability from the server-reported role, never from a client-side guess.
+
+### Retry and error behaviour
+
+The bounded governed vocabulary is preserved through transport with meaning-
+preserving statuses (`receipt_not_open`, `receipt_terminal`,
+`receipt_line_conflict`, `idempotency_conflict`,
+`acquisition_line_not_in_receipt_order`, `acquisition_line_excluded`,
+`acquisition_integrity_error`, the `_not_found` family, `invalid_request`,
+`unauthorized_workspace`). A missing S2.2 migration becomes
+`receiving_contract_missing` (503), never a 500, and the database's own sentence
+never reaches the browser.
+
+An idempotency key is minted once per confirmed intent — only opening a receipt
+needs one — and reused on retry, never minted inside a retry path. The other
+operations already carry governed replay semantics: recording is keyed on the
+(receipt, acquisition line) grain, correction is a compare-and-set, and
+cancel/submit report `replayed` when the receipt already holds the target
+status. A stale correction refreshes authoritative state and requires a fresh
+confirmation; it is never silently resent or overwritten.
+
+Submission copy states both halves: it freezes observed quantities and moves the
+receipt to submitted review; it does NOT create inventory, resolve discrepancies,
+complete owner reconciliation, or establish cost basis.
+
+### Responsive and browser coverage
+
+`/receiving` and `/receiving/:receiptPublicId` join the canonical browser
+surfaces, so the existing overflow, axe, and screenshot suites cover them at the
+five approved reference viewports without a new harness. The WebKit iPad
+overflow smoke covers them too. Visual baselines grew from 40 to 60.
+
+### Remaining Batch 2 work
+
+Inventory linking UI, unlink recovery UI, inventory-subject selection,
+discrepancy creation and lifecycle UI, owner reconciliation UI, cost allocation
+and inventory cost basis. None of it is exposed in Batch 1, and the transport
+calls none of the corresponding governed functions.

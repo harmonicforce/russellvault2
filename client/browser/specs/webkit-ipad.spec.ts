@@ -18,6 +18,8 @@ import {
   ACQUISITIONS,
   ACQUISITION_DETAIL,
   HOME,
+  RECEIPT_WORKSPACE,
+  RECEIVING,
   WORKBENCH,
   documentOverflow,
   openSurface,
@@ -44,7 +46,10 @@ test('the governed shell boots and navigates', async ({ app }) => {
 });
 
 test('no canonical surface overflows horizontally', async ({ app }) => {
-  for (const surface of [HOME, WORKBENCH, ACQUISITIONS, ACQUISITION_DETAIL]) {
+  // Receiving is included because the overflow invariant is exactly what
+  // caught the S1.6.7 shell defect that Chromium never exhibited, and the
+  // receipt workspace is now the tallest governed surface in the product.
+  for (const surface of [HOME, WORKBENCH, ACQUISITIONS, ACQUISITION_DETAIL, RECEIVING, RECEIPT_WORKSPACE]) {
     await openSurface(app, surface);
     const { scrollWidth, clientWidth } = await documentOverflow(app);
     const overflow = scrollWidth - clientWidth;

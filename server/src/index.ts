@@ -24,6 +24,7 @@ import cycleCountsRouter from './routes/cycleCounts.js';
 import mediaRouter from './routes/media.js';
 import listingPrepRouter from './routes/listingPrep.js';
 import operationsDashboardRouter from './routes/operationsDashboard.js';
+import receivingRouter from './routes/receiving.js';
 
 // The ONE startup boundary for legacy-database writes. This used to be an
 // unconditional `seedIfEmpty(); migrateProductType();` pair, which ran before
@@ -85,6 +86,12 @@ app.use('/api/media', mediaRouter);
 // elsewhere: it publishes nothing and moves no stock. Same gates as above.
 app.use('/api/listing-prep', listingPrepRouter);
 app.use('/api/operations-dashboard', operationsDashboardRouter);
+// S2.3 governed receiving. Same gates as the acquisition router above: mounted
+// before the legacy write guard, 404 unless the governed surface is configured,
+// and it never touches SQLite. Every mutation is a call into an S2.2 governed
+// function under the caller's own JWT, so receiving semantics stay in the
+// database and this process only carries the request.
+app.use('/api/receiving', receivingRouter);
 
 app.use('/api', legacyWriteGuard);
 
