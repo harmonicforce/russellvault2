@@ -1,4 +1,4 @@
-import { useCallback, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { DragDropProvider, KeyboardSensor, PointerSensor } from '@dnd-kit/react';
 import { PointerActivationConstraints } from '@dnd-kit/dom';
 import { useSortable } from '@dnd-kit/react/sortable';
@@ -110,7 +110,52 @@ export interface SortableHandles {
  */
 export function useWorkbenchSortable(id: string, index: number, disabled: boolean): SortableHandles {
   const { ref, handleRef, isDragging } = useSortable({ id, index, disabled });
-  return { ref: ref as (element: HTMLElement | null) => void, handleRef: handleRef as (element: HTMLElement | null) => void, isDragging };
+
+  // S1.6.7 REPAIR — the sortable element must not advertise itself as a button.
+  //
+  // @dnd-kit marks the sortable element with `role="button"`, `tabindex="0"` and
+  // drag ARIA so it can be dragged from anywhere. This surface deliberately
+  // drags ONLY from the handle, so that wrapper is not a control — and because
+  // it CONTAINS the reorder, resize and remove buttons, announcing it as one
+  // produces a nested interactive control. axe reports it as a serious
+  // violation, and a screen-reader operator is offered a button that does
+  // nothing. The keyboard path is the Move earlier/later buttons, which are
+  // real, labelled and unaffected.
+  const wrapper = useRef<HTMLElement | null>(null);
+  const handle = useRef<HTMLElement | null>(null);
+
+  const scrubbed = useCallback(
+    (element: HTMLElement | null) => {
+      wrapper.current = element;
+      (ref as (node: HTMLElement | null) => void)(element);
+    },
+    [ref],
+  );
+
+  const scrubbedHandle = useCallback(
+    (element: HTMLElement | null) => {
+      handle.current = element;
+      (handleRef as (node: HTMLElement | null) => void)(element);
+    },
+    [handleRef],
+  );
+
+  // Re-applied after EVERY render, because the package writes these attributes
+  // again whenever it re-renders. A ref callback alone only fires on mount.
+  useEffect(() => {
+    for (const attribute of ['role', 'tabindex', 'aria-roledescription', 'aria-pressed', 'aria-describedby']) {
+      wrapper.current?.removeAttribute(attribute);
+    }
+    // The handle is decorative: it carries `aria-hidden` because the keyboard
+    // path is the labelled Move earlier/later buttons. An aria-hidden element
+    // that is focusable is a hole in the tab order that announces nothing, so
+    // the generated tabindex comes off with it.
+    for (const attribute of ['tabindex', 'role', 'aria-roledescription', 'aria-describedby']) {
+      handle.current?.removeAttribute(attribute);
+    }
+  });
+
+  return { ref: scrubbed, handleRef: scrubbedHandle, isDragging };
 }
 
 /**

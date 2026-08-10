@@ -998,6 +998,53 @@ raw source row key and is labelled as not being an RV governed identity;
 `sourceImportJobPublicId` is the *source* import job's id. Neither is linked,
 because the application cannot navigate to source evidence.
 
+## S1.6.7 browser quality gate — S1.6 complete
+
+**The governed UI is now proved in real browsers.** Playwright 1.56.1 with
+`@axe-core/playwright` 4.12.1 drives the REAL production bundle — same `vite
+build`, same `AuthShell`, same routes, same design system — served from
+127.0.0.1. There is no browser-test mode and no cloned test page: determinism
+comes from seeding the browser's own localStorage and answering the network at
+the browser boundary, both outside the application. Production authentication is
+untouched; without the seed and the interception the app resolves `signed-out`
+and renders its sign-in form.
+
+**Chromium exercises all five approved reference viewports** (390x844, 834x1194,
+1194x834, 1440x900, 1728x1117), declared in the repository rather than inherited
+from Playwright device presets. **WebKit smokes the two iPad geometries** and is
+explicitly a Safari-ENGINE approximation, not an iPad — no touch hardware, no
+iPadOS. A missing WebKit build fails the suite rather than skipping it.
+
+**The gate measures rather than asserts.** Horizontal overflow is
+`scrollWidth` vs `clientWidth`, not a search for `overflow-x-hidden`. Touch
+targets are `getBoundingClientRect()`, not class names. Modality is a hit test
+against a real top-layer `<dialog>`. Themes are resolved through actual
+`prefers-color-scheme`, including a live OS change while System is active. A
+keyboard-only journey crosses shell, Workbench, catalog, Acquisitions and
+Detail with a visible focus treatment checked at each stop. axe requires zero
+serious and zero critical violations across six surface states in both themes,
+with no `disableRules` list. Forty committed screenshot baselines cover four
+surfaces x two themes x five viewports.
+
+**Eight real defects surfaced, all invisible to jsdom:** the shell drawer had no
+focus containment despite claiming `aria-modal`; the shared focus trap counted
+every radio in a group, so its computed last stop was one the browser never
+focuses; `Button size="small"` was 36px for primary touch actions; the sign-out
+control was 28x28; Workbench reorder dropped focus to `document.body`; every
+widget wrapper was marked `role="button"` by @dnd-kit, nesting the real buttons
+inside a fake one; white on the destructive fill measured 3.15:1 in Dark Vault
+and the success pill measured 4.46:1 in Light Vault Ledger; and the drag handle
+was `aria-hidden` while genuinely focusable and keyboard-operable. All eight are
+repaired client-side, each with a failing browser reproduction first.
+
+**The gate is load-bearing.** It runs inside `build-and-verify` — one of the four
+required jobs — not as a fifth status and not as an optional workflow. CI
+compares committed baselines and never rewrites them.
+
+**What remains unproven:** no physical iPad has been tested, screenshot
+baselines are engine- and font-sensitive, and axe is static analysis rather than
+a substitute for the behavioural assertions that sit beside it.
+
 The full S1.6 program, its seven slices, and the Workbench customization
 boundary are recorded in
 `docs/programs/commercial-core-legacy-retirement/07_S1_6_GOVERNED_UI_FOUNDATION.md`.

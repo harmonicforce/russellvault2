@@ -19,5 +19,10 @@ export default defineConfig({
     // load. The setup file installs no-op observer stubs so the module can be
     // imported; it simulates no geometry and proves no gesture.
     setupFiles: ['./vitest.setup.ts'],
+    // The browser gate is Playwright's, not Vitest's. Both runners collect
+    // `*.spec.ts`, so without this exclusion Vitest would try to execute the
+    // browser suite in jsdom — the exact environment S1.6.7 exists to stop
+    // relying on.
+    exclude: ['**/node_modules/**', '**/dist/**', '**/dist-browser-gate/**', 'browser/**'],
   },
 })

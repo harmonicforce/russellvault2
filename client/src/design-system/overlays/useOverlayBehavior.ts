@@ -38,8 +38,84 @@ const FOCUSABLE = [
  */
 function focusableWithin(panel: HTMLElement): HTMLElement[] {
   return [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
-    (element) => !element.hasAttribute('hidden') && !element.closest('[aria-hidden="true"]'),
+    (element) =>
+      !element.hasAttribute('hidden') && !element.closest('[aria-hidden="true"]') && isTabbableRadio(element, panel),
   );
+}
+
+/**
+ * Radio groups have ONE tab stop, not one per option.
+ *
+ * A browser gives the whole same-named group a single position in the tab
+ * order — the checked option, or the first when none is checked — and reaches
+ * the others with the arrow keys. A trap that counts every radio therefore
+ * computes a "last focusable" the browser will never focus, so the wrap from
+ * the end back to the start never fires and focus walks straight out of the
+ * overlay.
+ *
+ * This is precisely what happened in the shell's navigation drawer: its three
+ * theme radios inflated the list, and a real browser left the drawer on the
+ * seventeenth Tab. jsdom could not reveal it, because jsdom does not implement
+ * a tab order at all — every element there is simply "in the list".
+ */
+function isTabbableRadio(element: HTMLElement, panel: HTMLElement): boolean {
+  if (!(element instanceof HTMLInputElement) || element.type !== 'radio') return true;
+  // Matched by `name` property rather than a built selector, so a name needing
+  // escaping cannot turn a correctness rule into a thrown exception.
+  const group = [...panel.querySelectorAll<HTMLInputElement>('input[type="radio"]')].filter(
+    (radio) => radio.name === element.name,
+  );
+  if (group.length === 0) return true;
+  const checked = group.find((radio) => radio.checked);
+  return checked ? checked === element : group[0] === element;
+}
+
+/**
+ * Keep Tab inside a panel.
+ *
+ * Exported so the SHELL's navigation drawer can use the same implementation
+ * rather than growing a second one. S1.6.2 shipped that drawer with
+ * `aria-modal="true"` and no containment at all, deferring the trap to this
+ * slice — and the shell was then never migrated onto it. jsdom could not catch
+ * the gap, because it has no layout, no top layer and no real tab order; a real
+ * browser walked straight out of the "modal" drawer into the page behind it on
+ * the seventeenth Tab.
+ *
+ * Returns true when it handled the event.
+ */
+export function containTabWithin(panel: HTMLElement, event: KeyboardEvent<HTMLElement>): boolean {
+  if (event.key !== 'Tab') return false;
+
+  const focusable = focusableWithin(panel);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    panel.focus();
+    return true;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+
+  if (event.shiftKey && (active === first || active === panel)) {
+    event.preventDefault();
+    last.focus();
+    return true;
+  }
+  if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+    return true;
+  }
+  // Focus is somewhere the panel does not recognise — including the panel
+  // itself moving forward, and any element outside it. Sending Tab onward from
+  // there is how focus escapes a modal that has no browser-level containment.
+  if (!panel.contains(active)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+    return true;
+  }
+  return false;
 }
 
 export interface OverlayBehaviorOptions {
@@ -98,28 +174,10 @@ export function useOverlayBehavior({ open, onDismiss, dismissible, panelRef }: O
       return;
     }
 
-    if (event.key !== 'Tab') return;
-
     const panel = panelRef.current;
     if (!panel) return;
-    const focusable = focusableWithin(panel);
-    if (focusable.length === 0) {
-      event.preventDefault();
-      panel.focus();
-      return;
-    }
-
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-
-    if (event.shiftKey && (active === first || active === panel)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    // One implementation, shared with the shell drawer.
+    containTabWithin(panel, event);
   };
 
   return { onKeyDown };

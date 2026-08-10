@@ -25,13 +25,28 @@ const VARIANT: Record<ButtonVariant, string> = {
   primary: 'bg-accent text-on-accent hover:opacity-90',
   secondary: 'border border-strong bg-surface-raised text-ink hover:bg-surface-inset',
   quiet: 'text-ink-secondary hover:bg-surface-inset hover:text-ink',
-  destructive: 'bg-critical text-white hover:opacity-90',
+  // Paired foreground, not a fixed white. `--status-critical` is a light coral
+  // in the dark theme, where white on it measured 3.15:1 in a real browser —
+  // below the 4.5:1 minimum for the one control that destroys something.
+  destructive: 'bg-critical text-on-critical hover:opacity-90',
 };
 
 const SIZE: Record<ButtonSize, string> = {
   // min-h keeps a comfortable target even when a caller passes tight padding.
   medium: 'min-h-11 px-4 py-2 text-sm',
-  small: 'min-h-9 px-3 py-1.5 text-sm',
+  // S1.6.7 REPAIR — `small` was a flat 36px everywhere.
+  //
+  // 36px is right for a dense desktop console driven by a mouse, and it is too
+  // small for a thumb. Measuring it in a real browser is what exposed this:
+  // Customize, Acquisitions pagination, and the Acquisition Detail eligibility
+  // control are all primary operator actions rendered at `small`, and all three
+  // measured 36px on a phone. jsdom reports no geometry at all, so every
+  // previous slice "proved" touch sizing by reading the class name back.
+  //
+  // The floor rises where a finger is actually used — a coarse pointer, or a
+  // viewport below the width at which the shell switches to its touch layout —
+  // and desktop density is left alone.
+  small: 'min-h-9 max-lg:min-h-11 pointer-coarse:min-h-11 px-3 py-1.5 text-sm',
 };
 
 const BASE = [

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { LayoutGrid, Pencil, RotateCcw, Check } from 'lucide-react';
 import { Alert, Button } from '../design-system';
 import type { WidgetAvailabilityContext, WidgetSize, WorkbenchSurface as Surface } from './registry/widgetDefinition';
@@ -58,6 +58,8 @@ export function WorkbenchSurfaceRegion({
   const [editing, setEditing] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [announcement, setAnnouncement] = useState('');
+  // The reorder control to restore focus to once the grid has re-rendered.
+  const [refocus, setRefocus] = useState<{ instanceId: string; direction: -1 | 1 } | null>(null);
 
   const { layout } = controller;
 
@@ -89,7 +91,28 @@ export function WorkbenchSurfaceRegion({
         ? `${title} is already ${direction === -1 ? 'first' : 'last'}.`
         : `${title} moved to position ${target + 1} of ${orderedIds.length}.`,
     );
+    // S1.6.7 REPAIR — keep the operator's place.
+    //
+    // Reordering re-renders the grid, and React unmounts the button that was
+    // just pressed. Focus then falls to `document.body`, so a keyboard operator
+    // moving a widget two positions is thrown back to the top of the page
+    // between presses. jsdom could not see this: it has no focus model to lose.
+    setRefocus({ instanceId, direction });
   };
+
+  useEffect(() => {
+    if (!refocus) return;
+    setRefocus(null);
+    const label = refocus.direction === -1 ? 'earlier' : 'later';
+    const widget = document.querySelector(`[data-widget-instance="${refocus.instanceId}"]`);
+    const control = widget?.querySelector<HTMLElement>(`[data-reorder="${label}"]`);
+    // A control that is now disabled — the widget reached an end — cannot take
+    // focus, so the other direction on the same widget keeps the operator on
+    // the record they just moved rather than dropping them at the page top.
+    const fallback = widget?.querySelector<HTMLElement>('[data-reorder]:not([disabled])');
+    const target = control && !(control as HTMLButtonElement).disabled ? control : fallback;
+    target?.focus();
+  }, [refocus]);
 
   const grid = (
     <div className={WORKBENCH_GRID_CLASS} data-workbench-grid={surface}>
@@ -230,6 +253,7 @@ function WorkbenchWidget({
     >
       <WidgetFrame
         definition={definition}
+        instanceId={instance.instanceId}
         size={instance.size}
         editing={editing}
         position={{ index, total }}

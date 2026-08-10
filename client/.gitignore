@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Browser-gate build output and Playwright run artifacts (never committed;
+# the BASELINES under browser/baselines are committed and are the gate).
+dist-browser-gate/
+browser/.results/
+browser/.report/

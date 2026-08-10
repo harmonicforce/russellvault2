@@ -7,6 +7,7 @@
 
 import { useState } from 'react';
 import { ChevronDown, LogOut } from 'lucide-react';
+import { IconButton } from '../../design-system';
 import { useWorkspace } from '../../lib/workspaceContext';
 
 export function WorkspaceArea() {
@@ -53,15 +54,16 @@ export function WorkspaceArea() {
             {workspace.role}{email ? ` · ${email}` : ''}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={signOut}
-          title="Sign out"
-          aria-label="Sign out"
-          className="shrink-0 rounded-control p-1.5 text-ink-muted hover:bg-surface-2 hover:text-ink"
-        >
-          <LogOut className="h-4 w-4" aria-hidden="true" />
-        </button>
+        {/*
+          S1.6.7 REPAIR — this was a bare `p-1.5` button and measured 28x28 in a
+          real browser, well under a usable touch target for the one control
+          that ends the session. `IconButton` already owns the 44x44 minimum and
+          the accessible-name requirement, so the fix is to use the primitive
+          rather than to hand-tune padding here a second time.
+        */}
+        <IconButton label="Sign out" tooltip="Sign out" onClick={signOut} className="shrink-0">
+          <LogOut className="h-4 w-4" />
+        </IconButton>
       </div>
     </div>
   );

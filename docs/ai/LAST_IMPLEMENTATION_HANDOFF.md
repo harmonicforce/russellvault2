@@ -1,5 +1,74 @@
 # Last Implementation Handoff
 
+## S1.6.7 — Browser Quality Gate (S1.6 complete)
+
+Real-browser acceptance for the governed UI. No database change, no server
+change, no business semantics changed. Five client presentation/accessibility
+defects were found by the browser and repaired.
+
+### Lineage and base
+
+- Branch: `claude/s1-6-7-browser-quality-gate`.
+- Base SHA: `e6a6024b16f88935558d511f0734e52f2c2fc5a5` — matched exactly. **No drift.**
+- Both ancestor checks passed: S1.6.6 merge `0911f04` and current main `e6a6024`.
+
+### Dependencies
+
+`@playwright/test` 1.56.1, `@axe-core/playwright` 4.12.1, `axe-core` 4.12.1, all
+pinned exact, plus an npm `overrides` pin of `playwright-core` to 1.56.1 because
+the axe integration declares `>= 1.0.0` and otherwise hoists a second copy.
+
+**Deviation:** latest stable Playwright is 1.62.1, which needs Chromium r1234.
+This sandbox's egress policy blocks Playwright's CDN (`cdn.playwright.dev` and
+`playwright.download.prss.microsoft.com` both answer 403), so 1.62.1 cannot
+launch a browser here. 1.56.1 is the latest patch whose Chromium (r1194) is
+pre-installed, which is what made it possible to run and validate the suite
+rather than commit an unexecuted gate.
+
+**Blocked hosts, reported not routed around:** WebKit could not be downloaded
+locally for the same reason, so the WebKit iPad specs were authored and wired
+into CI but have not been executed in this environment. They fail rather than
+skip when the browser is absent.
+
+### Browser-discovered defects and repairs
+
+1. Shell navigation drawer had **no focus containment** — escaped on Tab 17.
+2. Shared focus trap counted **every radio in a group**; the computed last stop
+   was unreachable, which is why the wrap never fired.
+3. `Button size="small"` was **36px** for primary touch actions.
+4. Sign-out control measured **28x28**; now `IconButton` (44x44).
+5. Workbench reorder dropped focus to **`document.body`**.
+6. @dnd-kit marked every widget wrapper `role="button"` — a **nested
+   interactive control** wrapping the real reorder/resize/remove buttons.
+7. **Contrast, measured:** white on the destructive fill was **3.15:1** in dark
+   (now a paired `--on-critical` token), and the success pill was **4.46:1** in
+   light (now 5.1:1).
+8. The drag handle was **`aria-hidden` and focusable**. Named rather than
+   hidden, because @dnd-kit's KeyboardSensor makes it a real control; the jsdom
+   test asserting the old behaviour is inverted.
+
+### Verification
+
+`npm ci` x3, lint, typecheck, `build:ci` all 0. Server **593**, client **1325**,
+node guards **23**/9/14. `db:reset` 0, `db:test` **2493 assertions**, migrations
+**72** — both matching the stated baseline, with S2.2's work untouched.
+Browser gate: **360 Chromium tests pass** across all five reference viewports;
+axe reports **zero serious and zero critical** across six surface states in both
+themes, with no rule exclusions; 40 screenshot baselines committed. The ten
+WebKit specs fail locally because the browser cannot be downloaded in this
+sandbox, and run in CI.
+
+### CI
+
+The gate runs inside `build-and-verify`. The four required jobs are unchanged;
+no fifth required status was introduced.
+
+### Remaining limitations
+
+No physical iPad testing. Screenshot baselines are engine/font sensitive.
+axe is static analysis, not a replacement for the behavioural assertions.
+
+
 ## S1.6.6 — Governed Acquisition Detail Reference
 
 Acquisition Detail migrated onto the S1.6 design system as the canonical

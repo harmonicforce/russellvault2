@@ -1016,6 +1016,13 @@ describe('S1.6.6 unknown outcome — the false discard guarantee', () => {
   it('never tells the operator that nothing was sent', async () => {
     await unresolvedPayment();
     fireEvent.click(screen.getByText('Stop retrying and verify'));
+    // Waits for the RESOLVED state, not for the button label to change.
+    // While the authoritative re-read is in flight the control reads
+    // "Verifying…", so a wait keyed on the old label passes the instant the
+    // click lands — before the outcome exists. That raced green locally and
+    // failed on a slower CI runner, which is exactly the kind of test that
+    // looks like a product bug when it finally breaks.
+    await waitFor(() => expect(screen.queryByText(/still unknown|Verification failed/)).toBeTruthy());
     await waitFor(() => expect(screen.queryByText('Stop retrying and verify')).toBeNull());
     const body = document.body.textContent ?? '';
     expect(body).not.toContain('Nothing was sent');
@@ -1025,6 +1032,13 @@ describe('S1.6.6 unknown outcome — the false discard guarantee', () => {
   it('never claims the operation definitely failed or definitely succeeded', async () => {
     await unresolvedPayment();
     fireEvent.click(screen.getByText('Stop retrying and verify'));
+    // Waits for the RESOLVED state, not for the button label to change.
+    // While the authoritative re-read is in flight the control reads
+    // "Verifying…", so a wait keyed on the old label passes the instant the
+    // click lands — before the outcome exists. That raced green locally and
+    // failed on a slower CI runner, which is exactly the kind of test that
+    // looks like a product bug when it finally breaks.
+    await waitFor(() => expect(screen.queryByText(/still unknown|Verification failed/)).toBeTruthy());
     await waitFor(() => expect(screen.queryByText('Stop retrying and verify')).toBeNull());
     const body = document.body.textContent ?? '';
     expect(body).not.toMatch(/payment (failed|succeeded)/i);
@@ -1043,6 +1057,13 @@ describe('S1.6.6 unknown outcome — the false discard guarantee', () => {
     await unresolvedPayment();
     const before = detailCalls.length;
     fireEvent.click(screen.getByText('Stop retrying and verify'));
+    // Waits for the RESOLVED state, not for the button label to change.
+    // While the authoritative re-read is in flight the control reads
+    // "Verifying…", so a wait keyed on the old label passes the instant the
+    // click lands — before the outcome exists. That raced green locally and
+    // failed on a slower CI runner, which is exactly the kind of test that
+    // looks like a product bug when it finally breaks.
+    await waitFor(() => expect(screen.queryByText(/still unknown|Verification failed/)).toBeTruthy());
     await waitFor(() => expect(screen.queryByText('Stop retrying and verify')).toBeNull());
     expect(detailCalls.length).toBeGreaterThan(before);
   });
@@ -1080,6 +1101,13 @@ describe('S1.6.6 unknown outcome — the false discard guarantee', () => {
     // The record becomes readable again; stopping now resolves.
     detailFails = null;
     fireEvent.click(screen.getByText('Stop retrying and verify'));
+    // Waits for the RESOLVED state, not for the button label to change.
+    // While the authoritative re-read is in flight the control reads
+    // "Verifying…", so a wait keyed on the old label passes the instant the
+    // click lands — before the outcome exists. That raced green locally and
+    // failed on a slower CI runner, which is exactly the kind of test that
+    // looks like a product bug when it finally breaks.
+    await waitFor(() => expect(screen.queryByText(/still unknown|Verification failed/)).toBeTruthy());
     await waitFor(() => expect(screen.queryByText('Stop retrying and verify')).toBeNull());
     expect(screen.getByText(/still unknown/)).toBeTruthy();
 

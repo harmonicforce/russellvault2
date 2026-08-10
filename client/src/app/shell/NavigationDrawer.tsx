@@ -8,15 +8,28 @@
 // systems to reconcile. What is implemented here is the accessible behaviour
 // this one surface needs, and no claim is made that a reusable trap exists.
 //
-// Focus is moved INTO the drawer on open and returned to the trigger on close.
-// Focus is not continuously cycled inside the panel — that is the reusable
-// primitive's job in S1.6.3. The background is inert to pointer input while the
-// drawer is open (the backdrop covers it and the panel is above it), and the
-// drawer is marked aria-modal so assistive technology treats the rest of the
-// page as unavailable.
+// Focus is moved INTO the drawer on open, CONTAINED while it is open, and
+// returned to the trigger on close. The background is inert to pointer input
+// (the backdrop covers it and the panel is above it), and the drawer is marked
+// aria-modal so assistive technology treats the rest of the page as
+// unavailable.
+//
+// S1.6.7 REPAIR — the containment was missing.
+//
+// This drawer shipped in S1.6.2 claiming `aria-modal="true"` while nothing
+// actually held focus inside it, on the stated plan that S1.6.3 would own a
+// reusable trap. S1.6.3 built that trap, and this surface was never migrated
+// onto it. jsdom cannot detect the gap — it has no layout and no real tab
+// order — so it survived every unit suite. A real browser walked out of the
+// "modal" drawer into the page behind it on the seventeenth Tab, while
+// assistive technology was still being told the rest of the page was inert.
+//
+// The fix reuses the design system's containment rather than growing a second
+// copy of it here.
 
 import { useEffect, useRef, type ReactNode } from 'react';
 import { X } from 'lucide-react';
+import { containTabWithin } from '../../design-system/overlays/useOverlayBehavior';
 
 export interface NavigationDrawerProps {
   readonly open: boolean;
@@ -73,7 +86,9 @@ export function NavigationDrawer({ open, onClose, returnFocusTo, children }: Nav
           if (e.key === 'Escape') {
             e.stopPropagation();
             onClose();
+            return;
           }
+          if (panelRef.current) containTabWithin(panelRef.current, e);
         }}
         className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col overflow-hidden border-r border-hairline bg-surface-1 shadow-overlay"
       >
