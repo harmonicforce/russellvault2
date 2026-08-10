@@ -310,3 +310,72 @@ surfaces, visible shortage/overage evidence, stable error mapping, and retry
 states. It must not guess identity or expose internal UUIDs. The pre-existing
 S1.4 NULL-GUC defect in `app.guard_acquisition_event_rows` remains documented
 debt and is intentionally not repaired by S2.2.
+
+## 6. S2.2 post-merge acceptance hardening
+
+PR #61 was an implementation checkpoint, not complete S2.2 acceptance. Its
+25-assertion lifecycle established a useful happy path, but did not execute the
+required adversarial matrix or eight overlapping-session races. Against
+unmodified `e6a6024b16f88935558d511f0734e52f2c2fc5a5`, executable reproductions
+proved: correction versus submit could deadlock with `40P01`; an open receipt
+could link five units and then be corrected to four; a linked open receipt could
+be cancelled with its link retained; a reconciled link could be reparented to
+an open line; a submitted line could be deleted; and discrepancy kind,
+quantities, and detail could be rewritten.
+
+Migration `20260809000100_s2_receiving_acceptance_hardening.sql` repairs those
+behaviours additively. The canonical lock order is **receipt, receipt lines in
+stable ID order, downstream acquisition-line/exclusion decision lock, then
+inventory-link rows where needed**. Correction now locks and revalidates the
+receipt before its line and then takes the same S1.5 `:exclusion-line:` advisory
+identity used by exclusion decisions.
+
+Inventory provenance can be linked only while a receipt is `submitted`, after
+observed quantities freeze. An `open` receipt therefore remains safely
+cancellable without an inventory-origin claim. Link workspace, receipt-line,
+lot/item subject, public identity, creator, and creation time are immutable
+below the API; receipt-line locking preserves quantity conservation under
+concurrent links; and reconciled/cancelled provenance remains terminal.
+
+Wrong subject selection has one narrow recovery path:
+`unlink_acquisition_receipt_inventory(workspace, linkPublicId, reason)`. Owners
+and operators may use it only while the parent is `submitted`. It requires a
+reason, emits exactly one `acquisition_receipt_inventory_unlinked` audit event,
+accepts an exact response-loss retry, rejects a changed-reason retry, and never
+deletes reconciled provenance. The operator can then link the correct governed
+subject.
+
+Cancellation is `open -> cancelled` only, requires and audits its reason,
+preserves receipt/line evidence, replays only with the same reason, and rejects
+changed-reason replay. Submitted receipt lines cannot be updated, reparented,
+have their acquisition line exchanged, or be deleted even by privileged SQL
+with the governed mutation setting.
+
+Discrepancy order/receipt/line identity, kind, quantities, value evidence,
+currency, detail, creator, and creation time are immutable. Only approved
+lifecycle/resolution fields can change. Owners retain terminal resolve/write-off
+authority; operators may raise and claim; viewers and anonymous callers cannot
+mutate. Exact terminal replay succeeds while a changed resolution note
+conflicts.
+
+The focused acceptance fixture uses the existing Product -> SKU -> Lot -> Item
+model for lot-managed and serialized stock. Serialized provenance requires one
+real Item per unit, link quantity one, a serialized parent Lot, workspace
+parity, and one acquisition origin per Item; a quantity-managed Lot cannot
+masquerade as a serialized Item.
+
+`66_acquisition_receiving_acceptance_hardening.sql` executes the role, direct
+write, wrong-order, exclusion, cancellation, discrepancy, serialized,
+immutability, replay, and audit matrices plus all eight races. Every race opens
+two `dblink` sessions, sets bounded statement/lock timeouts, dispatches both
+queries before waiting for or collecting either result, and asserts final
+invariants. Coverage includes same/conflicting receipt create,
+same/conflicting line record, correction versus submit, joint over-link, double
+reconcile, and exclusion versus receiving with the exact S1.5 advisory lock
+identity.
+
+S2.3 may safely assume quantities freeze at submission; linking and governed
+wrong-link recovery occur in the submitted review stage; cancellation is
+open-only; reconciled provenance cannot move; and database locks serialize
+conservation and exclusion decisions. S2.3 remains the next checkpoint and is
+not implemented here.
