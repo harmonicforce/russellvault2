@@ -14,7 +14,15 @@
 // than papered over.
 
 import { expect, test } from '../fixtures/app';
-import { ACQUISITIONS, ACQUISITION_DETAIL, HOME, WORKBENCH, documentOverflow, openSurface } from '../fixtures/surfaces';
+import {
+  ACQUISITIONS,
+  ACQUISITION_DETAIL,
+  HOME,
+  WORKBENCH,
+  documentOverflow,
+  openSurface,
+  overflowingElements,
+} from '../fixtures/surfaces';
 import { SIDEBAR_BREAKPOINT } from '../fixtures/viewports';
 
 test('the governed shell boots and navigates', async ({ app }) => {
@@ -39,7 +47,12 @@ test('no canonical surface overflows horizontally', async ({ app }) => {
   for (const surface of [HOME, WORKBENCH, ACQUISITIONS, ACQUISITION_DETAIL]) {
     await openSurface(app, surface);
     const { scrollWidth, clientWidth } = await documentOverflow(app);
-    expect(scrollWidth - clientWidth, `${surface.name} overflows in WebKit`).toBeLessThanOrEqual(1);
+    const overflow = scrollWidth - clientWidth;
+    const offenders = overflow > 1 ? await overflowingElements(app) : [];
+    expect(
+      overflow,
+      `${surface.name} overflows by ${overflow}px in WebKit. Widest elements:\n  ${offenders.join('\n  ')}`,
+    ).toBeLessThanOrEqual(1);
   }
 });
 

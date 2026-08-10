@@ -1,5 +1,36 @@
 # Last Implementation Handoff
 
+## S1.6.7 follow-up — the WebKit overflow the merge shipped red
+
+PR #62 was merged while its `build-and-verify` job was failing. The failure was
+real and is now fixed.
+
+- Base: `2fcf99632cdceea1aba2b47f0b86c4ef2f6bf974` (S2.2 hardening merge). The
+  branch was restarted from it, because #62 is merged and a merged pull request
+  cannot carry follow-up work.
+- **What was red:** 368 browser tests passed; two failed. WebKit reported
+  exactly **10px** of horizontal overflow on Acquisition Detail at BOTH iPad
+  geometries, deterministically and on retry.
+- **Cause:** `AppShell` sized itself `w-screen`. `100vw` includes the classic
+  scrollbar gutter, so once the document scrolled the shell exceeded the
+  viewport's content box. Acquisition Detail is the tallest surface and so the
+  first to scroll. Chromium never reproduced it at any of the five viewports.
+- **Fix:** `w-full`, which resolves against the containing block and excludes
+  the gutter. No pixel change in Chromium — all 40 screenshot baselines still
+  match.
+- The overflow invariant now reports **which** elements exceed the viewport, so
+  the next failure carries its own diagnosis instead of requiring a hunt.
+
+**What the first CI run settled**, and it is worth recording: the browser gate
+executed inside `build-and-verify`; WebKit ran for the first time; and the 40
+committed screenshot baselines generated in the development sandbox matched the
+GitHub runner exactly. The portability risk flagged in the previous handoff did
+not materialise.
+
+Verification after the fix: client **1325**, browser **236 passed** across
+phone, tablet-portrait and desktop with zero baseline drift.
+
+
 ## S1.6.7 — Browser Quality Gate (S1.6 complete)
 
 Real-browser acceptance for the governed UI. No database change, no server

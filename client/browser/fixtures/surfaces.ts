@@ -97,6 +97,36 @@ export async function internalHorizontalScrollers(page: Page): Promise<Array<{ s
 }
 
 /**
+ * Which elements are actually wider than the viewport.
+ *
+ * The overflow invariant can only say THAT a page overflows; a failure that
+ * does not say WHICH element sends the next person hunting. This reports the
+ * widest offenders so the message carries the diagnosis with it.
+ */
+export async function overflowingElements(page: Page, limit = 5): Promise<string[]> {
+  return page.evaluate((max) => {
+    const viewport = document.documentElement.clientWidth;
+    const offenders: Array<{ description: string; right: number }> = [];
+    for (const element of Array.from(document.querySelectorAll<HTMLElement>('*'))) {
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || rect.right <= viewport + 1) continue;
+      const name =
+        element.getAttribute('data-shell-root') !== null
+          ? '[data-shell-root]'
+          : (element.getAttribute('aria-label') ?? element.className?.toString().slice(0, 60) ?? '');
+      offenders.push({
+        description: `${element.tagName.toLowerCase()}(${name}) right=${Math.round(rect.right)} vs viewport ${viewport}`,
+        right: rect.right,
+      });
+    }
+    return offenders
+      .sort((a, b) => b.right - a.right)
+      .slice(0, max)
+      .map((o) => o.description);
+  }, limit);
+}
+
+/**
  * Freeze everything that would otherwise make a screenshot depend on when it
  * was taken. Applied as a page stylesheet — this is the harness's stylesheet,
  * not the application's, and the application ships none of it.
