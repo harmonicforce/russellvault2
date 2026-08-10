@@ -1288,8 +1288,9 @@ hardware, and a missing WebKit build fails the suite rather than skipping it.
 
 ### Defects the browser found, and the repairs
 
-Eight, all invisible to jsdom and all repaired client-side with a failing
-browser reproduction first.
+Nine, all invisible to jsdom and all repaired client-side with a failing
+browser reproduction first. The ninth was invisible to CHROMIUM too, and is the
+clearest possible justification for the WebKit smoke.
 
 1. **The shell navigation drawer had no focus containment at all.** It shipped
    in S1.6.2 claiming `aria-modal="true"`, deferring the trap to S1.6.3 — which
@@ -1335,6 +1336,19 @@ browser reproduction first.
    hiding a control that exists and give it the name it always needed. The
    jsdom test that asserted the old behaviour is inverted, and that inversion
    is the finding.
+9. **The shell was 10px wider than the viewport in WebKit.** `AppShell` sized
+   itself `w-screen`, which is `100vw` — and `100vw` INCLUDES the classic
+   scrollbar gutter. Whenever the document grew a vertical scrollbar the shell
+   became wider than the viewport's content box, so the whole page slid
+   sideways under a thumb. It reproduced at both iPad geometries, on retry, on
+   Acquisition Detail — the tallest surface and therefore the first to scroll —
+   and Chromium never showed it at all. `w-full` resolves against the
+   containing block and excludes the gutter.
+
+   This one is worth stating plainly: it is the defect that only existed on the
+   engine the product is actually operated on, and nothing short of running
+   that engine would have found it. The overflow invariant now reports WHICH
+   elements exceed the viewport, so the next failure carries its own diagnosis.
 
 ### CI
 
@@ -1348,7 +1362,8 @@ The test server binds to `127.0.0.1` only.
 ### Remaining limitations
 
 - **No physical iPad has been tested.** WebKit at iPad geometry is the closest
-  CI can run.
+  CI can run — and it has already earned its place by catching a 10px shell
+  overflow that Chromium did not reproduce at any of the five viewports.
 - Screenshot baselines are engine- and font-sensitive; they are pinned by the
   exact Playwright version and are refreshed deliberately, in a reviewable diff.
 - axe is a static analysis of a rendered state. It does not replace the

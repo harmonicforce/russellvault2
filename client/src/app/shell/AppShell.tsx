@@ -46,7 +46,15 @@ export function AppShell({ config, themeStore, children }: AppShellProps) {
   const [preference, chooseTheme] = useThemePreference(themeStore);
 
   return (
-    <div data-shell-root="" className="flex h-screen w-screen flex-col overflow-hidden bg-surface-0 text-ink">
+    // `w-full`, not `w-screen`. S1.6.7 REPAIR — `w-screen` is `100vw`, and
+    // `100vw` INCLUDES the classic scrollbar gutter. Whenever the document grew
+    // a vertical scrollbar the shell became wider than the viewport's content
+    // box, and WebKit at both iPad geometries measured exactly 10px of
+    // horizontal overflow on Acquisition Detail — the tallest surface, and so
+    // the first one to scroll. Chromium never showed it, which is precisely why
+    // the WebKit smoke exists. `w-full` resolves against the containing block
+    // and excludes the gutter, so the shell fits at every width.
+    <div data-shell-root="" className="flex h-screen w-full flex-col overflow-hidden bg-surface-0 text-ink">
       {/*
         Outside the routed subtree, so navigating cannot unmount it and no page
         — or any future arrangeable surface — can suppress it.
