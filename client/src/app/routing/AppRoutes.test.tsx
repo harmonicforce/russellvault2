@@ -53,6 +53,11 @@ const GOVERNED_ONLY = [
   '/acquisitions',
   '/acquisitions/:sourceSystemPublicId/:linePublicId',
   '/acquisitions/:publicId',
+  // S2.3 Batch 1. The receipt workspace is addressed by governed receipt public
+  // id — never an internal uuid — and is reached from a queue row, exactly as
+  // acquisition detail is reached from an acquisition line.
+  '/receiving',
+  '/receiving/:receiptPublicId',
   '/import-review',
   '/acquisition-review',
   '/inventory-identity',

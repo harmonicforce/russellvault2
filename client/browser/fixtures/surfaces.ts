@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 import { DETAIL_LINE, SOURCE_SYSTEM } from './data';
+import { RECEIPT_PUBLIC_ID } from './receivingData';
 
 /** The four canonical S1.6 surfaces the whole gate is measured against. */
 export interface CanonicalSurface {
@@ -52,11 +53,41 @@ export const ACQUISITION_DETAIL: CanonicalSurface = {
   },
 };
 
+export const RECEIVING: CanonicalSurface = {
+  name: 'receiving',
+  path: '/receiving',
+  settled: async (page) => {
+    await expect(page.getByRole('heading', { level: 1, name: 'Receiving' })).toBeVisible();
+    // The governed answer has actually ARRIVED, not merely the page chrome.
+    //
+    // Deliberately NOT `getByText(reference).first()`: the queue is rendered
+    // twice — a table above `lg` and records below it — and `.first()` returns
+    // the DESKTOP copy, which is `display: none` on a phone. Waiting on it
+    // would hang at exactly the widths this gate exists to cover. The counts
+    // line is rendered once, in the header, at every width, and it only names a
+    // number once a governed answer has been read.
+    await expect(page.locator('[data-receiving-counts]')).toContainText(/receivable acquisition orders/);
+  },
+};
+
+export const RECEIPT_WORKSPACE: CanonicalSurface = {
+  name: 'receipt-workspace',
+  path: `/receiving/${RECEIPT_PUBLIC_ID}`,
+  settled: async (page) => {
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    // The receipt panel is a single section at every width, unlike the
+    // expected-versus-observed table beneath it.
+    await expect(page.getByRole('region', { name: 'Receipt' })).toBeVisible();
+  },
+};
+
 export const CANONICAL_SURFACES: readonly CanonicalSurface[] = [
   HOME,
   WORKBENCH,
   ACQUISITIONS,
   ACQUISITION_DETAIL,
+  RECEIVING,
+  RECEIPT_WORKSPACE,
 ];
 
 /** Navigate to a surface and wait until it has actually settled. */

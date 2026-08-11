@@ -1,5 +1,67 @@
 # Last Implementation Handoff
 
+## S2.3 — Governed Receiving UI (Batches 1 and 2, complete)
+
+S2.3 turns the S2.2 receiving database contract into the complete owner-usable
+receiving workflow: **open → record → correct → cancel → submit → link → unlink
+→ discrepancy → reconcile.** Cost basis is NOT included.
+
+- Base: `a4600c621c5b839fa1a44dee5b0fdaac3e3f98e8`.
+- **Zero migrations, zero schema changes, zero receiving-function changes, and
+  no Supabase file touched by Claude** across both batches. Verified by
+  `git diff -- supabase/` returning empty.
+- Every mutation route is a thin wrapper over an existing governed S2.2
+  function, called under the caller's own JWT. No receiving rule is
+  reimplemented in TypeScript.
+
+### The six states the workflow keeps apart
+
+`carrier delivered` · `physical receipt recorded` · `receipt submitted` ·
+`inventory linked` · `discrepancy recorded/resolved` · `owner reconciled`. None
+is shorthand for another, and each is stated in words.
+
+### What is load-bearing
+
+- **A failed retrieval is never a zero.** A failed queue read renders as a
+  failure with no counts, never as "no receiving work".
+- **Expected, observed, linked and remaining are four separate facts.** An
+  overage is never clamped; a remainder is "still needs an inventory subject",
+  never "missing inventory".
+- **Discrepancy creation has no safe replay, and the UI honours that.**
+  `raise_acquisition_discrepancy` carries no idempotency key, so a lost response
+  locks creation with NO retry control. Only an authoritative re-read settles
+  it, and a FAILED verification keeps it locked rather than unlocking. Nothing
+  ever claims "nothing was sent".
+- **Reconciliation blockers are named before the press**, mirroring the two
+  conditions S2.2 actually checks, with no single "Ready" badge. The database
+  remains authoritative.
+- **Owner-only operations are refused at both gates**, and the server refusal is
+  tested to happen before any RPC.
+
+### Inventory dependency, stated plainly
+
+Receiving attributes evidence to inventory that already exists; it creates none.
+`/api/inventory-identity/overview` was inspected and is unsuitable (items only,
+`authoritative: false`, leaks internal UUIDs), so one minimum governed read was
+added over the existing lot and item read models. Where no subject matches, the
+operator is handed off to the governed Quick Add workflow rather than Receiving
+duplicating inventory creation.
+
+### Verification
+
+lint 0 · typecheck 0 · build 0 · server 593 → 686 · client 1325 → 1422 ·
+browser gate 377 passed across three Chromium viewports · axe clean including
+submitted and reconciled states · 60 screenshot baselines, of which only the two
+receiving surfaces changed.
+
+WebKit cannot execute in the development sandbox (its browser binary is absent
+there), so every WebKit result comes from CI.
+
+### Next checkpoint
+
+S2.4 cost-basis schema and recompute, **blocked until owner decision D-8 is
+explicitly resolved.**
+
 ## S1.6.7 follow-up — the WebKit overflow the merge shipped red
 
 PR #62 was merged while its `build-and-verify` job was failing. The failure was

@@ -25,7 +25,7 @@
 
 import {
   Boxes, ClipboardCheck, ClipboardList, DollarSign, FileSearch, FileWarning, Layers,
-  LayoutDashboard, Link2, ListChecks, MapPin, Package, PackagePlus, ScanLine,
+  LayoutDashboard, Link2, ListChecks, MapPin, Package, PackageCheck, PackagePlus, ScanLine,
   ShieldCheck, ShoppingBag, Tag, Tags,
   type LucideIcon,
 } from 'lucide-react';
@@ -160,11 +160,16 @@ const INVENTORY: NavGroup = {
   ],
 };
 
+// Receiving is advertised here, beside Acquisitions, because it operates on
+// governed acquisition orders. The receipt workspace at
+// `/receiving/:receiptPublicId` is deliberately NOT advertised: it is reached
+// from a queue row, exactly as Acquisition Detail is reached from a line.
 const ACQUIRE: NavGroup = {
   id: 'acquire',
   label: 'Acquire',
   destinations: [
     { to: '/acquisitions', label: 'Acquisitions', icon: ShoppingBag, reads: READS_GOVERNED },
+    { to: '/receiving', label: 'Receiving', icon: PackageCheck, reads: READS_GOVERNED },
     { to: '/quick-add', label: 'Add Inventory', icon: PackagePlus, reads: READS_GOVERNED },
   ],
 };

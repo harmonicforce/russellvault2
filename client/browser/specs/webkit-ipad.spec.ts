@@ -18,6 +18,8 @@ import {
   ACQUISITIONS,
   ACQUISITION_DETAIL,
   HOME,
+  RECEIPT_WORKSPACE,
+  RECEIVING,
   WORKBENCH,
   documentOverflow,
   openSurface,
@@ -44,7 +46,10 @@ test('the governed shell boots and navigates', async ({ app }) => {
 });
 
 test('no canonical surface overflows horizontally', async ({ app }) => {
-  for (const surface of [HOME, WORKBENCH, ACQUISITIONS, ACQUISITION_DETAIL]) {
+  // Receiving is included because the overflow invariant is exactly what
+  // caught the S1.6.7 shell defect that Chromium never exhibited, and the
+  // receipt workspace is now the tallest governed surface in the product.
+  for (const surface of [HOME, WORKBENCH, ACQUISITIONS, ACQUISITION_DETAIL, RECEIVING, RECEIPT_WORKSPACE]) {
     await openSurface(app, surface);
     const { scrollWidth, clientWidth } = await documentOverflow(app);
     const overflow = scrollWidth - clientWidth;
@@ -106,4 +111,38 @@ test('Acquisition Detail dialogs open, contain focus and close', async ({ app })
   await app.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(trigger).toBeFocused();
+});
+
+/**
+ * The SUBMITTED receipt in WebKit.
+ *
+ * One extra case, not a second matrix. The submitted state adds the inventory
+ * provenance panel and the discrepancy region, making it the tallest governed
+ * surface in the product — and height is what produced the S1.6.7 `w-screen`
+ * defect, which appeared only once a vertical scrollbar existed and only in
+ * WebKit. The linking dialog is checked in the same test because Safari's
+ * dialog implementation is the other place this engine has diverged.
+ */
+test('a submitted receipt and its linking dialog stay inside the viewport', async ({ app, scenario }) => {
+  const world = scenario.state.receiving;
+  world.transition('submitted');
+  await openSurface(app, RECEIPT_WORKSPACE);
+
+  const settled = await documentOverflow(app);
+  const overflow = settled.scrollWidth - settled.clientWidth;
+  const offenders = overflow > 1 ? await overflowingElements(app) : [];
+  expect(
+    overflow,
+    `the submitted receipt overflows by ${overflow}px in WebKit. Widest elements:\n  ${offenders.join('\n  ')}`,
+  ).toBeLessThanOrEqual(1);
+
+  await app.getByRole('region', { name: 'Inventory provenance' })
+    .getByRole('button', { name: /link inventory/i }).first().click();
+  await expect(app.getByRole('dialog')).toBeVisible();
+
+  const open = await documentOverflow(app);
+  expect(
+    open.scrollWidth - open.clientWidth,
+    'an open linking dialog must not widen the page in WebKit',
+  ).toBeLessThanOrEqual(1);
 });

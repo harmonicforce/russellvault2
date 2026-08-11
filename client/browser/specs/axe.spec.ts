@@ -11,7 +11,15 @@
 
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '../fixtures/app';
-import { ACQUISITIONS, ACQUISITION_DETAIL, HOME, WORKBENCH, openSurface } from '../fixtures/surfaces';
+import {
+  ACQUISITIONS,
+  ACQUISITION_DETAIL,
+  HOME,
+  RECEIPT_WORKSPACE,
+  RECEIVING,
+  WORKBENCH,
+  openSurface,
+} from '../fixtures/surfaces';
 import type { ThemeChoice } from '../fixtures/app';
 
 const THEMES: readonly ThemeChoice[] = ['light', 'dark'];
@@ -44,7 +52,7 @@ async function analyse(app: import('@playwright/test').Page) {
 }
 
 for (const theme of THEMES) {
-  for (const surface of [HOME, WORKBENCH, ACQUISITIONS, ACQUISITION_DETAIL]) {
+  for (const surface of [HOME, WORKBENCH, ACQUISITIONS, ACQUISITION_DETAIL, RECEIVING, RECEIPT_WORKSPACE]) {
     test(`${surface.name} has no serious or critical violations in ${theme}`, async ({ app, scenario }, testInfo) => {
       test.skip(!AXE_VIEWPORTS.has(testInfo.project.name), 'axe runs at one narrow and one wide reference viewport');
 
@@ -56,6 +64,47 @@ for (const theme of THEMES) {
       expect(serious, `${surface.name} (${theme}):\n${describe(serious)}`).toEqual([]);
     });
   }
+
+  // Batch 2 states. The submitted receipt carries the linking controls and the
+  // discrepancy region; the reconciled one carries terminal evidence. Both are
+  // states an operator spends real time in, and neither is reachable from the
+  // default surface fixture.
+  test(`a submitted receipt with provenance and discrepancies has no serious or critical violations in ${theme}`, async ({ app, scenario }, testInfo) => {
+    test.skip(!AXE_VIEWPORTS.has(testInfo.project.name), 'axe runs at one narrow and one wide reference viewport');
+
+    await scenario.set({ theme, receivingRole: 'owner' });
+    const world = scenario.state.receiving;
+    world.transition('submitted');
+    world.link('RV-ARL-000002', { inventoryLotPublicId: 'RV-ILOT-000001', quantity: 2 });
+    world.raise({
+      kind: 'over_shipped', detail: 'Three extra units', receiptPublicId: 'RV-ARCPT-000001',
+      receiptLinePublicId: 'RV-ARL-000002',
+    });
+    await openSurface(app, RECEIPT_WORKSPACE);
+
+    const results = await analyse(app);
+    const serious = blocking(results.violations as unknown as Violation[]);
+    expect(serious, `submitted receipt (${theme}):\n${describe(serious)}`).toEqual([]);
+  });
+
+  test(`a reconciled receipt has no serious or critical violations in ${theme}`, async ({ app, scenario }, testInfo) => {
+    test.skip(!AXE_VIEWPORTS.has(testInfo.project.name), 'axe runs at one narrow and one wide reference viewport');
+
+    await scenario.set({ theme, receivingRole: 'owner' });
+    const world = scenario.state.receiving;
+    world.transition('submitted');
+    world.link('RV-ARL-000002', { inventoryLotPublicId: 'RV-ILOT-000001', quantity: 5 });
+    world.raise({
+      kind: 'over_shipped', detail: 'Three extra units', receiptPublicId: 'RV-ARCPT-000001',
+      receiptLinePublicId: 'RV-ARL-000002',
+    });
+    world.reconcile();
+    await openSurface(app, RECEIPT_WORKSPACE);
+
+    const results = await analyse(app);
+    const serious = blocking(results.violations as unknown as Violation[]);
+    expect(serious, `reconciled receipt (${theme}):\n${describe(serious)}`).toEqual([]);
+  });
 
   test(`the Workbench edit and catalog state has no serious or critical violations in ${theme}`, async ({ app, scenario }, testInfo) => {
     test.skip(!AXE_VIEWPORTS.has(testInfo.project.name), 'axe runs at one narrow and one wide reference viewport');
