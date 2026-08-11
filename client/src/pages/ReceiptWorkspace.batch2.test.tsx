@@ -486,21 +486,59 @@ describe('discrepancy creation has no blind retry', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /^record discrepancy$/i }));
     await screen.findByText(/may or may not have been created/i);
 
-    // The authoritative re-read now contains a matching record that was not
-    // there before the attempt.
+    // The authoritative re-read now contains a record that was not there before
+    // the attempt and matches EVERY field the operator confirmed. This dialog
+    // is order-scoped with no line, so it renders no quantity inputs and the
+    // confirmed evidence carries null/null — which the new record must match
+    // exactly, not merely be compatible with.
     detail = makeDetail({
       discrepancies: [makeDiscrepancy({
         discrepancyPublicId: 'RV-ADISC-NEW',
-        // ORDER-scoped, matching the order-level report that was attempted.
         receiptPublicId: null, receiptLinePublicId: null,
+        quantityExpected: null, quantityObserved: null,
       })],
     });
     fireEvent.click(screen.getByRole('button', { name: /check what is on record/i }));
 
     expect((await screen.findAllByText(/RV-ADISC-NEW/)).length).toBeGreaterThan(0);
     expect(screen.getByText(/not recorded twice/i)).toBeTruthy();
+    // The claim is exactly as strong as the check behind it.
+    expect(screen.getByText(/scope, kind, quantities and detail/i)).toBeTruthy();
     // Still exactly one attempt: verification never resends.
     expect(calls.filter((c) => c.fn === 'raiseDiscrepancy')).toHaveLength(1);
+  });
+
+  // POST-MERGE CORRECTION, driven through the DOM.
+  //
+  // A colleague's report of the same physical problem, raised seconds earlier
+  // with their own count, is DIFFERENT immutable evidence. It must not be
+  // mistaken for the operator's attempt.
+  it('does not claim it committed when a new record differs only in quantities', async () => {
+    outcomes.raiseDiscrepancy = [new ReceivingError('dependency_failed', 502)];
+    const dialog = await openReport();
+    fireEvent.click(within(dialog).getByRole('button', { name: /^record discrepancy$/i }));
+    await screen.findByText(/may or may not have been created/i);
+
+    // Same order, same (absent) receipt scope, same kind, same detail — but it
+    // carries quantities the operator did not confirm.
+    detail = makeDetail({
+      discrepancies: [makeDiscrepancy({
+        discrepancyPublicId: 'RV-ADISC-COLLEAGUE',
+        receiptPublicId: null, receiptLinePublicId: null,
+        quantityExpected: 3, quantityObserved: 6,
+      })],
+    });
+    fireEvent.click(screen.getByRole('button', { name: /check what is on record/i }));
+
+    // The UI must NOT say the attempt reached the database.
+    expect(await screen.findByText(/did not reach the database/i)).toBeTruthy();
+    expect(screen.queryByText(/it did reach the database/i)).toBeNull();
+    expect(screen.queryByText(/not recorded twice/i)).toBeNull();
+    // Nothing was resent, automatically or otherwise.
+    expect(calls.filter((c) => c.fn === 'raiseDiscrepancy')).toHaveLength(1);
+    // And a complete read with no exact match unlocks a NEW confirmed attempt.
+    expect(discrepancyRegion().getByRole('button', { name: /record a discrepancy/i })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/nothing was sent/i);
   });
 
   it('permits a NEW attempt only once a complete re-read proves nothing was recorded', async () => {

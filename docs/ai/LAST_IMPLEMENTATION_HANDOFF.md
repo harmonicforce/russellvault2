@@ -1,5 +1,38 @@
 # Last Implementation Handoff
 
+## S2.3 post-merge correction — discrepancy response-loss verification
+
+A client-only truth correction to the S2.3 work merged in PR #66.
+
+`matchesIntent()` in `client/src/pages/receiving/discrepancyCreation.ts`
+deliberately ignored `quantityExpected` and `quantityObserved`, on the reasoning
+that they were optional evidence and that scope, kind and detail already
+identified the report.
+
+That was too weak. `raise_acquisition_discrepancy` PERSISTS both quantities as
+immutable discrepancy evidence when supplied, so a newly-created record carrying
+different quantities is DIFFERENT evidence — very plausibly a colleague's report
+of the same physical problem with their own count. The merged code could
+classify such a record as the operator's own and then tell them "it did reach
+the database" on evidence that does not establish it.
+
+**Corrected:** an unknown-outcome attempt is settled as committed only when a
+record that did not exist before the attempt matches every confirmed field —
+order, receipt scope, receipt-line scope, kind, `quantityExpected`,
+`quantityObserved`, and detail. Nullable quantities compare exactly: null
+matches null, a number matches only the same number, and null never matches a
+number. No fuzzy matching was introduced, and the known-before identity
+exclusion is unchanged.
+
+The committed-state copy now claims exactly what the check establishes: "a new
+discrepancy matching the evidence you confirmed — same scope, kind, quantities
+and detail". Nothing anywhere says "nothing was sent".
+
+Seven of the new tests fail against the merged implementation and pass against
+the correction. Client tests 1422 → 1431; browser gate 377 passed with zero
+baseline drift. No server, Supabase, workflow or receiving-semantic change; race
+H is untouched.
+
 ## S2.3 — Governed Receiving UI (Batches 1 and 2, complete)
 
 S2.3 turns the S2.2 receiving database contract into the complete owner-usable
