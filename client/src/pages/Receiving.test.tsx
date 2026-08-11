@@ -116,6 +116,9 @@ function makeLine(over: Partial<ReceivingExpectedLine> = {}): ReceivingExpectedL
     exclusionState: 'included',
     observed: null,
     cumulativeReceivedQuantity: 0,
+    links: [],
+    linkedQuantity: 0,
+    unlinkedQuantity: 0,
     ...over,
   };
 }
@@ -151,6 +154,16 @@ function makeDetail(over: Partial<ReceivingReceiptDetail> = {}): ReceivingReceip
         carrierReceivedAt: '2026-08-04T00:00:00.000Z',
       },
     ],
+    discrepancies: [],
+    reconciliation: {
+      receiptStatus: 'open',
+      linesFullyLinked: false,
+      linesNeedingLinks: [],
+      overageLinesMissingEvidence: [],
+      openDiscrepancyCount: 0,
+      claimedDiscrepancyCount: 0,
+      terminalDiscrepancyCount: 0,
+    },
     ...over,
   };
 }

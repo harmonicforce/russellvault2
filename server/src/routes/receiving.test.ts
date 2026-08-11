@@ -100,6 +100,54 @@ const RECEIPT_LINE_ROWS = [
   },
 ];
 
+const LOT_ID = 'aaaa1111-1111-1111-1111-111111111111';
+const ITEM_ID = 'bbbb2222-2222-2222-2222-222222222222';
+
+const LINK_ROWS = [
+  {
+    id: 'cccc3333-3333-3333-3333-333333333333', public_id: 'RV-ARIL-AAA111',
+    acquisition_receipt_line_id: '88888888-8888-8888-8888-888888888888',
+    inventory_lot_id: LOT_ID, inventory_item_id: null, quantity_linked: 2,
+  },
+];
+
+const LOT_ROWS = [
+  {
+    lot_id: LOT_ID, lot_public_id: 'RV-ILOT-AAA111', tracking_mode: 'lot_managed',
+    quantity: 12, lot_state: 'active', product_display_name: 'Bulk commons box',
+    sku_public_id: 'RV-SKU-AAA111', condition_or_quality: 'played',
+    location_display_name: 'Shelf A1',
+  },
+  // Serialized lots must never be offered as lot-managed subjects.
+  {
+    lot_id: 'dddd4444-4444-4444-4444-444444444444', lot_public_id: 'RV-ILOT-BBB222',
+    tracking_mode: 'serialized', quantity: 1, lot_state: 'active',
+    product_display_name: 'Graded parent', sku_public_id: 'RV-SKU-BBB222',
+    condition_or_quality: null, location_display_name: null,
+  },
+];
+
+const ITEM_ROWS = [
+  {
+    item_id: ITEM_ID, item_public_id: 'RV-IITM-AAA111', lot_public_id: 'RV-ILOT-BBB222',
+    tracking_mode: 'serialized', item_state: 'active', scan_sku: 'SCAN-1',
+    serial_number: 'SER-1', grading_company: 'PSA', certificate_number: '12345678',
+    product_display_name: 'Graded slab', sku_public_id: 'RV-SKU-BBB222',
+    condition_or_quality: 'mint', location_display_name: 'Vault',
+  },
+];
+
+const DISCREPANCY_ROWS = [
+  {
+    public_id: 'RV-ADISC-AAA111', acquisition_order_id: ORDER_ID,
+    acquisition_receipt_id: RECEIPT_OPEN,
+    acquisition_receipt_line_id: '88888888-8888-8888-8888-888888888888',
+    acquisition_line_item_id: LINE_A, kind: 'over_shipped', status: 'open',
+    quantity_expected: 3, quantity_observed: 5, detail: 'Two extra units in the box',
+    resolution_note: null, resolved_at: null, created_at: '2026-08-06T10:00:00.000Z',
+  },
+];
+
 const SHIPMENT_ROWS = [
   {
     id: SHIPMENT_ID, public_id: 'RV-ASHP-AAA111', acquisition_order_id: ORDER_ID,
@@ -138,6 +186,18 @@ function makeFakeClient(token: string) {
     }
     if (table === 'acquisition_receipt_lines') return RECEIPT_LINE_ROWS;
     if (table === 'acquisition_shipments') return SHIPMENT_ROWS;
+    if (table === 'acquisition_receipt_line_inventory_links') return LINK_ROWS;
+    if (table === 'acquisition_discrepancies') return DISCREPANCY_ROWS;
+    if (table === 'inventory_lot_overview') {
+      return filters.tracking_mode
+        ? LOT_ROWS.filter((row) => row.tracking_mode === filters.tracking_mode)
+        : LOT_ROWS;
+    }
+    if (table === 'inventory_item_overview') {
+      return filters.tracking_mode
+        ? ITEM_ROWS.filter((row) => row.tracking_mode === filters.tracking_mode)
+        : ITEM_ROWS;
+    }
     return [];
   }
 
@@ -155,6 +215,7 @@ function makeFakeClient(token: string) {
         select: () => q,
         eq: (col: string, val: string) => { filters[col] = val; return q; },
         in: () => q,
+        or: () => q,
         order: () => q,
         range: async () => result(),
         limit: async () => result(),
@@ -179,6 +240,21 @@ function makeFakeClient(token: string) {
       }
       if (fn === 'submit_acquisition_receipt') {
         return { data: { receiptPublicId: 'RV-ARCPT-AAA111', status: 'submitted', replayed: false }, error: null };
+      }
+      if (fn === 'link_acquisition_receipt_inventory') {
+        return { data: { inventoryLinkPublicId: 'RV-ARIL-NEW001', replayed: false }, error: null };
+      }
+      if (fn === 'unlink_acquisition_receipt_inventory') {
+        return { data: { inventoryLinkPublicId: 'RV-ARIL-AAA111', unlinked: true, replayed: false }, error: null };
+      }
+      if (fn === 'reconcile_acquisition_receipt') {
+        return { data: { receiptPublicId: 'RV-ARCPT-AAA111', status: 'reconciled', replayed: false }, error: null };
+      }
+      if (fn === 'raise_acquisition_discrepancy') {
+        return { data: { discrepancyPublicId: 'RV-ADISC-NEW001', status: 'open' }, error: null };
+      }
+      if (fn === 'transition_acquisition_discrepancy') {
+        return { data: { discrepancyPublicId: 'RV-ADISC-AAA111', status: args.p_target, replayed: false }, error: null };
       }
       return { data: null, error: { message: 'unexpected rpc' } };
     },
@@ -559,5 +635,398 @@ describe('the bounded governed refusal vocabulary survives transport', () => {
     expect(status).toBe(502);
     expect(body.error).toBe('dependency_failed');
     expect(JSON.stringify(body)).not.toMatch(/10\.0\.0\.4|5432|password/);
+  });
+});
+
+// ===========================================================================
+// S2.3 Batch 2 — inventory provenance, discrepancies, owner reconciliation.
+// ===========================================================================
+
+describe('receipt detail carries provenance and discrepancy evidence', () => {
+  it('attaches links to the receipt line they attribute, with recognisable subject identity', async () => {
+    const { body } = await get(
+      `/api/receiving/receipts/RV-ARCPT-AAA111?workspaceId=${WS_A}`, 'owner-token');
+    const line = body.lines.find((l: { acquisitionLinePublicId: string }) => l.acquisitionLinePublicId === 'RV-AL-AAA111');
+    expect(line.links).toHaveLength(1);
+    expect(line.links[0]).toMatchObject({
+      inventoryLinkPublicId: 'RV-ARIL-AAA111',
+      receiptLinePublicId: 'RV-ARL-AAA111',
+      quantityLinked: 2,
+      subjectKind: 'lot',
+      inventoryLotPublicId: 'RV-ILOT-AAA111',
+      inventoryItemPublicId: null,
+      // Recognition, not merely an identifier.
+      productDisplayName: 'Bulk commons box',
+      locationDisplayName: 'Shelf A1',
+    });
+  });
+
+  it('states observed, linked and unlinked as three separate numbers', async () => {
+    const { body } = await get(
+      `/api/receiving/receipts/RV-ARCPT-AAA111?workspaceId=${WS_A}`, 'owner-token');
+    const line = body.lines.find((l: { acquisitionLinePublicId: string }) => l.acquisitionLinePublicId === 'RV-AL-AAA111');
+    expect(line.observed.quantityReceived).toBe(5);
+    expect(line.linkedQuantity).toBe(2);
+    expect(line.unlinkedQuantity).toBe(3);
+  });
+
+  it('returns discrepancies addressed only by public identity', async () => {
+    const { body } = await get(
+      `/api/receiving/receipts/RV-ARCPT-AAA111?workspaceId=${WS_A}`, 'owner-token');
+    expect(body.discrepancies).toHaveLength(1);
+    expect(body.discrepancies[0]).toMatchObject({
+      discrepancyPublicId: 'RV-ADISC-AAA111',
+      kind: 'over_shipped',
+      status: 'open',
+      receiptPublicId: 'RV-ARCPT-AAA111',
+      receiptLinePublicId: 'RV-ARL-AAA111',
+      acquisitionLinePublicId: 'RV-AL-AAA111',
+      quantityExpected: 3,
+      quantityObserved: 5,
+    });
+    // No actor field at all: created_by/resolved_by are auth.users UUIDs and
+    // this system has no governed public representation of a person.
+    expect(body.discrepancies[0]).not.toHaveProperty('createdBy');
+    expect(body.discrepancies[0]).not.toHaveProperty('resolvedBy');
+  });
+
+  it('names reconciliation blockers instead of a single readiness badge', async () => {
+    const { body } = await get(
+      `/api/receiving/receipts/RV-ARCPT-AAA111?workspaceId=${WS_A}`, 'owner-token');
+    const readiness = body.reconciliation;
+    expect(readiness.linesFullyLinked).toBe(false);
+    expect(readiness.linesNeedingLinks).toEqual([
+      { acquisitionLinePublicId: 'RV-AL-AAA111', observed: 5, linked: 2 },
+    ]);
+    // The over_shipped discrepancy already exists for this line, so the overage
+    // requirement is satisfied and must NOT be reported as a blocker.
+    expect(readiness.overageLinesMissingEvidence).toEqual([]);
+    expect(readiness.openDiscrepancyCount).toBe(1);
+    expect(readiness).not.toHaveProperty('ready');
+  });
+
+  it('leaks no internal identifier once links and discrepancies are attached', async () => {
+    const { body } = await get(
+      `/api/receiving/receipts/RV-ARCPT-AAA111?workspaceId=${WS_A}`, 'owner-token');
+    expect(containsInternalId(body)).toBe(false);
+  });
+});
+
+describe('inventory subject search', () => {
+  it('offers lot-managed lots and serialized items with the database tracking mode', async () => {
+    const { status, body } = await get(
+      `/api/receiving/inventory-subjects?workspaceId=${WS_A}`, 'operator-token');
+    expect(status).toBe(200);
+    const kinds = body.subjects.map((s: { subjectKind: string }) => s.subjectKind);
+    expect(kinds).toContain('lot');
+    expect(kinds).toContain('item');
+    const lot = body.subjects.find((s: { subjectKind: string }) => s.subjectKind === 'lot');
+    expect(lot.trackingMode).toBe('lot_managed');
+    expect(lot.publicId).toBe('RV-ILOT-AAA111');
+    const item = body.subjects.find((s: { subjectKind: string }) => s.subjectKind === 'item');
+    expect(item.trackingMode).toBe('serialized');
+    expect(item.parentLotPublicId).toBe('RV-ILOT-BBB222');
+  });
+
+  it('never offers a serialized lot as a lot-managed subject', async () => {
+    const { body } = await get(
+      `/api/receiving/inventory-subjects?workspaceId=${WS_A}`, 'operator-token');
+    const lots = body.subjects.filter((s: { subjectKind: string }) => s.subjectKind === 'lot');
+    expect(lots.map((l: { publicId: string }) => l.publicId)).not.toContain('RV-ILOT-BBB222');
+  });
+
+  it('refuses an unknown mode rather than silently searching everything', async () => {
+    expect((await get(
+      `/api/receiving/inventory-subjects?mode=whatever&workspaceId=${WS_A}`, 'operator-token')).status).toBe(400);
+  });
+
+  it('leaks no internal identifier', async () => {
+    const { body } = await get(
+      `/api/receiving/inventory-subjects?workspaceId=${WS_A}`, 'operator-token');
+    expect(containsInternalId(body)).toBe(false);
+  });
+});
+
+describe('inventory linking transport', () => {
+  it('forwards a lot-managed link with the exact public id and quantity', async () => {
+    await post(`/api/receiving/receipt-lines/RV-ARL-AAA111/links`, 'operator-token', {
+      workspaceId: WS_A, inventoryLotPublicId: 'RV-ILOT-AAA111', quantity: 3,
+    });
+    expect(rpcCalls[0]).toEqual({
+      fn: 'link_acquisition_receipt_inventory',
+      args: {
+        p_workspace_id: WS_A,
+        p_receipt_line_public_id: 'RV-ARL-AAA111',
+        p_inventory_lot_public_id: 'RV-ILOT-AAA111',
+        p_inventory_item_public_id: null,
+        p_quantity: 3,
+      },
+    });
+  });
+
+  // A serialized item is exactly one unit; the transport must not be able to
+  // weaken that by passing a different number through.
+  it('sends quantity 1 for a serialized item and refuses anything else', async () => {
+    await post(`/api/receiving/receipt-lines/RV-ARL-AAA111/links`, 'operator-token', {
+      workspaceId: WS_A, inventoryItemPublicId: 'RV-IITM-AAA111',
+    });
+    expect(rpcCalls[0].args).toMatchObject({
+      p_inventory_item_public_id: 'RV-IITM-AAA111',
+      p_inventory_lot_public_id: null,
+      p_quantity: 1,
+    });
+
+    rpcCalls = [];
+    const { status } = await post(`/api/receiving/receipt-lines/RV-ARL-AAA111/links`, 'operator-token', {
+      workspaceId: WS_A, inventoryItemPublicId: 'RV-IITM-AAA111', quantity: 3,
+    });
+    expect(status).toBe(400);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it('refuses a request naming both or neither subject before calling the database', async () => {
+    for (const body of [
+      { inventoryLotPublicId: 'RV-ILOT-AAA111', inventoryItemPublicId: 'RV-IITM-AAA111' },
+      {},
+    ]) {
+      rpcCalls = [];
+      const { status } = await post(
+        `/api/receiving/receipt-lines/RV-ARL-AAA111/links`, 'operator-token', { workspaceId: WS_A, ...body });
+      expect(status).toBe(400);
+      expect(rpcCalls).toHaveLength(0);
+    }
+  });
+
+  // Conservation is the database's, held under a row lock. A TypeScript
+  // pre-check would be a second opinion computed from a stale read.
+  it('transmits a quantity larger than the remaining unlinked amount and lets the database refuse', async () => {
+    rpcFailure = 'inventory_link_over_capacity';
+    const { status, body } = await post(
+      `/api/receiving/receipt-lines/RV-ARL-AAA111/links`, 'operator-token', {
+        workspaceId: WS_A, inventoryLotPublicId: 'RV-ILOT-AAA111', quantity: 999,
+      });
+    expect(rpcCalls[0].args.p_quantity).toBe(999);
+    expect(status).toBe(409);
+    expect(body.error).toBe('inventory_link_over_capacity');
+  });
+
+  it('forwards the exact unlink reason', async () => {
+    await post(`/api/receiving/inventory-links/RV-ARIL-AAA111/unlink`, 'operator-token', {
+      workspaceId: WS_A, reason: 'Attributed to the wrong lot',
+    });
+    expect(rpcCalls[0]).toEqual({
+      fn: 'unlink_acquisition_receipt_inventory',
+      args: {
+        p_workspace_id: WS_A,
+        p_inventory_link_public_id: 'RV-ARIL-AAA111',
+        p_reason: 'Attributed to the wrong lot',
+      },
+    });
+  });
+
+  it('refuses an unlink with no reason', async () => {
+    const { status } = await post(`/api/receiving/inventory-links/RV-ARIL-AAA111/unlink`, 'operator-token', {
+      workspaceId: WS_A, reason: '  ',
+    });
+    expect(status).toBe(400);
+    expect(rpcCalls).toHaveLength(0);
+  });
+});
+
+describe('owner reconciliation is owner-only at both gates', () => {
+  it('lets an owner reconcile, with no reason argument', async () => {
+    const { status, body } = await post(
+      `/api/receiving/receipts/RV-ARCPT-AAA111/reconcile`, 'owner-token', { workspaceId: WS_A });
+    expect(status).toBe(200);
+    expect(body.status).toBe('reconciled');
+    expect(rpcCalls[0]).toEqual({
+      fn: 'reconcile_acquisition_receipt',
+      args: { p_workspace_id: WS_A, p_receipt_public_id: 'RV-ARCPT-AAA111' },
+    });
+  });
+
+  it('refuses an operator BEFORE any database call', async () => {
+    const { status } = await post(
+      `/api/receiving/receipts/RV-ARCPT-AAA111/reconcile`, 'operator-token', { workspaceId: WS_A });
+    expect(status).toBe(403);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it('refuses a viewer', async () => {
+    expect((await post(
+      `/api/receiving/receipts/RV-ARCPT-AAA111/reconcile`, 'viewer-token', { workspaceId: WS_A })).status).toBe(403);
+    expect(rpcCalls).toHaveLength(0);
+  });
+});
+
+describe('discrepancy transport', () => {
+  it('forwards the closed kind and the nullable scopes', async () => {
+    await post(`/api/receiving/orders/RV-ACQ-AAA111/discrepancies`, 'operator-token', {
+      workspaceId: WS_A, receiptPublicId: 'RV-ARCPT-AAA111', receiptLinePublicId: 'RV-ARL-AAA111',
+      kind: 'over_shipped', quantityExpected: 3, quantityObserved: 5,
+      detail: 'Two extra units in the box',
+    });
+    expect(rpcCalls[0]).toEqual({
+      fn: 'raise_acquisition_discrepancy',
+      args: {
+        p_workspace_id: WS_A,
+        p_order_public_id: 'RV-ACQ-AAA111',
+        p_receipt_public_id: 'RV-ARCPT-AAA111',
+        p_receipt_line_public_id: 'RV-ARL-AAA111',
+        p_kind: 'over_shipped',
+        p_quantity_expected: 3,
+        p_quantity_observed: 5,
+        p_detail: 'Two extra units in the box',
+      },
+    });
+  });
+
+  // Nothing arrived, so there is no receipt. Manufacturing one to report the
+  // absence would be recording an arrival that did not happen.
+  it('records never_arrived against the order with no receipt at all', async () => {
+    await post(`/api/receiving/orders/RV-ACQ-AAA111/discrepancies`, 'operator-token', {
+      workspaceId: WS_A, kind: 'never_arrived', detail: 'Tracking shows delivered, nothing at the door',
+    });
+    expect(rpcCalls[0].args).toMatchObject({
+      p_kind: 'never_arrived',
+      p_receipt_public_id: null,
+      p_receipt_line_public_id: null,
+      p_quantity_expected: null,
+      p_quantity_observed: null,
+    });
+  });
+
+  it('refuses a kind outside the governed vocabulary before the database sees it', async () => {
+    for (const kind of ['shrinkage', 'OVER_SHIPPED', '', null, 42]) {
+      rpcCalls = [];
+      const { status } = await post(`/api/receiving/orders/RV-ACQ-AAA111/discrepancies`, 'operator-token', {
+        workspaceId: WS_A, kind, detail: 'x',
+      });
+      expect(status).toBe(400);
+      expect(rpcCalls).toHaveLength(0);
+    }
+  });
+
+  it('requires a detail', async () => {
+    const { status } = await post(`/api/receiving/orders/RV-ACQ-AAA111/discrepancies`, 'operator-token', {
+      workspaceId: WS_A, kind: 'damaged', detail: '   ',
+    });
+    expect(status).toBe(400);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  // The governed function persists no monetary fields, so the transport offers
+  // none. Accepting money here would collect it and throw it away.
+  it('accepts no monetary evidence for price_mismatch', async () => {
+    await post(`/api/receiving/orders/RV-ACQ-AAA111/discrepancies`, 'operator-token', {
+      workspaceId: WS_A, kind: 'price_mismatch', detail: 'Charged more than the listing',
+      expectedValueMinor: 1000, actualValueMinor: 1500, currency: 'USD',
+    });
+    const args = rpcCalls[0].args;
+    expect(Object.keys(args).sort()).toEqual([
+      'p_detail', 'p_kind', 'p_order_public_id', 'p_quantity_expected',
+      'p_quantity_observed', 'p_receipt_line_public_id', 'p_receipt_public_id', 'p_workspace_id',
+    ]);
+  });
+
+  it('lets an operator claim', async () => {
+    const { status } = await post(
+      `/api/receiving/discrepancies/RV-ADISC-AAA111/transition`, 'operator-token', {
+        workspaceId: WS_A, target: 'claimed',
+      });
+    expect(status).toBe(200);
+    expect(rpcCalls[0]).toEqual({
+      fn: 'transition_acquisition_discrepancy',
+      args: {
+        p_workspace_id: WS_A,
+        p_discrepancy_public_id: 'RV-ADISC-AAA111',
+        p_target: 'claimed',
+        p_resolution_note: null,
+      },
+    });
+  });
+
+  it.each(['resolved', 'written_off'] as const)('refuses an operator %s BEFORE any database call', async (target) => {
+    const { status } = await post(
+      `/api/receiving/discrepancies/RV-ADISC-AAA111/transition`, 'operator-token', {
+        workspaceId: WS_A, target, resolutionNote: 'Supplier credited the difference',
+      });
+    expect(status).toBe(403);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it.each(['resolved', 'written_off'] as const)('lets an owner %s with a required note', async (target) => {
+    await post(`/api/receiving/discrepancies/RV-ADISC-AAA111/transition`, 'owner-token', {
+      workspaceId: WS_A, target, resolutionNote: 'Supplier credited the difference',
+    });
+    expect(rpcCalls[0].args).toMatchObject({
+      p_target: target,
+      p_resolution_note: 'Supplier credited the difference',
+    });
+  });
+
+  it.each(['resolved', 'written_off'] as const)('refuses %s with no note', async (target) => {
+    const { status } = await post(`/api/receiving/discrepancies/RV-ADISC-AAA111/transition`, 'owner-token', {
+      workspaceId: WS_A, target, resolutionNote: '',
+    });
+    expect(status).toBe(400);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it('refuses a transition back to open', async () => {
+    const { status } = await post(`/api/receiving/discrepancies/RV-ADISC-AAA111/transition`, 'owner-token', {
+      workspaceId: WS_A, target: 'open',
+    });
+    expect(status).toBe(409);
+    expect(rpcCalls).toHaveLength(0);
+  });
+});
+
+describe('Batch 2 authorization', () => {
+  it.each([
+    ['link inventory', '/api/receiving/receipt-lines/RV-ARL-AAA111/links'],
+    ['unlink inventory', '/api/receiving/inventory-links/RV-ARIL-AAA111/unlink'],
+    ['raise a discrepancy', '/api/receiving/orders/RV-ACQ-AAA111/discrepancies'],
+    ['transition a discrepancy', '/api/receiving/discrepancies/RV-ADISC-AAA111/transition'],
+    ['reconcile', '/api/receiving/receipts/RV-ARCPT-AAA111/reconcile'],
+  ])('refuses a viewer trying to %s', async (_label, path) => {
+    const { status } = await post(path, 'viewer-token', { workspaceId: WS_A });
+    expect(status).toBe(403);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it('refuses a member of a different workspace', async () => {
+    expect((await get(
+      `/api/receiving/inventory-subjects?workspaceId=${WS_A}`, 'other-ws-token')).status).toBe(403);
+  });
+});
+
+describe('Batch 2 governed refusals keep their meaning', () => {
+  it.each([
+    ['inventory_link_over_capacity', 409],
+    ['inventory_link_incomplete', 409],
+    ['inventory_link_not_found', 404],
+    ['inventory_subject_not_found', 404],
+    ['discrepancy_not_found', 404],
+    ['discrepancy_evidence_immutable', 409],
+    ['invalid_transition', 409],
+    ['receipt_not_submitted', 409],
+  ])('maps %s to %i', async (code, expected) => {
+    rpcFailure = `prefix ${code} suffix`;
+    const { status, body } = await post(
+      `/api/receiving/receipts/RV-ARCPT-AAA111/reconcile`, 'owner-token', { workspaceId: WS_A });
+    expect(status).toBe(expected);
+    expect(body.error).toBe(code);
+  });
+
+  it('never exposes a constraint or table name from a Batch 2 failure', async () => {
+    rpcFailure =
+      'duplicate key value violates unique constraint "acquisition_receipt_line_inventory_links_inventory_item_id_key"';
+    const { status, body } = await post(
+      `/api/receiving/receipt-lines/RV-ARL-AAA111/links`, 'operator-token', {
+        workspaceId: WS_A, inventoryItemPublicId: 'RV-IITM-AAA111',
+      });
+    expect(status).toBe(502);
+    expect(JSON.stringify(body)).not.toMatch(/constraint|unique|acquisition_receipt_line_inventory_links/i);
   });
 });

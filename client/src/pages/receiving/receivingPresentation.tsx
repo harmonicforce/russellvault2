@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { StatusPill, type DataColumn, type ResponsiveRecord, type StatusTone } from '../../design-system';
 import type {
+  DiscrepancyKind,
+  DiscrepancyStatus,
   ReceiptStatus,
   ReceivingQueueRow,
   ReceivingShipment,
@@ -252,4 +254,113 @@ export function queueRecords(
     ],
     actions: renderActions?.(row),
   }));
+}
+
+// --- Batch 2: provenance and discrepancy vocabulary --------------------------
+
+/**
+ * The discrepancy taxonomy, in the operator's words.
+ *
+ * Every kind gets a LABEL. Colour never carries the meaning: a tone is an
+ * accent on a word, and an operator who cannot distinguish the tones still
+ * reads exactly the same fact.
+ */
+export const DISCREPANCY_KIND_LABEL: Record<DiscrepancyKind, string> = {
+  short_shipped: 'Short shipped',
+  over_shipped: 'Over shipped',
+  damaged: 'Damaged',
+  wrong_item: 'Wrong item',
+  not_as_described: 'Not as described',
+  price_mismatch: 'Price mismatch',
+  never_arrived: 'Never arrived',
+};
+
+/** What each kind actually asserts, so the picker is not seven bare words. */
+export const DISCREPANCY_KIND_DESCRIPTION: Record<DiscrepancyKind, string> = {
+  short_shipped: 'Fewer units arrived than the acquisition recorded.',
+  over_shipped: 'More units arrived than the acquisition recorded.',
+  damaged: 'Units arrived damaged.',
+  wrong_item: 'Something other than the acquired item arrived.',
+  not_as_described: 'What arrived does not match how it was described.',
+  price_mismatch: 'The amount charged does not match the acquisition evidence.',
+  never_arrived: 'Nothing arrived for this acquisition.',
+};
+
+export const DISCREPANCY_STATUS_LABEL: Record<DiscrepancyStatus, string> = {
+  open: 'Open',
+  claimed: 'Claimed for review',
+  resolved: 'Resolved',
+  written_off: 'Written off',
+};
+
+const DISCREPANCY_STATUS_TONE: Record<DiscrepancyStatus, StatusTone> = {
+  open: 'warning',
+  claimed: 'information',
+  resolved: 'success',
+  written_off: 'neutral',
+};
+
+export function DiscrepancyStatusPill({ status }: { readonly status: DiscrepancyStatus }) {
+  return <StatusPill tone={DISCREPANCY_STATUS_TONE[status]}>{DISCREPANCY_STATUS_LABEL[status]}</StatusPill>;
+}
+
+/** The kind, always as words. `neutral` because a kind is not a severity. */
+export function DiscrepancyKindPill({ kind }: { readonly kind: DiscrepancyKind }) {
+  return <StatusPill tone="neutral">{DISCREPANCY_KIND_LABEL[kind]}</StatusPill>;
+}
+
+/**
+ * How an inventory subject reads.
+ *
+ * A governed public id alone is an identifier, not recognition. An operator
+ * confirming they attributed the right thing needs the product, and for a
+ * serialized item the serial that distinguishes it from its siblings.
+ */
+export function subjectSummary(subject: {
+  readonly subjectKind: 'lot' | 'item';
+  readonly publicId: string;
+  readonly productDisplayName: string | null;
+  readonly conditionOrQuality?: string | null;
+  readonly serialNumber?: string | null;
+  readonly lotQuantity?: number | null;
+  readonly locationDisplayName?: string | null;
+}): string {
+  const parts = [subject.publicId, subject.productDisplayName ?? 'No product name recorded'];
+  if (subject.subjectKind === 'item' && subject.serialNumber) parts.push(`serial ${subject.serialNumber}`);
+  if (subject.subjectKind === 'lot' && subject.lotQuantity != null) parts.push(`lot holds ${subject.lotQuantity}`);
+  if (subject.conditionOrQuality) parts.push(subject.conditionOrQuality);
+  if (subject.locationDisplayName) parts.push(subject.locationDisplayName);
+  return parts.join(' · ');
+}
+
+/** Tracking mode in words. Never an operator's declaration. */
+export const TRACKING_MODE_LABEL: Record<string, string> = {
+  lot_managed: 'Lot-managed',
+  serialized: 'Serialized',
+};
+
+export function trackingModeText(mode: string): string {
+  return TRACKING_MODE_LABEL[mode] ?? mode;
+}
+
+export function SubjectKindPill({ kind }: { readonly kind: 'lot' | 'item' }) {
+  return (
+    <StatusPill tone={kind === 'item' ? 'information' : 'neutral'}>
+      {kind === 'item' ? 'Serialized item' : 'Lot-managed lot'}
+    </StatusPill>
+  );
+}
+
+/**
+ * The linking sentence.
+ *
+ * Says what the numbers MEAN rather than leaving three bare figures side by
+ * side. An unlinked remainder is "still needs an inventory subject", never
+ * "missing inventory" — nothing is missing; a subject has not been chosen yet.
+ */
+export function linkProgressText(observed: number, linked: number): string {
+  const remaining = Math.max(0, observed - linked);
+  if (observed === 0) return 'Nothing recorded on this receipt line yet.';
+  if (remaining === 0) return `${observed} received, all ${linked} linked to inventory.`;
+  return `${observed} received, ${linked} linked, ${remaining} still needs an inventory subject.`;
 }

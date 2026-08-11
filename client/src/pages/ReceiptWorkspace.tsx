@@ -37,26 +37,44 @@ import {
   isStaleConflict,
   receivingQueueKey,
   receivingReceiptKey,
+  type Discrepancy,
+  type InventoryLink,
   type ReceivingExpectedLine,
-
 } from '../lib/receivingApi';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createShadowClient } from '../lib/supabaseShadow';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
 import { RECEIVING_COVERAGE, receiptState } from './receiving/receivingTruth';
 import {
-  Count, DifferencePill, PublicId, ReceiptStatusPill, UNKNOWN,
-  instant, sellerText, shipmentSummary,
+  Count, DISCREPANCY_KIND_LABEL, DifferencePill, PublicId, ReceiptStatusPill, UNKNOWN,
+  instant, sellerText, shipmentSummary, subjectSummary,
 } from './receiving/receivingPresentation';
 import { RecordLineDialog } from './receiving/RecordLineDialog';
 import { SubmitReceiptDialog } from './receiving/SubmitReceiptDialog';
+import { LinkInventoryDialog } from './receiving/LinkInventoryDialog';
+import { RaiseDiscrepancyDialog } from './receiving/RaiseDiscrepancyDialog';
+import { DiscrepancyPanel } from './receiving/DiscrepancyPanel';
+import { ReconcileDialog } from './receiving/ReconcileDialog';
+import { InventoryLinkPanel } from './receiving/InventoryLinkPanel';
+import {
+  beginSubmit, beginVerify, creationAllowed, creationMessage, outcomeUnknown,
+  submitFailed, verificationFailed, verify,
+  type DiscrepancyCreationPhase, type DiscrepancyIntent,
+} from './receiving/discrepancyCreation';
 import { mutationMessage } from './receiving/mutationMessages';
 
 type Operation =
   | { readonly kind: 'record'; readonly line: ReceivingExpectedLine }
   | { readonly kind: 'correct'; readonly line: ReceivingExpectedLine }
   | { readonly kind: 'cancel' }
-  | { readonly kind: 'submit' };
+  | { readonly kind: 'submit' }
+  | { readonly kind: 'link'; readonly line: ReceivingExpectedLine }
+  | { readonly kind: 'unlink'; readonly link: InventoryLink }
+  | { readonly kind: 'raise'; readonly line: ReceivingExpectedLine | null }
+  | { readonly kind: 'claim'; readonly discrepancy: Discrepancy }
+  | { readonly kind: 'resolve'; readonly discrepancy: Discrepancy }
+  | { readonly kind: 'writeOff'; readonly discrepancy: Discrepancy }
+  | { readonly kind: 'reconcile' };
 
 export default function ReceiptWorkspace() {
   const { receiptPublicId = '' } = useParams();
@@ -85,7 +103,11 @@ export default function ReceiptWorkspace() {
 
   const role = query.data?.role ?? null;
   const canReceive = role === 'owner' || role === 'operator';
-  const isOpen = detail?.receipt.status === 'open';
+  const isOwner = role === 'owner';
+  const status = detail?.receipt.status ?? null;
+  const isOpen = status === 'open';
+  const isSubmitted = status === 'submitted';
+  const discrepancies = detail?.discrepancies ?? [];
 
   const [operation, setOperation] = useState<Operation | null>(null);
   const [reason, setReason] = useState('');
@@ -93,6 +115,16 @@ export default function ReceiptWorkspace() {
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<{ code: string; message: string } | null>(null);
   const [outcome, setOutcome] = useState<{ tone: 'success' | 'warning'; text: string } | null>(null);
+
+  /**
+   * Discrepancy CREATION is tracked separately from every other operation.
+   *
+   * The other governed mutations have replay semantics, so a failure can be
+   * retried with the identical operation object. `raise_acquisition_discrepancy`
+   * has no idempotency key, so a lost response leaves an outcome that must be
+   * VERIFIED against an authoritative re-read before anything is sent again.
+   */
+  const [creation, setCreation] = useState<DiscrepancyCreationPhase>({ phase: 'idle' });
 
   const close = () => {
     setOperation(null);
@@ -130,6 +162,68 @@ export default function ReceiptWorkspace() {
       } else {
         setFailure(mutationMessage(error));
       }
+    } finally {
+      setPending(false);
+    }
+  };
+
+  /**
+   * Record a discrepancy — the one operation with no safe replay.
+   *
+   * The identities known BEFORE the attempt are captured first, because that
+   * snapshot is the only way to tell a record this attempt created from one
+   * that was already there.
+   */
+  const createDiscrepancy = async (intent: DiscrepancyIntent) => {
+    if (!workspace) return;
+    const knownBefore = discrepancies.map((d) => d.discrepancyPublicId);
+    setCreation(beginSubmit(intent));
+    setPending(true);
+    setFailure(null);
+    try {
+      const result = await api.raiseDiscrepancy(workspace.id, intent.orderPublicId, {
+        receiptPublicId: intent.receiptPublicId,
+        receiptLinePublicId: intent.receiptLinePublicId,
+        kind: intent.kind,
+        quantityExpected: intent.quantityExpected,
+        quantityObserved: intent.quantityObserved,
+        detail: intent.detail,
+      });
+      close();
+      setCreation({ phase: 'idle' });
+      setOutcome({
+        tone: 'success',
+        text: `Recorded discrepancy ${result.discrepancyPublicId}. The acquisition record was not changed.`,
+      });
+      await refresh();
+    } catch (error) {
+      // NOT a retryable failure. The response did not prove the request was
+      // refused, so creation locks until an authoritative re-read settles it.
+      setCreation(submitFailed(intent, knownBefore));
+      setFailure(mutationMessage(error));
+      close();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  /**
+   * Establish what actually happened, by re-reading the governed record.
+   *
+   * A failed verification is NOT "nothing was sent". It leaves the outcome
+   * unknown and keeps creation locked, because creating another discrepancy
+   * now could duplicate one that already exists.
+   */
+  const verifyCreation = async () => {
+    if (!workspace) return;
+    setCreation((current) => beginVerify(current));
+    setPending(true);
+    try {
+      const fresh = await api.receipt(workspace.id, receiptPublicId);
+      queryClient.setQueryData(receivingReceiptKey(workspace.id, receiptPublicId), fresh);
+      setCreation((current) => verify(current, fresh.discrepancies));
+    } catch {
+      setCreation((current) => verificationFailed(current));
     } finally {
       setPending(false);
     }
@@ -184,6 +278,27 @@ export default function ReceiptWorkspace() {
           />
         ),
       },
+      ...(canReceive
+        ? [
+            {
+              key: 'report',
+              header: 'Report',
+              // Available at every receipt stage: a discrepancy is evidence
+              // about physical goods, and S2.2 does not gate raising one on the
+              // receipt's lifecycle.
+              render: (line: ReceivingExpectedLine) => (
+                <Button
+                  variant="secondary"
+                  size="small"
+                  disabled={!creationAllowed(creation)}
+                  onClick={() => { setOperation({ kind: 'raise', line }); setFailure(null); }}
+                >
+                  Report
+                </Button>
+              ),
+            } as DataColumn<ReceivingExpectedLine>,
+          ]
+        : []),
       ...(canReceive && isOpen
         ? [
             {
@@ -221,7 +336,8 @@ export default function ReceiptWorkspace() {
           ]
         : []),
     ],
-    [canReceive, isOpen],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canReceive, isOpen, creation],
   );
 
   const records: ResponsiveRecord[] = useMemo(
@@ -411,6 +527,90 @@ export default function ReceiptWorkspace() {
         }
       />
 
+      {detail && (
+        <InventoryLinkPanel
+          lines={lines}
+          role={role}
+          receiptStatus={detail.receipt.status}
+          onLink={(line) => { setOperation({ kind: 'link', line }); setFailure(null); }}
+          onUnlink={(link) => { setOperation({ kind: 'unlink', link }); setReason(''); setFailure(null); }}
+          busy={pending}
+        />
+      )}
+
+      {detail && (
+        <>
+          {outcomeUnknown(creation) && (
+            // Creation is LOCKED. There is no retry control here on purpose:
+            // the only way forward is an authoritative re-read.
+            <Alert tone="warning" title="A discrepancy record may or may not have been created">
+              <p>{creationMessage(creation)}</p>
+              <Button
+                className="mt-2"
+                variant="secondary"
+                size="small"
+                disabled={pending}
+                onClick={() => void verifyCreation()}
+              >
+                Check what is on record
+              </Button>
+            </Alert>
+          )}
+          {creation.phase === 'committed' && (
+            <Alert tone="information" title="The discrepancy was recorded">
+              {creationMessage(creation)}
+            </Alert>
+          )}
+          {creation.phase === 'absent' && (
+            <Alert tone="information" title="The earlier attempt was not recorded">
+              {creationMessage(creation)}
+            </Alert>
+          )}
+
+          <DiscrepancyPanel
+            discrepancies={discrepancies}
+            role={role}
+            receiptStatus={detail.receipt.status}
+            busy={pending}
+            onClaim={(discrepancy) => { setOperation({ kind: 'claim', discrepancy }); setFailure(null); }}
+            onResolve={(discrepancy) => {
+              setOperation({ kind: 'resolve', discrepancy }); setReason(''); setFailure(null);
+            }}
+            onWriteOff={(discrepancy) => {
+              setOperation({ kind: 'writeOff', discrepancy }); setReason(''); setFailure(null);
+            }}
+            onRaise={
+              canReceive && creationAllowed(creation)
+                ? () => { setOperation({ kind: 'raise', line: null }); setFailure(null); }
+                : null
+            }
+          />
+        </>
+      )}
+
+      {detail && detail.reconciliation.overageLinesMissingEvidence.length > 0 && (
+        <Alert tone="warning" title="Observed receiving exceeds the acquisition quantity">
+          <ul className="list-disc pl-5">
+            {detail.reconciliation.overageLinesMissingEvidence.map((line) => (
+              <li key={line.acquisitionLinePublicId}>
+                {line.acquisitionLinePublicId}: {line.cumulativeReceived} received against{' '}
+                {line.expected} expected.
+              </li>
+            ))}
+          </ul>
+          Record an Over shipped discrepancy before owner reconciliation. No other discrepancy kind
+          satisfies this requirement, and it is never created automatically.
+        </Alert>
+      )}
+
+      {detail && isOwner && isSubmitted && (
+        <div className="flex flex-wrap gap-2">
+          <Button variant="primary" onClick={() => { setOperation({ kind: 'reconcile' }); setFailure(null); }}>
+            Reconcile receipt
+          </Button>
+        </div>
+      )}
+
       {detail && canReceive && isOpen && (
         <div className="flex flex-wrap gap-2">
           <Button variant="primary" onClick={() => { setOperation({ kind: 'submit' }); setFailure(null); }}>
@@ -581,6 +781,223 @@ export default function ReceiptWorkspace() {
               return result.replayed
                 ? 'This receiving session was already cancelled; it was not cancelled twice.'
                 : 'Cancelled the receiving session. Its recorded evidence is preserved as history.';
+            })
+          }
+        />
+      )}
+
+      {operation?.kind === 'link' && detail && workspace && (
+        <LinkInventoryDialog
+          line={operation.line}
+          workspaceId={workspace.id}
+          api={api}
+          open
+          onCancel={close}
+          pending={pending}
+          error={failure}
+          onConfirm={(input) =>
+            void run(async () => {
+              const result = await api.linkInventory(
+                workspace.id, operation.line.observed!.receiptLinePublicId, input);
+              return result.replayed
+                ? 'That inventory subject was already linked to this receipt line; it was not linked twice.'
+                : `Linked ${operation.line.acquisitionLinePublicId} to governed inventory as ${result.inventoryLinkPublicId}.`;
+            })
+          }
+        />
+      )}
+
+      {operation?.kind === 'unlink' && detail && (
+        <MutationConfirmation
+          open
+          onCancel={close}
+          title="Remove this inventory link"
+          consequence={
+            'This removes the receiving provenance link between what arrived and this inventory subject. '
+            + 'It does NOT delete the inventory lot or item, and it does NOT rewrite acquisition evidence. '
+            + 'It is only possible before owner reconciliation, and your reason becomes governed audit evidence.'
+          }
+          objectFacts={
+            <dl className="grid gap-2 sm:grid-cols-2">
+              <Fact label="Provenance link">
+                <PublicId>{operation.link.inventoryLinkPublicId}</PublicId>
+              </Fact>
+              <Fact label="Quantity attributed">
+                <Count value={operation.link.quantityLinked} />
+              </Fact>
+              <div className="sm:col-span-2">
+                <dt className="text-xs font-medium uppercase tracking-wide text-ink-secondary">
+                  Inventory subject
+                </dt>
+                <dd className="mt-0.5 break-words text-sm text-ink">
+                  {subjectSummary({
+                    subjectKind: operation.link.subjectKind,
+                    publicId: operation.link.inventoryItemPublicId ?? operation.link.inventoryLotPublicId ?? '',
+                    productDisplayName: operation.link.productDisplayName,
+                    conditionOrQuality: operation.link.conditionOrQuality,
+                    serialNumber: operation.link.serialNumber,
+                    locationDisplayName: operation.link.locationDisplayName,
+                  })}
+                </dd>
+              </div>
+            </dl>
+          }
+          reason={{
+            value: reason,
+            onChange: setReason,
+            label: 'Why is this link being removed?',
+            description: 'Required. Recorded as governed audit history.',
+            required: true,
+            minLength: 1,
+            maxLength: 500,
+            multiline: true,
+          }}
+          confirmLabel="Remove inventory link"
+          pendingLabel="Remove inventory link"
+          confirmVariant="destructive"
+          confirmDisabled={reason.trim().length === 0}
+          pending={pending}
+          error={failure}
+          onConfirm={() =>
+            void run(async () => {
+              const result = await api.unlinkInventory(
+                workspace!.id, operation.link.inventoryLinkPublicId, reason.trim());
+              return result.replayed
+                ? 'That link had already been removed; it was not removed twice.'
+                : 'Removed the provenance link. The inventory subject itself was not deleted.';
+            })
+          }
+        />
+      )}
+
+      {operation?.kind === 'raise' && detail && (
+        <RaiseDiscrepancyDialog
+          orderPublicId={detail.order.publicId}
+          receiptPublicId={operation.line ? detail.receipt.publicId : null}
+          line={operation.line}
+          open
+          onCancel={close}
+          pending={pending}
+          error={failure}
+          onConfirm={(intent) => void createDiscrepancy(intent)}
+        />
+      )}
+
+      {operation?.kind === 'claim' && (
+        <MutationConfirmation
+          open
+          onCancel={close}
+          title="Claim this discrepancy for review"
+          consequence={
+            'This records that someone has taken ownership of reviewing the exception. It does NOT '
+            + 'resolve it, and it makes no statement about whether the expected and observed evidence agree.'
+          }
+          objectFacts={
+            <dl className="grid gap-2 sm:grid-cols-2">
+              <Fact label="Discrepancy">
+                <PublicId>{operation.discrepancy.discrepancyPublicId}</PublicId>
+              </Fact>
+              <Fact label="Kind">{DISCREPANCY_KIND_LABEL[operation.discrepancy.kind]}</Fact>
+            </dl>
+          }
+          reason={{
+            value: reason,
+            onChange: setReason,
+            label: 'Note (not recorded)',
+            description:
+              'The governed claim operation stores no note, so anything written here is not saved.',
+            required: false,
+            maxLength: 500,
+          }}
+          confirmLabel="Claim for review"
+          pendingLabel="Claim for review"
+          pending={pending}
+          error={failure}
+          onConfirm={() =>
+            void run(async () => {
+              const result = await api.transitionDiscrepancy(
+                workspace!.id, operation.discrepancy.discrepancyPublicId,
+                { target: 'claimed', resolutionNote: null });
+              return result.replayed
+                ? 'That discrepancy was already claimed.'
+                : 'Claimed the discrepancy for review. It is not resolved.';
+            })
+          }
+        />
+      )}
+
+      {(operation?.kind === 'resolve' || operation?.kind === 'writeOff') && (
+        <MutationConfirmation
+          open
+          onCancel={close}
+          title={operation.kind === 'resolve' ? 'Resolve this discrepancy' : 'Write off this discrepancy'}
+          consequence={
+            operation.kind === 'resolve'
+              ? 'This closes the discrepancy and records your resolution note. The original evidence — kind, '
+                + 'quantities and detail — is PRESERVED exactly as recorded and is not rewritten.'
+              : 'This closes the discrepancy without claiming the expected and observed evidence became equal. '
+                + 'The difference stands on record; you are accepting it rather than correcting it. The original '
+                + 'evidence is preserved and is not rewritten.'
+          }
+          objectFacts={
+            <dl className="grid gap-2 sm:grid-cols-2">
+              <Fact label="Discrepancy">
+                <PublicId>{operation.discrepancy.discrepancyPublicId}</PublicId>
+              </Fact>
+              <Fact label="Kind">{DISCREPANCY_KIND_LABEL[operation.discrepancy.kind]}</Fact>
+              {operation.discrepancy.quantityExpected !== null && (
+                <Fact label="Expected"><Count value={operation.discrepancy.quantityExpected} /></Fact>
+              )}
+              {operation.discrepancy.quantityObserved !== null && (
+                <Fact label="Observed"><Count value={operation.discrepancy.quantityObserved} /></Fact>
+              )}
+            </dl>
+          }
+          reason={{
+            value: reason,
+            onChange: setReason,
+            label: operation.kind === 'resolve' ? 'Resolution note' : 'Write-off note',
+            description: 'Required. Recorded as governed evidence against this discrepancy.',
+            required: true,
+            minLength: 1,
+            maxLength: 2000,
+            multiline: true,
+          }}
+          confirmLabel={operation.kind === 'resolve' ? 'Resolve discrepancy' : 'Write off discrepancy'}
+          pendingLabel={operation.kind === 'resolve' ? 'Resolve discrepancy' : 'Write off discrepancy'}
+          confirmVariant={operation.kind === 'writeOff' ? 'destructive' : 'primary'}
+          confirmDisabled={reason.trim().length === 0}
+          pending={pending}
+          error={failure}
+          onConfirm={() =>
+            void run(async () => {
+              const target = operation.kind === 'resolve' ? 'resolved' : 'written_off';
+              const result = await api.transitionDiscrepancy(
+                workspace!.id, operation.discrepancy.discrepancyPublicId,
+                { target, resolutionNote: reason.trim() });
+              return result.replayed
+                ? 'That discrepancy was already closed with the same note; it was not closed twice.'
+                : operation.kind === 'resolve'
+                  ? 'Resolved the discrepancy. Its original evidence is preserved.'
+                  : 'Wrote off the discrepancy. The recorded difference stands.';
+            })
+          }
+        />
+      )}
+
+      {operation?.kind === 'reconcile' && detail && (
+        <ReconcileDialog
+          detail={detail}
+          open
+          onCancel={close}
+          pending={pending}
+          error={failure}
+          onConfirm={() =>
+            void run(async () => {
+              const result = await api.reconcileReceipt(workspace!.id, receiptPublicId);
+              return result.replayed
+                ? 'This receipt had already been reconciled; it was not reconciled twice.'
+                : 'Reconciled the receipt. Its provenance is now immutable. No cost basis was calculated.';
             })
           }
         />

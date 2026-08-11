@@ -59,6 +59,36 @@ export type ReceivingWorkflowState =
   | 'reconciled'
   | 'cancelled_only';
 
+/**
+ * The approved discrepancy taxonomy, verbatim from
+ * `public.acquisition_discrepancy_kind`. CLOSED: the transport refuses anything
+ * outside it rather than letting an unknown value reach the enum cast, so an
+ * invented kind fails here with a bounded code instead of as a raw database
+ * error the operator cannot act on.
+ */
+export type DiscrepancyKind =
+  | 'short_shipped' | 'over_shipped' | 'damaged' | 'wrong_item'
+  | 'not_as_described' | 'price_mismatch' | 'never_arrived';
+
+export const DISCREPANCY_KINDS: readonly DiscrepancyKind[] = [
+  'short_shipped', 'over_shipped', 'damaged', 'wrong_item',
+  'not_as_described', 'price_mismatch', 'never_arrived',
+];
+
+export type DiscrepancyStatus = 'open' | 'claimed' | 'resolved' | 'written_off';
+
+export const DISCREPANCY_STATUSES: readonly DiscrepancyStatus[] = [
+  'open', 'claimed', 'resolved', 'written_off',
+];
+
+/**
+ * The transitions only an OWNER may perform.
+ *
+ * S2.2 asserts this itself; the transport refuses first so an operator gets an
+ * honest refusal without a pointless round trip, and the database still decides.
+ */
+export const OWNER_ONLY_DISCREPANCY_TARGETS: readonly DiscrepancyStatus[] = ['resolved', 'written_off'];
+
 // --- raw governed row shapes -------------------------------------------------
 // These mirror the columns the route selects. They carry internal ids because
 // they are the join keys; nothing below copies one into an output payload.
@@ -99,6 +129,59 @@ export interface ReceiptLineRow {
   readonly acquisition_line_item_id: string;
   readonly quantity_received: number;
   readonly note: string | null;
+}
+
+export interface InventoryLinkRow {
+  readonly id: string;
+  readonly public_id: string;
+  readonly acquisition_receipt_line_id: string;
+  readonly inventory_lot_id: string | null;
+  readonly inventory_item_id: string | null;
+  readonly quantity_linked: number;
+}
+
+export interface DiscrepancyRow {
+  readonly public_id: string;
+  readonly acquisition_order_id: string;
+  readonly acquisition_receipt_id: string | null;
+  readonly acquisition_receipt_line_id: string | null;
+  readonly acquisition_line_item_id: string | null;
+  readonly kind: DiscrepancyKind;
+  readonly status: DiscrepancyStatus;
+  readonly quantity_expected: number | null;
+  readonly quantity_observed: number | null;
+  readonly detail: string;
+  readonly resolution_note: string | null;
+  readonly resolved_at: string | null;
+  readonly created_at: string;
+}
+
+/** A governed lot, as the subject picker needs to recognise it. */
+export interface InventoryLotRow {
+  readonly lot_public_id: string;
+  readonly tracking_mode: string;
+  readonly quantity: number;
+  readonly lot_state: string;
+  readonly product_display_name: string | null;
+  readonly sku_public_id: string | null;
+  readonly condition_or_quality: string | null;
+  readonly location_display_name: string | null;
+}
+
+/** A governed serialized item, as the subject picker needs to recognise it. */
+export interface InventoryItemRow {
+  readonly item_public_id: string;
+  readonly lot_public_id: string;
+  readonly tracking_mode: string;
+  readonly item_state: string;
+  readonly scan_sku: string | null;
+  readonly serial_number: string | null;
+  readonly grading_company: string | null;
+  readonly certificate_number: string | null;
+  readonly product_display_name: string | null;
+  readonly sku_public_id: string | null;
+  readonly condition_or_quality: string | null;
+  readonly location_display_name: string | null;
 }
 
 export interface ShipmentRow {
@@ -158,6 +241,71 @@ export interface ReceivingQueueRow {
   readonly shipments: readonly ReceivingShipment[];
 }
 
+/**
+ * One governed provenance link between receiving evidence and inventory.
+ *
+ * Exactly one subject: a lot-managed lot OR a serialized item, never both. The
+ * subject's identity is carried as a public id plus enough recognisable product
+ * detail for an operator to confirm they are looking at the right thing —
+ * `RV-ILOT-…` alone is not recognition.
+ */
+export interface ReceivingInventoryLink {
+  readonly inventoryLinkPublicId: string;
+  readonly receiptLinePublicId: string;
+  readonly quantityLinked: number;
+  readonly subjectKind: 'lot' | 'item';
+  readonly inventoryLotPublicId: string | null;
+  readonly inventoryItemPublicId: string | null;
+  /** Recognition detail, from the governed inventory read models. */
+  readonly productDisplayName: string | null;
+  readonly skuPublicId: string | null;
+  readonly conditionOrQuality: string | null;
+  readonly locationDisplayName: string | null;
+  readonly serialNumber: string | null;
+}
+
+/** A governed discrepancy: durable evidence, never a repair. */
+export interface ReceivingDiscrepancy {
+  readonly discrepancyPublicId: string;
+  readonly kind: DiscrepancyKind;
+  readonly status: DiscrepancyStatus;
+  readonly orderPublicId: string;
+  readonly receiptPublicId: string | null;
+  readonly receiptLinePublicId: string | null;
+  readonly acquisitionLinePublicId: string | null;
+  readonly quantityExpected: number | null;
+  readonly quantityObserved: number | null;
+  readonly detail: string;
+  readonly resolutionNote: string | null;
+  readonly resolvedAt: string | null;
+  readonly createdAt: string;
+}
+
+/**
+ * A governed inventory subject an operator may link receiving evidence to.
+ *
+ * `trackingMode` comes from the DATABASE, never from an operator's choice. The
+ * picker offers what inventory actually is; it does not let someone declare a
+ * quantity-managed lot to be a serialized item, which is a claim S2.2 would
+ * reject anyway and which the UI must not invite.
+ */
+export interface InventorySubjectCandidate {
+  readonly subjectKind: 'lot' | 'item';
+  readonly publicId: string;
+  readonly trackingMode: string;
+  readonly productDisplayName: string | null;
+  readonly skuPublicId: string | null;
+  readonly conditionOrQuality: string | null;
+  readonly locationDisplayName: string | null;
+  /** Lot-managed only: how many units the lot itself holds. */
+  readonly lotQuantity: number | null;
+  /** Serialized only. */
+  readonly serialNumber: string | null;
+  readonly gradingCompany: string | null;
+  readonly certificateNumber: string | null;
+  readonly parentLotPublicId: string | null;
+}
+
 /** One acquisition line as receiving sees it: expected, observed, and history. */
 export interface ReceivingExpectedLine {
   readonly sourceSystemPublicId: string;
@@ -177,6 +325,24 @@ export interface ReceivingExpectedLine {
    * is stated rather than omitted.
    */
   readonly cumulativeReceivedQuantity: number;
+  /**
+   * Governed provenance links for THIS receipt's observation of this line.
+   *
+   * Empty is a real answer, not a gap: nothing has been attributed yet.
+   */
+  readonly links: readonly ReceivingInventoryLink[];
+  /**
+   * How much of the observed quantity already has an inventory subject.
+   *
+   * Stated as its own field rather than left for the browser to sum, so the
+   * page cannot disagree with the database about what has been attributed.
+   */
+  readonly linkedQuantity: number;
+  /**
+   * Observed minus linked. NOT "missing inventory" — it is the amount that
+   * still needs a subject chosen, which is a different sentence entirely.
+   */
+  readonly unlinkedQuantity: number;
 }
 
 export interface ReceivingReceiptDetail {
@@ -197,6 +363,45 @@ export interface ReceivingReceiptDetail {
   };
   readonly lines: readonly ReceivingExpectedLine[];
   readonly shipments: readonly ReceivingShipment[];
+  /** Every discrepancy recorded against this ORDER, not merely this receipt. */
+  readonly discrepancies: readonly ReceivingDiscrepancy[];
+  /** What the governed contract would refuse reconciliation for, right now. */
+  readonly reconciliation: ReconciliationReadiness;
+}
+
+/**
+ * What currently stands between this receipt and owner reconciliation.
+ *
+ * This is NOT a reimplementation of the reconciliation rule. S2.2 decides, and
+ * its refusal is authoritative. This exists so the owner is not invited to
+ * press a button that can only fail, and so the reason is legible BEFORE the
+ * press rather than as a bounded error code afterwards.
+ *
+ * It is deliberately a list of named blockers rather than one "Ready" badge:
+ * a single green light computed from partial data is exactly the kind of
+ * confident summary this program refuses to show.
+ */
+export interface ReconciliationReadiness {
+  readonly receiptStatus: ReceiptStatus;
+  readonly linesFullyLinked: boolean;
+  readonly linesNeedingLinks: readonly {
+    readonly acquisitionLinePublicId: string;
+    readonly observed: number;
+    readonly linked: number;
+  }[];
+  /**
+   * Lines whose CUMULATIVE received quantity exceeds the acquisition's expected
+   * quantity and therefore require explicit `over_shipped` evidence before
+   * S2.2 will reconcile.
+   */
+  readonly overageLinesMissingEvidence: readonly {
+    readonly acquisitionLinePublicId: string;
+    readonly expected: number;
+    readonly cumulativeReceived: number;
+  }[];
+  readonly openDiscrepancyCount: number;
+  readonly claimedDiscrepancyCount: number;
+  readonly terminalDiscrepancyCount: number;
 }
 
 // --- derivation --------------------------------------------------------------
@@ -365,9 +570,27 @@ export function buildReceiptDetail(input: {
   readonly receiptsForOrder: readonly ReceiptRow[];
   readonly receiptLinesForOrder: readonly ReceiptLineRow[];
   readonly shipments: readonly ShipmentRow[];
+  readonly inventoryLinks?: readonly InventoryLinkRow[];
+  readonly lots?: readonly InventoryLotRow[];
+  readonly items?: readonly InventoryItemRow[];
+  /** Keyed by internal id, since the link rows carry internal subject ids. */
+  readonly lotPublicIdById?: ReadonlyMap<string, string>;
+  readonly itemPublicIdById?: ReadonlyMap<string, string>;
+  readonly discrepancies?: readonly DiscrepancyRow[];
 }): ReceivingReceiptDetail {
   const receiptById = new Map(input.receiptsForOrder.map((receipt) => [receipt.id, receipt]));
   const shipmentPublicIdById = new Map(input.shipments.map((s) => [s.id, s.public_id]));
+  const lotByPublicId = new Map((input.lots ?? []).map((lot) => [lot.lot_public_id, lot]));
+  const itemByPublicId = new Map((input.items ?? []).map((item) => [item.item_public_id, item]));
+
+  // Links, grouped by the receipt line they attribute. Only links belonging to
+  // THIS receipt's lines are ever attached to a line below.
+  const linksByReceiptLineId = new Map<string, InventoryLinkRow[]>();
+  for (const link of input.inventoryLinks ?? []) {
+    const bucket = linksByReceiptLineId.get(link.acquisition_receipt_line_id);
+    if (bucket) bucket.push(link);
+    else linksByReceiptLineId.set(link.acquisition_receipt_line_id, [link]);
+  }
 
   const observedHere = new Map<string, ReceiptLineRow>();
   const cumulative = new Map<string, number>();
@@ -390,6 +613,37 @@ export function buildReceiptDetail(input: {
     .sort((a, b) => a.acquisition_line_public_id.localeCompare(b.acquisition_line_public_id))
     .map((line) => {
       const here = observedHere.get(line.acquisition_line_item_id) ?? null;
+      const linkRows = here ? linksByReceiptLineId.get(here.id) ?? [] : [];
+      const links: ReceivingInventoryLink[] = linkRows
+        .map((row) => {
+          const lotPublicId = row.inventory_lot_id
+            ? input.lotPublicIdById?.get(row.inventory_lot_id) ?? null
+            : null;
+          const itemPublicId = row.inventory_item_id
+            ? input.itemPublicIdById?.get(row.inventory_item_id) ?? null
+            : null;
+          const lot = lotPublicId ? lotByPublicId.get(lotPublicId) : undefined;
+          const item = itemPublicId ? itemByPublicId.get(itemPublicId) : undefined;
+          return {
+            inventoryLinkPublicId: row.public_id,
+            receiptLinePublicId: here!.public_id,
+            quantityLinked: row.quantity_linked,
+            // Derived from WHICH column the database populated, never from a
+            // caller's claim about what kind of thing this is.
+            subjectKind: (row.inventory_item_id ? 'item' : 'lot') as 'lot' | 'item',
+            inventoryLotPublicId: lotPublicId,
+            inventoryItemPublicId: itemPublicId,
+            productDisplayName: item?.product_display_name ?? lot?.product_display_name ?? null,
+            skuPublicId: item?.sku_public_id ?? lot?.sku_public_id ?? null,
+            conditionOrQuality: item?.condition_or_quality ?? lot?.condition_or_quality ?? null,
+            locationDisplayName: item?.location_display_name ?? lot?.location_display_name ?? null,
+            serialNumber: item?.serial_number ?? null,
+          };
+        })
+        .sort((a, b) => a.inventoryLinkPublicId.localeCompare(b.inventoryLinkPublicId));
+
+      const observedHereQuantity = here?.quantity_received ?? 0;
+      const linkedQuantity = links.reduce((sum, link) => sum + link.quantityLinked, 0);
       return {
         sourceSystemPublicId: line.source_system_public_id,
         acquisitionLinePublicId: line.acquisition_line_public_id,
@@ -400,8 +654,49 @@ export function buildReceiptDetail(input: {
           ? { receiptLinePublicId: here.public_id, quantityReceived: here.quantity_received, note: here.note }
           : null,
         cumulativeReceivedQuantity: cumulative.get(line.acquisition_line_item_id) ?? 0,
+        links,
+        linkedQuantity,
+        // Never negative. The database enforces conservation; if a read ever
+        // arrived inconsistent, reporting a negative remainder would be a
+        // nonsense number presented with the same confidence as a real one.
+        unlinkedQuantity: Math.max(0, observedHereQuantity - linkedQuantity),
       };
     });
+
+  // --- discrepancies, addressed by public identity only --------------------
+  const receiptPublicIdById = new Map(input.receiptsForOrder.map((r) => [r.id, r.public_id]));
+  const receiptLinePublicIdById = new Map(input.receiptLinesForOrder.map((l) => [l.id, l.public_id]));
+  const acquisitionLinePublicIdById = new Map(
+    input.orderLines.map((l) => [l.acquisition_line_item_id, l.acquisition_line_public_id]),
+  );
+
+  const discrepancies: ReceivingDiscrepancy[] = (input.discrepancies ?? [])
+    .map((row) => ({
+      discrepancyPublicId: row.public_id,
+      kind: row.kind,
+      status: row.status,
+      orderPublicId: first0(input.orderLines),
+      receiptPublicId: row.acquisition_receipt_id
+        ? receiptPublicIdById.get(row.acquisition_receipt_id) ?? null
+        : null,
+      receiptLinePublicId: row.acquisition_receipt_line_id
+        ? receiptLinePublicIdById.get(row.acquisition_receipt_line_id) ?? null
+        : null,
+      acquisitionLinePublicId: row.acquisition_line_item_id
+        ? acquisitionLinePublicIdById.get(row.acquisition_line_item_id) ?? null
+        : null,
+      quantityExpected: row.quantity_expected,
+      quantityObserved: row.quantity_observed,
+      detail: row.detail,
+      resolutionNote: row.resolution_note,
+      resolvedAt: row.resolved_at,
+      createdAt: row.created_at,
+      // No actor field. `created_by` and `resolved_by` are auth.users UUIDs and
+      // there is no governed public representation of a person in this system,
+      // so surfacing them would be exposing an internal identifier in the one
+      // place it is most tempting to.
+    }))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.discrepancyPublicId.localeCompare(b.discrepancyPublicId));
 
   const first = input.orderLines[0];
   return {
@@ -424,7 +719,134 @@ export function buildReceiptDetail(input: {
     },
     lines,
     shipments: input.shipments.map(shipmentOf).sort((a, b) => a.publicId.localeCompare(b.publicId)),
+    discrepancies,
+    reconciliation: reconciliationReadiness(input.receipt.status, lines, discrepancies),
   };
+}
+
+function first0(lines: readonly AcquisitionLineRow[]): string {
+  return lines[0]?.acquisition_order_public_id ?? '';
+}
+
+/**
+ * Name what would currently block owner reconciliation.
+ *
+ * NOT a client-side rule engine and not a decision: S2.2 owns the rule and its
+ * refusal is authoritative. This mirrors the two conditions the governed
+ * function actually checks so the owner can see WHY before pressing, instead of
+ * meeting a bounded error code afterwards.
+ *
+ * Both conditions are taken verbatim from `app.transition_receipt`:
+ *   1. every receipt line's linked total must EQUAL its observed quantity;
+ *   2. a line whose cumulative received quantity exceeds the acquisition's
+ *      expected quantity requires an `over_shipped` discrepancy on that line.
+ *
+ * Note what is NOT a blocker: an open or claimed discrepancy of any other kind.
+ * S2.2 does not require discrepancies to be resolved before reconciliation, and
+ * inventing that requirement here would block an owner the database would have
+ * allowed. The counts are reported so the owner can see them and decide.
+ */
+export function reconciliationReadiness(
+  receiptStatus: ReceiptStatus,
+  lines: readonly ReceivingExpectedLine[],
+  discrepancies: readonly ReceivingDiscrepancy[],
+): ReconciliationReadiness {
+  const recorded = lines.filter((line) => line.observed !== null);
+
+  const linesNeedingLinks = recorded
+    .filter((line) => line.linkedQuantity !== (line.observed?.quantityReceived ?? 0))
+    .map((line) => ({
+      acquisitionLinePublicId: line.acquisitionLinePublicId,
+      observed: line.observed?.quantityReceived ?? 0,
+      linked: line.linkedQuantity,
+    }));
+
+  const overShippedLineIds = new Set(
+    discrepancies
+      .filter((d) => d.kind === 'over_shipped' && d.receiptLinePublicId)
+      .map((d) => d.receiptLinePublicId as string),
+  );
+
+  const overageLinesMissingEvidence = recorded
+    .filter((line) => line.cumulativeReceivedQuantity > line.expectedQuantity)
+    .filter((line) => !overShippedLineIds.has(line.observed!.receiptLinePublicId))
+    .map((line) => ({
+      acquisitionLinePublicId: line.acquisitionLinePublicId,
+      expected: line.expectedQuantity,
+      cumulativeReceived: line.cumulativeReceivedQuantity,
+    }));
+
+  return {
+    receiptStatus,
+    linesFullyLinked: linesNeedingLinks.length === 0 && recorded.length > 0,
+    linesNeedingLinks,
+    overageLinesMissingEvidence,
+    openDiscrepancyCount: discrepancies.filter((d) => d.status === 'open').length,
+    claimedDiscrepancyCount: discrepancies.filter((d) => d.status === 'claimed').length,
+    terminalDiscrepancyCount: discrepancies.filter(
+      (d) => d.status === 'resolved' || d.status === 'written_off',
+    ).length,
+  };
+}
+
+/**
+ * Turn governed inventory read-model rows into pickable subjects.
+ *
+ * `trackingMode` is copied from the database and never inferred. Only subjects
+ * S2.2 would actually accept are offered: a lot must be `lot_managed` and
+ * active, an item must live under a `serialized` lot and be active. Offering a
+ * subject the governed function will refuse is an invitation to a dead end.
+ */
+export function buildInventorySubjects(input: {
+  readonly lots: readonly InventoryLotRow[];
+  readonly items: readonly InventoryItemRow[];
+}): InventorySubjectCandidate[] {
+  const lots: InventorySubjectCandidate[] = input.lots
+    .filter((lot) => lot.tracking_mode === 'lot_managed' && lot.lot_state === 'active')
+    .map((lot) => ({
+      subjectKind: 'lot' as const,
+      publicId: lot.lot_public_id,
+      trackingMode: lot.tracking_mode,
+      productDisplayName: lot.product_display_name,
+      skuPublicId: lot.sku_public_id,
+      conditionOrQuality: lot.condition_or_quality,
+      locationDisplayName: lot.location_display_name,
+      lotQuantity: lot.quantity,
+      serialNumber: null,
+      gradingCompany: null,
+      certificateNumber: null,
+      parentLotPublicId: null,
+    }));
+
+  const items: InventorySubjectCandidate[] = input.items
+    .filter((item) => item.tracking_mode === 'serialized' && item.item_state === 'active')
+    .map((item) => ({
+      subjectKind: 'item' as const,
+      publicId: item.item_public_id,
+      trackingMode: item.tracking_mode,
+      productDisplayName: item.product_display_name,
+      skuPublicId: item.sku_public_id,
+      conditionOrQuality: item.condition_or_quality,
+      locationDisplayName: item.location_display_name,
+      lotQuantity: null,
+      serialNumber: item.serial_number ?? item.scan_sku,
+      gradingCompany: item.grading_company,
+      certificateNumber: item.certificate_number,
+      parentLotPublicId: item.lot_public_id,
+    }));
+
+  return [...lots, ...items].sort(
+    (a, b) => a.subjectKind.localeCompare(b.subjectKind) || a.publicId.localeCompare(b.publicId),
+  );
+}
+
+/** Is this a kind the governed enum actually accepts? */
+export function isDiscrepancyKind(value: unknown): value is DiscrepancyKind {
+  return typeof value === 'string' && (DISCREPANCY_KINDS as readonly string[]).includes(value);
+}
+
+export function isDiscrepancyStatus(value: unknown): value is DiscrepancyStatus {
+  return typeof value === 'string' && (DISCREPANCY_STATUSES as readonly string[]).includes(value);
 }
 
 // --- the bounded governed refusal vocabulary ---------------------------------
@@ -440,7 +862,6 @@ export function buildReceiptDetail(input: {
  */
 export const RECEIVING_ERROR_STATUS: Readonly<Record<string, number>> = {
   invalid_request: 400,
-  invalid_transition: 400,
   acquisition_not_found: 404,
   receipt_not_found: 404,
   receipt_line_not_found: 404,
@@ -448,6 +869,14 @@ export const RECEIVING_ERROR_STATUS: Readonly<Record<string, number>> = {
   governed_write_required: 403,
   receipt_not_open: 409,
   receipt_not_submitted: 409,
+  inventory_link_over_capacity: 409,
+  inventory_link_incomplete: 409,
+  inventory_link_not_found: 404,
+  inventory_link_immutable: 409,
+  inventory_subject_not_found: 404,
+  discrepancy_not_found: 404,
+  discrepancy_evidence_immutable: 409,
+  invalid_transition: 409,
   receipt_terminal: 409,
   receipt_line_conflict: 409,
   idempotency_conflict: 409,

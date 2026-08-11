@@ -29,13 +29,21 @@
 // joining is presentation assembly and lives in ../receiving/contract.ts.
 
 import { Router } from 'express';
-import { requireMember, requireOperator, type AuthedRequest } from '../provenance/auth.js';
+import { requireMember, requireOperator, requireOwner, type AuthedRequest } from '../provenance/auth.js';
 import { isProvenanceEnabled } from '../provenance/config.js';
 import {
+  OWNER_ONLY_DISCREPANCY_TARGETS,
+  buildInventorySubjects,
   buildQueue,
   buildReceiptDetail,
   classifyReceivingError,
+  isDiscrepancyKind,
+  isDiscrepancyStatus,
   type AcquisitionLineRow,
+  type DiscrepancyRow,
+  type InventoryItemRow,
+  type InventoryLinkRow,
+  type InventoryLotRow,
   type ReceiptLineRow,
   type ReceiptRow,
   type ShipmentRow,
@@ -60,6 +68,9 @@ router.use((_req, res, next) => {
  * short list that reads exactly like a complete one.
  */
 const MAX_ASSEMBLY_ROWS = 2000;
+
+/** Page size for one inventory-subject search. */
+const SUBJECT_PAGE = 100;
 
 class ReceivingError extends Error {
   constructor(readonly code: string, readonly status: number) { super(code); }
@@ -193,6 +204,61 @@ async function readShipments(client: Supa, workspaceId: string, orderId?: string
   });
 }
 
+/**
+ * Provenance links, plus the governed inventory identity needed to RECOGNISE
+ * their subjects.
+ *
+ * The link rows carry internal subject ids, so the lot/item read models are
+ * fetched and joined here. `RV-ILOT-…` on its own is an identifier, not
+ * recognition: an operator confirming they attributed the right thing needs the
+ * product, the condition and the location.
+ */
+async function readInventoryLinks(client: Supa, workspaceId: string, receiptLineIds: readonly string[]) {
+  if (receiptLineIds.length === 0) return [];
+  return readRows<InventoryLinkRow>(() =>
+    client
+      .from('acquisition_receipt_line_inventory_links')
+      .select('id,public_id,acquisition_receipt_line_id,inventory_lot_id,inventory_item_id,quantity_linked')
+      .eq('workspace_id', workspaceId)
+      .in('acquisition_receipt_line_id', receiptLineIds)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+const LOT_COLUMNS =
+  'lot_id,lot_public_id,tracking_mode,quantity,lot_state,product_display_name,sku_public_id,' +
+  'condition_or_quality,location_display_name';
+const ITEM_COLUMNS =
+  'item_id,item_public_id,lot_public_id,tracking_mode,item_state,scan_sku,serial_number,' +
+  'grading_company,certificate_number,product_display_name,sku_public_id,condition_or_quality,' +
+  'location_display_name';
+
+async function readLotsByIds(client: Supa, workspaceId: string, ids: readonly string[]) {
+  if (ids.length === 0) return [];
+  return readRows<InventoryLotRow & { lot_id: string }>(() =>
+    client.from('inventory_lot_overview').select(LOT_COLUMNS)
+      .eq('workspace_id', workspaceId).in('lot_id', ids).limit(MAX_ASSEMBLY_ROWS));
+}
+
+async function readItemsByIds(client: Supa, workspaceId: string, ids: readonly string[]) {
+  if (ids.length === 0) return [];
+  return readRows<InventoryItemRow & { item_id: string }>(() =>
+    client.from('inventory_item_overview').select(ITEM_COLUMNS)
+      .eq('workspace_id', workspaceId).in('item_id', ids).limit(MAX_ASSEMBLY_ROWS));
+}
+
+async function readDiscrepancies(client: Supa, workspaceId: string, orderId: string) {
+  return readRows<DiscrepancyRow>(() =>
+    client
+      .from('acquisition_discrepancies')
+      .select(
+        'public_id,acquisition_order_id,acquisition_receipt_id,acquisition_receipt_line_id,' +
+        'acquisition_line_item_id,kind,status,quantity_expected,quantity_observed,detail,' +
+        'resolution_note,resolved_at,created_at')
+      .eq('workspace_id', workspaceId)
+      .eq('acquisition_order_id', orderId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
 // --- A. the receiving queue --------------------------------------------------
 
 router.get('/queue', requireMember, asyncRoute(async (req, res) => {
@@ -251,11 +317,103 @@ router.get('/receipts/:receiptPublicId', requireMember, asyncRoute(async (req, r
   const receiptLinesForOrder = await readReceiptLines(
     client, workspaceId, receiptsForOrder.map((row) => row.id));
 
+  // Provenance links for THIS receipt's lines, and the discrepancies recorded
+  // against the whole ORDER — a `never_arrived` discrepancy has no receipt at
+  // all, so scoping discrepancies to the receipt would hide the very case that
+  // exists because nothing was received.
+  const [inventoryLinks, discrepancies] = await Promise.all([
+    readInventoryLinks(
+      client, workspaceId,
+      receiptLinesForOrder.filter((line) => line.acquisition_receipt_id === receipt.id).map((l) => l.id)),
+    readDiscrepancies(client, workspaceId, orderId),
+  ]);
+
+  const [lots, items] = await Promise.all([
+    readLotsByIds(
+      client, workspaceId,
+      [...new Set(inventoryLinks.map((l) => l.inventory_lot_id).filter((id): id is string => !!id))]),
+    readItemsByIds(
+      client, workspaceId,
+      [...new Set(inventoryLinks.map((l) => l.inventory_item_id).filter((id): id is string => !!id))]),
+  ]);
+
   res.json({
     coverage: 'governed_native_committed',
     historicalLegacyImported: false,
     role,
-    ...buildReceiptDetail({ receipt, orderLines, receiptsForOrder, receiptLinesForOrder, shipments }),
+    ...buildReceiptDetail({
+      receipt, orderLines, receiptsForOrder, receiptLinesForOrder, shipments,
+      inventoryLinks, discrepancies, lots, items,
+      lotPublicIdById: new Map(lots.map((lot) => [lot.lot_id, lot.lot_public_id])),
+      itemPublicIdById: new Map(items.map((item) => [item.item_id, item.item_public_id])),
+    }),
+  });
+}));
+
+/**
+ * Governed inventory subjects an operator may link receiving evidence to.
+ *
+ * WHY THIS IS NOT `/api/inventory-identity/overview`.
+ *
+ * That surface exists and was inspected first. It searches
+ * `inventory_item_overview` ONLY — it cannot find a lot-managed lot at all,
+ * which is half of what linking needs. It also declares itself
+ * `authoritative: false` as a diagnostic surface, and it returns raw view rows
+ * carrying `item_id`, `lot_id`, `sku_id`, `product_id` and `location_id` —
+ * internal UUIDs that must never reach a governed operator workflow. Reusing it
+ * would mean either leaking those or re-shaping its response here, and neither
+ * is reuse.
+ *
+ * So this is the minimum additional governed read: both read models, filtered
+ * to what S2.2 would actually accept, projected to public identities. It adds
+ * no SQL, runs under the caller's own JWT, and is bounded by the same RLS the
+ * rest of the surface uses.
+ */
+router.get('/inventory-subjects', requireMember, asyncRoute(async (req, res) => {
+  const { workspaceId, client } = caller(req);
+  const term = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const mode = typeof req.query.mode === 'string' ? req.query.mode : 'all';
+  if (mode !== 'all' && mode !== 'lot' && mode !== 'item') {
+    throw new ReceivingError('invalid_request', 400);
+  }
+  if (term.length > 200) throw new ReceivingError('invalid_request', 400);
+  // `%` and `,` are PostgREST filter syntax, so a term containing them would
+  // change the meaning of the query rather than search for itself.
+  const escaped = term.replace(/[%,\\]/g, (c) => `\\${c}`);
+
+  const wantLots = mode === 'all' || mode === 'lot';
+  const wantItems = mode === 'all' || mode === 'item';
+
+  const [lots, items] = await Promise.all([
+    wantLots
+      ? readRows<InventoryLotRow>(() => {
+          const query = client.from('inventory_lot_overview').select(LOT_COLUMNS)
+            .eq('workspace_id', workspaceId).eq('tracking_mode', 'lot_managed').eq('lot_state', 'active');
+          return (escaped
+            ? query.or(`lot_public_id.ilike.%${escaped}%,product_display_name.ilike.%${escaped}%,sku_public_id.ilike.%${escaped}%`)
+            : query).limit(SUBJECT_PAGE);
+        })
+      : Promise.resolve([] as InventoryLotRow[]),
+    wantItems
+      ? readRows<InventoryItemRow>(() => {
+          const query = client.from('inventory_item_overview').select(ITEM_COLUMNS)
+            .eq('workspace_id', workspaceId).eq('tracking_mode', 'serialized').eq('item_state', 'active');
+          return (escaped
+            ? query.or(`item_public_id.ilike.%${escaped}%,product_display_name.ilike.%${escaped}%,scan_sku.ilike.%${escaped}%,serial_number.ilike.%${escaped}%`)
+            : query).limit(SUBJECT_PAGE);
+        })
+      : Promise.resolve([] as InventoryItemRow[]),
+  ]);
+
+  const subjects = buildInventorySubjects({ lots, items });
+  res.json({
+    coverage: 'governed_native_committed',
+    historicalLegacyImported: false,
+    // Truthful completeness, same contract as the queue: a capped search is a
+    // subset, and saying so is the difference between "no such subject exists"
+    // and "we stopped looking".
+    complete: lots.length < SUBJECT_PAGE && items.length < SUBJECT_PAGE,
+    subjects,
   });
 }));
 
@@ -344,6 +502,145 @@ router.post('/receipts/:receiptPublicId/submit', requireOperator, asyncRoute(asy
   res.json(await rpc(client, 'submit_acquisition_receipt', {
     p_workspace_id: workspaceId,
     p_receipt_public_id: publicId(req.params.receiptPublicId),
+  }));
+}));
+
+// --- Batch 2 mutations: inventory provenance, discrepancies, reconciliation --
+
+/**
+ * Attribute observed receiving evidence to a governed inventory subject.
+ *
+ * Exactly one subject, never both. The transport refuses the ambiguous case
+ * before the call because `(lot is null) = (item is null)` is what S2.2 checks
+ * first, and a request that names two subjects is a client bug worth naming
+ * rather than a database round trip.
+ *
+ * The quantity is NOT bounded here against the remaining unlinked amount.
+ * Conservation is the database's — `enforce_receiving_link_conservation` holds
+ * a row lock while it checks, and a TypeScript pre-check would be a second
+ * opinion computed from a stale read that could only ever disagree.
+ */
+router.post('/receipt-lines/:receiptLinePublicId/links', requireOperator, asyncRoute(async (req, res) => {
+  const { workspaceId, client } = caller(req);
+  const lot = optionalText(req.body?.inventoryLotPublicId, 200);
+  const item = optionalText(req.body?.inventoryItemPublicId, 200);
+  if ((lot === null) === (item === null)) throw new ReceivingError('invalid_request', 400);
+
+  // A serialized item is exactly one unit. S2.2 enforces
+  // `inventory_item_id is null or quantity_linked = 1`; sending anything else
+  // would be asking the database to reject a request the transport already
+  // knows is malformed.
+  const requested = req.body?.quantity === undefined ? 1 : quantity(req.body?.quantity);
+  if (item !== null && requested !== 1) throw new ReceivingError('invalid_request', 400);
+
+  res.json(await rpc(client, 'link_acquisition_receipt_inventory', {
+    p_workspace_id: workspaceId,
+    p_receipt_line_public_id: publicId(req.params.receiptLinePublicId),
+    p_inventory_lot_public_id: lot,
+    p_inventory_item_public_id: item,
+    p_quantity: requested,
+  }));
+}));
+
+/**
+ * Remove a provenance link.
+ *
+ * This detaches receiving evidence from an inventory subject. It does NOT
+ * delete the lot or item, and it does not touch acquisition evidence — the
+ * confirmation copy says so, and the reason becomes governed audit history.
+ */
+router.post('/inventory-links/:inventoryLinkPublicId/unlink', requireOperator, asyncRoute(async (req, res) => {
+  const { workspaceId, client } = caller(req);
+  res.json(await rpc(client, 'unlink_acquisition_receipt_inventory', {
+    p_workspace_id: workspaceId,
+    p_inventory_link_public_id: publicId(req.params.inventoryLinkPublicId),
+    p_reason: requiredText(req.body?.reason, 1, 500),
+  }));
+}));
+
+/**
+ * Owner reconciliation. OWNER ONLY, at both gates.
+ *
+ * `requireOwner` refuses an operator before any RPC happens, mirroring the
+ * `array['owner']` assertion inside `app.transition_receipt` for this action.
+ * The governed function accepts NO reason, so none is collected.
+ */
+router.post('/receipts/:receiptPublicId/reconcile', requireOwner, asyncRoute(async (req, res) => {
+  const { workspaceId, client } = caller(req);
+  res.json(await rpc(client, 'reconcile_acquisition_receipt', {
+    p_workspace_id: workspaceId,
+    p_receipt_public_id: publicId(req.params.receiptPublicId),
+  }));
+}));
+
+/**
+ * Record a discrepancy.
+ *
+ * THE ONE BATCH 2 MUTATION WITH NO IDEMPOTENCY KEY.
+ *
+ * `raise_acquisition_discrepancy` takes no key and returns no `replayed` flag,
+ * because a human-raised discrepancy is a new piece of evidence every time.
+ * That makes a lost response genuinely dangerous: a blind retry creates a
+ * SECOND durable discrepancy. The transport cannot fix that — the client must
+ * verify against an authoritative re-read before it is allowed to try again,
+ * and it does.
+ *
+ * The kind is checked against the closed vocabulary here so an invented value
+ * fails as `invalid_request` rather than as a raw enum cast error.
+ */
+router.post('/orders/:orderPublicId/discrepancies', requireOperator, asyncRoute(async (req, res) => {
+  const { workspaceId, client } = caller(req);
+  const kind = req.body?.kind;
+  if (!isDiscrepancyKind(kind)) throw new ReceivingError('invalid_request', 400);
+
+  const expected = req.body?.quantityExpected;
+  const observed = req.body?.quantityObserved;
+  const nonNegative = (value: unknown): number | null => {
+    if (value == null) return null;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      throw new ReceivingError('invalid_request', 400);
+    }
+    return value;
+  };
+
+  res.json(await rpc(client, 'raise_acquisition_discrepancy', {
+    p_workspace_id: workspaceId,
+    p_order_public_id: publicId(req.params.orderPublicId),
+    // Both optional: a `never_arrived` discrepancy names an order and no
+    // receipt, because manufacturing a receipt to report that nothing came
+    // would be recording an arrival that did not happen.
+    p_receipt_public_id: optionalText(req.body?.receiptPublicId, 200),
+    p_receipt_line_public_id: optionalText(req.body?.receiptLinePublicId, 200),
+    p_kind: kind,
+    p_quantity_expected: nonNegative(expected),
+    p_quantity_observed: nonNegative(observed),
+    p_detail: requiredText(req.body?.detail, 1, 2000),
+  }));
+}));
+
+/**
+ * Move a discrepancy through its lifecycle.
+ *
+ * Claiming is owner or operator; resolving and writing off are OWNER ONLY, and
+ * the transport refuses an operator before the RPC. Both terminal targets
+ * require a resolution note, which S2.2 also insists on — a discrepancy closed
+ * with no account of why is not evidence.
+ */
+router.post('/discrepancies/:discrepancyPublicId/transition', requireOperator, asyncRoute(async (req, res) => {
+  const { workspaceId, client, role } = caller(req);
+  const target = req.body?.target;
+  if (!isDiscrepancyStatus(target)) throw new ReceivingError('invalid_request', 400);
+  if (target === 'open') throw new ReceivingError('invalid_transition', 409);
+  if (OWNER_ONLY_DISCREPANCY_TARGETS.includes(target) && role !== 'owner') {
+    throw new ReceivingError('unauthorized_workspace', 403);
+  }
+  const terminal = OWNER_ONLY_DISCREPANCY_TARGETS.includes(target);
+
+  res.json(await rpc(client, 'transition_acquisition_discrepancy', {
+    p_workspace_id: workspaceId,
+    p_discrepancy_public_id: publicId(req.params.discrepancyPublicId),
+    p_target: target,
+    p_resolution_note: terminal ? requiredText(req.body?.resolutionNote, 1, 2000) : null,
   }));
 }));
 

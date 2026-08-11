@@ -24,6 +24,97 @@ export type ReceivingWorkflowState =
 
 export type Role = 'owner' | 'operator' | 'viewer';
 
+/**
+ * The approved discrepancy taxonomy, verbatim from the governed enum. CLOSED:
+ * the picker offers exactly these and the transport refuses anything else.
+ */
+export type DiscrepancyKind =
+  | 'short_shipped' | 'over_shipped' | 'damaged' | 'wrong_item'
+  | 'not_as_described' | 'price_mismatch' | 'never_arrived';
+
+export const DISCREPANCY_KINDS: readonly DiscrepancyKind[] = [
+  'short_shipped', 'over_shipped', 'damaged', 'wrong_item',
+  'not_as_described', 'price_mismatch', 'never_arrived',
+];
+
+export type DiscrepancyStatus = 'open' | 'claimed' | 'resolved' | 'written_off';
+
+/** One governed provenance link between receiving evidence and inventory. */
+export interface InventoryLink {
+  readonly inventoryLinkPublicId: string;
+  readonly receiptLinePublicId: string;
+  readonly quantityLinked: number;
+  /** Derived from which subject the DATABASE populated, never from a claim. */
+  readonly subjectKind: 'lot' | 'item';
+  readonly inventoryLotPublicId: string | null;
+  readonly inventoryItemPublicId: string | null;
+  readonly productDisplayName: string | null;
+  readonly skuPublicId: string | null;
+  readonly conditionOrQuality: string | null;
+  readonly locationDisplayName: string | null;
+  readonly serialNumber: string | null;
+}
+
+/** A governed inventory subject an operator may attribute receiving to. */
+export interface InventorySubjectCandidate {
+  readonly subjectKind: 'lot' | 'item';
+  readonly publicId: string;
+  /** From the database. An operator cannot declare a different tracking mode. */
+  readonly trackingMode: string;
+  readonly productDisplayName: string | null;
+  readonly skuPublicId: string | null;
+  readonly conditionOrQuality: string | null;
+  readonly locationDisplayName: string | null;
+  readonly lotQuantity: number | null;
+  readonly serialNumber: string | null;
+  readonly gradingCompany: string | null;
+  readonly certificateNumber: string | null;
+  readonly parentLotPublicId: string | null;
+}
+
+export interface InventorySubjectSearch {
+  readonly coverage: 'governed_native_committed';
+  readonly historicalLegacyImported: false;
+  readonly complete: boolean;
+  readonly subjects: readonly InventorySubjectCandidate[];
+}
+
+/** Durable evidence that observed receiving did not match expectation. */
+export interface Discrepancy {
+  readonly discrepancyPublicId: string;
+  readonly kind: DiscrepancyKind;
+  readonly status: DiscrepancyStatus;
+  readonly orderPublicId: string;
+  readonly receiptPublicId: string | null;
+  readonly receiptLinePublicId: string | null;
+  readonly acquisitionLinePublicId: string | null;
+  readonly quantityExpected: number | null;
+  readonly quantityObserved: number | null;
+  readonly detail: string;
+  readonly resolutionNote: string | null;
+  readonly resolvedAt: string | null;
+  readonly createdAt: string;
+}
+
+/** What currently stands between this receipt and owner reconciliation. */
+export interface ReconciliationReadiness {
+  readonly receiptStatus: ReceiptStatus;
+  readonly linesFullyLinked: boolean;
+  readonly linesNeedingLinks: readonly {
+    readonly acquisitionLinePublicId: string;
+    readonly observed: number;
+    readonly linked: number;
+  }[];
+  readonly overageLinesMissingEvidence: readonly {
+    readonly acquisitionLinePublicId: string;
+    readonly expected: number;
+    readonly cumulativeReceived: number;
+  }[];
+  readonly openDiscrepancyCount: number;
+  readonly claimedDiscrepancyCount: number;
+  readonly terminalDiscrepancyCount: number;
+}
+
 /** A governed shipment REFERENCE. Transport state, never receipt truth. */
 export interface ReceivingShipment {
   readonly publicId: string;
@@ -83,6 +174,15 @@ export interface ReceivingExpectedLine {
     readonly note: string | null;
   } | null;
   readonly cumulativeReceivedQuantity: number;
+  /** Governed provenance for THIS receipt's observation of this line. */
+  readonly links: readonly InventoryLink[];
+  /** How much of the observed quantity already has an inventory subject. */
+  readonly linkedQuantity: number;
+  /**
+   * Observed minus linked. NOT "missing inventory" — it is the amount that
+   * still needs a subject chosen, which is a different sentence entirely.
+   */
+  readonly unlinkedQuantity: number;
 }
 
 export interface ReceivingReceiptDetail {
@@ -106,11 +206,41 @@ export interface ReceivingReceiptDetail {
   };
   readonly lines: readonly ReceivingExpectedLine[];
   readonly shipments: readonly ReceivingShipment[];
+  /** Every discrepancy on this ORDER — a never_arrived one has no receipt. */
+  readonly discrepancies: readonly Discrepancy[];
+  readonly reconciliation: ReconciliationReadiness;
 }
 
 export interface ReceiptMutationResult {
   readonly receiptPublicId: string;
   readonly status: ReceiptStatus;
+  readonly replayed: boolean;
+}
+
+export interface InventoryLinkMutationResult {
+  readonly inventoryLinkPublicId: string;
+  readonly replayed: boolean;
+}
+
+export interface UnlinkMutationResult {
+  readonly inventoryLinkPublicId: string;
+  readonly unlinked: boolean;
+  readonly replayed: boolean;
+}
+
+/**
+ * Raising a discrepancy returns NO `replayed` flag, and that absence is the
+ * whole point: the governed function has no idempotency key, so there is no
+ * such thing as a safe replay. A lost response cannot be retried blindly.
+ */
+export interface DiscrepancyCreationResult {
+  readonly discrepancyPublicId: string;
+  readonly status: DiscrepancyStatus;
+}
+
+export interface DiscrepancyTransitionResult {
+  readonly discrepancyPublicId: string;
+  readonly status: DiscrepancyStatus;
   readonly replayed: boolean;
 }
 
@@ -247,6 +377,57 @@ export function createReceivingTransport(tokens: () => Promise<string | null>) {
 
     submitReceipt: (workspaceId: string, receiptPublicId: string) =>
       post<ReceiptMutationResult>(`${receipt(receiptPublicId)}/submit`, workspaceId, {}),
+
+    // --- Batch 2 -----------------------------------------------------------
+
+    inventorySubjects: (workspaceId: string, query: { q?: string; mode?: 'all' | 'lot' | 'item' } = {}) => {
+      const params = new URLSearchParams();
+      if (query.q) params.set('q', query.q);
+      if (query.mode) params.set('mode', query.mode);
+      const suffix = params.toString();
+      return call<InventorySubjectSearch>(
+        tokens, `/inventory-subjects${suffix ? `?${suffix}` : ''}`, workspaceId);
+    },
+
+    linkInventory: (
+      workspaceId: string,
+      receiptLinePublicId: string,
+      body:
+        | { readonly inventoryLotPublicId: string; readonly quantity: number }
+        | { readonly inventoryItemPublicId: string },
+    ) =>
+      post<InventoryLinkMutationResult>(
+        `/receipt-lines/${encodeURIComponent(receiptLinePublicId)}/links`, workspaceId, body),
+
+    unlinkInventory: (workspaceId: string, inventoryLinkPublicId: string, reason: string) =>
+      post<UnlinkMutationResult>(
+        `/inventory-links/${encodeURIComponent(inventoryLinkPublicId)}/unlink`, workspaceId, { reason }),
+
+    reconcileReceipt: (workspaceId: string, receiptPublicId: string) =>
+      post<ReceiptMutationResult>(`${receipt(receiptPublicId)}/reconcile`, workspaceId, {}),
+
+    raiseDiscrepancy: (
+      workspaceId: string,
+      orderPublicId: string,
+      body: {
+        readonly receiptPublicId: string | null;
+        readonly receiptLinePublicId: string | null;
+        readonly kind: DiscrepancyKind;
+        readonly quantityExpected: number | null;
+        readonly quantityObserved: number | null;
+        readonly detail: string;
+      },
+    ) =>
+      post<DiscrepancyCreationResult>(
+        `/orders/${encodeURIComponent(orderPublicId)}/discrepancies`, workspaceId, body),
+
+    transitionDiscrepancy: (
+      workspaceId: string,
+      discrepancyPublicId: string,
+      body: { readonly target: DiscrepancyStatus; readonly resolutionNote: string | null },
+    ) =>
+      post<DiscrepancyTransitionResult>(
+        `/discrepancies/${encodeURIComponent(discrepancyPublicId)}/transition`, workspaceId, body),
   };
 }
 

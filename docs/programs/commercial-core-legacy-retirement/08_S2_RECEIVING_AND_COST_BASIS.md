@@ -506,3 +506,138 @@ Inventory linking UI, unlink recovery UI, inventory-subject selection,
 discrepancy creation and lifecycle UI, owner reconciliation UI, cost allocation
 and inventory cost basis. None of it is exposed in Batch 1, and the transport
 calls none of the corresponding governed functions.
+
+## S2.3 Batch 2 checkpoint — provenance, discrepancies, reconciliation
+
+Batch 2 completes S2.3. Like Batch 1 it adds ZERO migrations, ZERO schema
+changes, ZERO receiving-function changes, and modifies no Supabase file. Every
+mutation is a thin call into an existing S2.2 governed function.
+
+### The six states S2.3 keeps distinguishable
+
+`carrier delivered` · `physical receipt recorded` · `receipt submitted` ·
+`inventory linked` · `discrepancy recorded/resolved` · `owner reconciled`.
+None is shorthand for another, and each is named in words on the surface where
+an operator could otherwise confuse it with its neighbour.
+
+### Inventory subject read architecture
+
+`/api/inventory-identity/overview` was inspected first and is not reusable here:
+it searches `inventory_item_overview` ONLY (it cannot find a lot-managed lot at
+all), declares itself `authoritative: false` as a diagnostic surface, and
+returns raw view rows carrying `item_id`, `lot_id`, `sku_id`, `product_id` and
+`location_id`.
+
+`GET /api/receiving/inventory-subjects?q=&mode=` is therefore the minimum
+additional governed read: both `inventory_lot_overview` and
+`inventory_item_overview` under the caller's own JWT, filtered to what S2.2 will
+actually accept (an active `lot_managed` lot, or an active item under a
+`serialized` lot), projected to public identities with the product, condition and
+location an operator needs to recognise the subject. Capped at 100 per side with
+a truthful `complete` flag.
+
+### Inventory creation dependency
+
+A governed creation workflow EXISTS — `commit_intake_group` behind Quick Add —
+so Receiving does not duplicate it. When the governed search proves no matching
+subject exists, the link dialog says receiving does not create Products, SKUs,
+Lots or Items from acquisition text and links to `/quick-add`. This is a
+navigation handoff: Quick Add keeps its own validation and truth model intact.
+
+### Link and unlink
+
+`POST /api/receiving/receipt-lines/:id/links` →
+`link_acquisition_receipt_inventory`. Exactly one subject; a serialized item is
+sent as quantity 1 and the transport refuses anything else. Conservation is NOT
+pre-checked in TypeScript — the database holds a row lock while it checks, and a
+second opinion computed from a stale read could only disagree.
+
+`POST /api/receiving/inventory-links/:id/unlink` →
+`unlink_acquisition_receipt_inventory`, reason required. The confirmation states
+that this removes the provenance link, does NOT delete the lot or item, does NOT
+rewrite acquisition evidence, and is possible only before reconciliation.
+
+Per receipt line the UI states four separate facts — expected, observed, linked,
+and the remainder — and the remainder is phrased "still needs an inventory
+subject", never "missing inventory".
+
+### Discrepancy lifecycle
+
+`POST /api/receiving/orders/:id/discrepancies` →
+`raise_acquisition_discrepancy`; `POST /api/receiving/discrepancies/:id/transition`
+→ `transition_acquisition_discrepancy`. Kinds are validated against the closed
+enum before the call. `never_arrived` is raised from the ORDER with no receipt,
+because manufacturing a receipt to report an absence would record an arrival
+that did not happen. `price_mismatch` collects no monetary fields, because the
+governed function persists none.
+
+Claim is owner or operator; resolve and write-off are OWNER ONLY and refused by
+the transport before any RPC. Write-off copy states it closes the discrepancy
+without claiming the expected and observed evidence became equal.
+
+### Non-idempotent creation recovery
+
+`raise_acquisition_discrepancy` has no idempotency key and returns no `replayed`
+flag, so a lost response CANNOT be retried — a second press could create a second
+durable record. `client/src/pages/receiving/discrepancyCreation.ts` implements
+verify-first recovery: the intent and the identities known before the attempt are
+retained, creation is locked with no retry control, and only an authoritative
+re-read settles it. A matching new record means it committed (do not resend); a
+complete read with no match permits a NEW attempt; a FAILED verification leaves
+the outcome unknown and keeps creation locked. Nothing ever says "nothing was
+sent".
+
+### Reconciliation
+
+`POST /api/receiving/receipts/:id/reconcile` → `reconcile_acquisition_receipt`,
+guarded by `requireOwner` and by the database. It takes no reason, so none is
+collected — the confirmation is a `Dialog`, not a `MutationConfirmation`, rather
+than collecting a reason the contract would discard.
+
+`reconciliationReadiness` mirrors the two conditions the governed function
+actually checks — every receipt line's linked total must equal its observed
+quantity, and a cumulative overage requires an `over_shipped` discrepancy on that
+line — and reports them as named blockers with per-line observed/linked/difference
+figures. There is deliberately no single "Ready" badge. Open and claimed
+discrepancies of other kinds are counted and shown but are NOT blockers, because
+S2.2 does not make them one.
+
+Reconciliation copy states it means owner acceptance, terminality and immutable
+provenance; and that it does NOT mean acquisition or shipment evidence was
+rewritten, that cost basis was calculated, or that anything is listed or sold.
+
+### Role matrix
+
+| | read | link | unlink | raise | claim | resolve | write off | reconcile |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| owner | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| operator | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| viewer | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| anonymous | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+Server authority is tested separately from control visibility: viewer and
+operator refusals are asserted to happen BEFORE any RPC.
+
+### Terminal behaviour
+
+A reconciled receipt offers no record, correct, cancel, submit, link, unlink or
+reconcile control; provenance stays visible and is stated to be immutable.
+A cancelled receipt keeps its Batch 1 historical display, and since open receipts
+cannot carry links under the S2.2 contract it shows no inventory provenance.
+
+### Browser acceptance
+
+`receiving-provenance.spec.ts` — 17 Chromium tests over a stateful world
+covering submitted linking, lot-managed and serialized linking, over-capacity
+refusal, unlink, discrepancy raise/claim/resolve/write-off, the commit-then-lost-
+response recovery, blocked and successful reconciliation, terminality, never-
+arrived, and overflow. Axe covers representative submitted and reconciled states
+in both themes. The WebKit iPad smoke adds the submitted receipt and its linking
+dialog. Screenshot baselines stay at 60; only the two receiving surfaces changed.
+
+### S2.3 completion boundary
+
+S2.3 ends at governed owner reconciliation. No cost-basis schema, no
+`recompute_inventory_cost_basis`, no cost allocation surface, no `/cost`, no
+unresolved-cost queue. S2.4 is the next checkpoint and is blocked until owner
+decision D-8 is explicitly resolved.

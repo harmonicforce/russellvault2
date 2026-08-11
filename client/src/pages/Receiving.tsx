@@ -35,6 +35,7 @@ import {
   createReceivingTransport,
   mintIdempotencyKey,
   receivingQueueKey,
+  type DiscrepancyKind,
   type ReceivingQueueRow,
 } from '../lib/receivingApi';
 import { useWorkspace } from '../lib/workspaceContext';
@@ -43,6 +44,7 @@ import { tokenProviderFromClient } from '../lib/tokenProvider';
 import { RECEIVING_COVERAGE, queueState } from './receiving/receivingTruth';
 import { queueColumns, queueRecords, receiptPath } from './receiving/receivingPresentation';
 import { OpenReceiptDialog } from './receiving/OpenReceiptDialog';
+import { RaiseDiscrepancyDialog } from './receiving/RaiseDiscrepancyDialog';
 import { mutationMessage } from './receiving/mutationMessages';
 
 export default function Receiving() {
@@ -75,6 +77,14 @@ export default function Receiving() {
   const canReceive = role === 'owner' || role === 'operator';
 
   const [opening, setOpening] = useState<ReceivingQueueRow | null>(null);
+  /**
+   * Reporting that NOTHING arrived.
+   *
+   * `never_arrived` is raised from the ORDER, with no receipt at all. Opening a
+   * receipt merely to report an absence would record an arrival that did not
+   * happen, so this path deliberately never creates one.
+   */
+  const [reporting, setReporting] = useState<ReceivingQueueRow | null>(null);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<{ code: string; message: string } | null>(null);
   const [outcome, setOutcome] = useState<string>('');
@@ -121,6 +131,17 @@ export default function Receiving() {
 
   // One action definition, rendered by both the table and the record list, so
   // a phone and a desktop cannot offer different receiving capabilities.
+  const reportAction = (row: ReceivingQueueRow) =>
+    canReceive ? (
+      <Button
+        variant="secondary"
+        size="small"
+        onClick={() => { setReporting(row); setFailure(null); }}
+      >
+        Nothing arrived
+      </Button>
+    ) : null;
+
   const rowAction = (row: ReceivingQueueRow) => {
     if (!canReceive) return null;
     return row.openReceiptPublicId ? (
@@ -137,16 +158,69 @@ export default function Receiving() {
     );
   };
 
+  /**
+   * Record an order-level discrepancy.
+   *
+   * The landing page holds no authoritative discrepancy list to verify against,
+   * so a failure here reports the unknown outcome plainly and sends the
+   * operator to the governed record rather than offering a retry that could
+   * duplicate durable evidence.
+   */
+  const reportNothingArrived = async (intent: {
+    readonly kind: DiscrepancyKind;
+    readonly detail: string;
+    readonly quantityExpected: number | null;
+    readonly quantityObserved: number | null;
+  }) => {
+    if (!reporting || !workspace) return;
+    setPending(true);
+    setFailure(null);
+    try {
+      const result = await api.raiseDiscrepancy(workspace.id, reporting.orderPublicId, {
+        receiptPublicId: null,
+        receiptLinePublicId: null,
+        kind: intent.kind,
+        quantityExpected: intent.quantityExpected,
+        quantityObserved: intent.quantityObserved,
+        detail: intent.detail,
+      });
+      setReporting(null);
+      setOutcome(
+        `Recorded discrepancy ${result.discrepancyPublicId} against ${reporting.orderPublicId}. `
+        + 'No receipt was created, because nothing arrived.',
+      );
+      await queryClient.invalidateQueries({ queryKey: receivingQueueKey(workspace.id) });
+    } catch (error) {
+      // Recording a discrepancy has no governed replay, so this does NOT offer
+      // a retry. It says the outcome is unknown and where to check.
+      setFailure({
+        code: mutationMessage(error).code,
+        message:
+          'The discrepancy request did not return a usable answer, so whether it was recorded is unknown. '
+          + 'Recording a discrepancy has no governed replay, so trying again could create a second record '
+          + 'of the same problem. Open the acquisition order to see what is on record before reporting again.',
+      });
+    } finally {
+      setPending(false);
+    }
+  };
+
   const columns = useMemo(
     () =>
       canReceive
-        ? [...queueColumns(), { key: 'action', header: 'Action', render: rowAction }]
+        ? [
+            ...queueColumns(),
+            { key: 'action', header: 'Action', render: rowAction },
+            { key: 'report', header: 'Report', render: reportAction },
+          ]
         : queueColumns(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [canReceive],
   );
   const records = useMemo(
-    () => queueRecords(rows, rowAction),
+    () => queueRecords(rows, (row) => (
+      <div className="flex flex-wrap gap-2">{rowAction(row)}{reportAction(row)}</div>
+    )),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, canReceive],
   );
@@ -223,6 +297,22 @@ export default function Receiving() {
           />
         }
       />
+
+      {reporting && (
+        <RaiseDiscrepancyDialog
+          orderPublicId={reporting.orderPublicId}
+          // No receipt, deliberately. Nothing arrived, so no arrival exists.
+          receiptPublicId={null}
+          line={null}
+          // Only the kinds that make sense with no receipt and no line.
+          allowedKinds={['never_arrived', 'short_shipped']}
+          open
+          onCancel={() => { setReporting(null); setFailure(null); }}
+          pending={pending}
+          error={failure}
+          onConfirm={(intent) => void reportNothingArrived(intent)}
+        />
+      )}
 
       {opening && (
         <OpenReceiptDialog

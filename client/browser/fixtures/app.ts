@@ -35,7 +35,7 @@ import {
   storedSession,
 } from './identity';
 import { ALL_LINES, FACETS, FIXED_NOW, makeDetail } from './data';
-import { ReceivingWorld, RECEIPT_PUBLIC_ID } from './receivingData';
+import { INVENTORY_SUBJECTS, ReceivingWorld, RECEIPT_PUBLIC_ID } from './receivingData';
 import type { AcquisitionDetail } from '../../src/lib/acquisitionDetailApi';
 
 export type ThemeChoice = 'system' | 'light' | 'dark';
@@ -70,6 +70,15 @@ export interface Scenario {
   receivingRole: 'owner' | 'operator' | 'viewer';
   /** The live receiving world these routes read and mutate. */
   receiving: ReceivingWorld;
+  /** The governed inventory search proves there is no matching subject. */
+  receivingSubjectsEmpty: boolean;
+  /**
+   * A discrepancy request COMMITS and then the response is lost.
+   *
+   * This is the dangerous case a blind retry would duplicate, and the only way
+   * to prove the verify-first recovery actually protects against it.
+   */
+  receivingDiscrepancyCommitsSilently: boolean;
 }
 
 const DEFAULT_SCENARIO: Scenario = {
@@ -85,6 +94,8 @@ const DEFAULT_SCENARIO: Scenario = {
   receivingMutationFailure: null,
   receivingRole: 'operator',
   receiving: new ReceivingWorld(),
+  receivingSubjectsEmpty: false,
+  receivingDiscrepancyCommitsSilently: false,
 };
 
 /**
@@ -303,6 +314,19 @@ async function routeApi(route: Route, scenario: Scenario) {
     const world = scenario.receiving;
     const role = scenario.receivingRole;
 
+    if (path === '/api/receiving/inventory-subjects') {
+      if (scenario.receivingSubjectsEmpty) {
+        return json(route, {
+          coverage: 'governed_native_committed', historicalLegacyImported: false,
+          complete: true, subjects: [],
+        });
+      }
+      return json(route, {
+        coverage: 'governed_native_committed', historicalLegacyImported: false,
+        complete: true, subjects: INVENTORY_SUBJECTS,
+      });
+    }
+
     if (path === '/api/receiving/queue') {
       // A FAILED read, answered as a failure. The page must never render this
       // as "there is no receiving work" — that is the defect the whole truth
@@ -343,6 +367,42 @@ async function routeApi(route: Route, scenario: Scenario) {
       }
       if (path.endsWith('/cancel')) return json(route, world.transition('cancelled'));
       if (path.endsWith('/submit')) return json(route, world.transition('submitted'));
+
+      // --- Batch 2 ---------------------------------------------------------
+      if (path.endsWith('/links')) {
+        const id = decodeURIComponent(path.split('/').slice(-2)[0]);
+        const result = world.link(id, body);
+        return 'error' in result ? json(route, { error: result.error }, 409) : json(route, result);
+      }
+      if (path.endsWith('/unlink')) {
+        const id = decodeURIComponent(path.split('/').slice(-2)[0]);
+        const result = world.unlink(id);
+        return 'error' in result ? json(route, { error: result.error }, 404) : json(route, result);
+      }
+      if (path.endsWith('/reconcile')) {
+        // OWNER ONLY. The harness refuses exactly as the server does, so a
+        // browser test cannot pass by hiding a control the API still allows.
+        if (role !== 'owner') return json(route, { error: 'unauthorized_workspace' }, 403);
+        const result = world.reconcile();
+        return 'error' in result ? json(route, { error: result.error }, 409) : json(route, result);
+      }
+      if (path.endsWith('/discrepancies')) {
+        // Deliberately NOT idempotent: every call creates a new record, which
+        // is what makes a blind retry dangerous and worth testing.
+        if (scenario.receivingDiscrepancyCommitsSilently) {
+          world.raise(body);
+          return route.abort('failed');
+        }
+        return json(route, world.raise(body));
+      }
+      if (path.endsWith('/transition')) {
+        const id = decodeURIComponent(path.split('/').slice(-2)[0]);
+        if ((body.target === 'resolved' || body.target === 'written_off') && role !== 'owner') {
+          return json(route, { error: 'unauthorized_workspace' }, 403);
+        }
+        const result = world.transitionDiscrepancy(id, body.target, body.resolutionNote ?? null);
+        return 'error' in result ? json(route, { error: result.error }, 404) : json(route, result);
+      }
     }
 
     return json(route, { error: 'receipt_not_found' }, 404);
