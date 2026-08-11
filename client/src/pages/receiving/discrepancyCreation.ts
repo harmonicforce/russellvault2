@@ -87,15 +87,38 @@ export function outcomeUnknown(state: DiscrepancyCreationPhase): boolean {
 }
 
 /**
+ * Exact nullable quantity equality.
+ *
+ * `null` matches `null`. A number matches only the same number. `null` never
+ * matches a number, and one number never matches another. There is no
+ * tolerance and no coercion: these are immutable evidence values, and "close
+ * enough" is not a thing a discrepancy record can be.
+ */
+function sameQuantity(candidate: number | null, intended: number | null): boolean {
+  return candidate === null ? intended === null : candidate === intended;
+}
+
+/**
  * Does this recorded discrepancy match the evidence that was attempted?
  *
- * Deliberately strict on the fields that identify WHAT was reported — scope,
- * kind and detail — because a looser match would let an unrelated discrepancy
- * raised by a colleague seconds earlier be mistaken for the operator's own,
- * which would suppress a record that genuinely never happened.
+ * WHY QUANTITIES ARE COMPARED, WHEN THEY ONCE WERE NOT.
  *
- * Quantities are deliberately NOT compared: they are optional evidence, and a
- * discrepancy raised with the same scope, kind and detail is the same report.
+ * The first version of this function ignored `quantityExpected` and
+ * `quantityObserved`, on the reasoning that they were "optional evidence" and
+ * that scope, kind and detail already identified the report. That was wrong,
+ * and wrong in the direction this whole module exists to prevent.
+ *
+ * `raise_acquisition_discrepancy` PERSISTS both quantities as immutable
+ * discrepancy evidence when they are supplied. A record carrying different
+ * quantities is therefore a different piece of evidence — it may be a
+ * colleague's report of the same physical problem, raised seconds earlier with
+ * their own count. Treating it as proof that the OPERATOR's attempt committed
+ * would tell them "it did reach the database" on evidence that does not
+ * establish it, and would suppress a record that genuinely never happened.
+ *
+ * So every field the intent carries must match exactly. Nothing here is fuzzy,
+ * and nothing is skipped because it happens to be null: a null the operator
+ * confirmed is itself part of what they confirmed.
  */
 export function matchesIntent(candidate: Discrepancy, intent: DiscrepancyIntent): boolean {
   return (
@@ -103,6 +126,8 @@ export function matchesIntent(candidate: Discrepancy, intent: DiscrepancyIntent)
     && candidate.orderPublicId === intent.orderPublicId
     && (candidate.receiptPublicId ?? null) === intent.receiptPublicId
     && (candidate.receiptLinePublicId ?? null) === intent.receiptLinePublicId
+    && sameQuantity(candidate.quantityExpected ?? null, intent.quantityExpected)
+    && sameQuantity(candidate.quantityObserved ?? null, intent.quantityObserved)
     && candidate.detail.trim() === intent.detail.trim()
   );
 }
@@ -169,15 +194,20 @@ export function creationMessage(state: DiscrepancyCreationPhase): string {
     case 'verifying':
       return 'Re-reading the governed discrepancy list to establish what was actually recorded…';
     case 'committed':
+      // The claim is exactly as strong as the check behind it: a NEW record
+      // whose every confirmed field — scope, kind, both quantities and detail —
+      // matches what the operator confirmed. Anything weaker would be asserting
+      // more than the evidence establishes.
       return (
-        'The governed record now contains a matching discrepancy that was not there before your attempt, '
-        + `so it did reach the database as ${state.discrepancyPublicId}. It was not recorded twice. `
-        + 'Review it below rather than reporting the problem again.'
+        'The governed record now contains a new discrepancy matching the evidence you confirmed — same '
+        + 'scope, kind, quantities and detail — and it was not there before your attempt, so it did reach '
+        + `the database as ${state.discrepancyPublicId}. It was not recorded twice. Review it below rather `
+        + 'than reporting the problem again.'
       );
     case 'absent':
       return (
-        'The governed discrepancy list was re-read in full and contains no matching new record, so the '
-        + 'previous attempt did not reach the database. You can record it again.'
+        'The governed discrepancy list was re-read in full and contains no new record matching the evidence '
+        + 'you confirmed, so the previous attempt did not reach the database. You can record it again.'
       );
     case 'unverified':
       return (

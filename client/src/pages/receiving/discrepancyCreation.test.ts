@@ -105,6 +105,48 @@ describe('verification against an authoritative re-read', () => {
     expect(settled.phase).toBe('absent');
   });
 
+  // THE POST-MERGE CORRECTION, AT THE VERIFICATION LEVEL.
+  //
+  // A colleague raising the same problem with a different count must NOT settle
+  // the operator's unknown attempt as committed.
+  it('does not settle as committed when a new record differs only in quantities', () => {
+    const verifying = beginVerify(submitFailed(INTENT, ['RV-ADISC-OLD']));
+    const settled = verify(verifying, [
+      makeDiscrepancy({
+        discrepancyPublicId: 'RV-ADISC-COLLEAGUE',
+        // Same order, receipt, receipt line, kind and detail — different count.
+        quantityObserved: 6,
+      }),
+    ]);
+    expect(settled.phase).not.toBe('committed');
+    expect(settled.phase).toBe('absent');
+  });
+
+  it('permits a NEW confirmed attempt once a complete read holds no exact match', () => {
+    const verifying = beginVerify(submitFailed(INTENT, ['RV-ADISC-OLD']));
+    const settled = verify(verifying, [
+      makeDiscrepancy({ discrepancyPublicId: 'RV-ADISC-COLLEAGUE', quantityExpected: 4 }),
+    ]);
+    expect(settled.phase).toBe('absent');
+    // Absent is the ONLY phase besides idle that unlocks creation, and it is
+    // reached only after a complete authoritative read.
+    expect(creationAllowed(settled)).toBe(true);
+  });
+
+  // Selection must not depend on which record the read happened to return first.
+  it('selects the exact record even when a similar one appears before it', () => {
+    const verifying = beginVerify(submitFailed(INTENT, []));
+    const settled = verify(verifying, [
+      makeDiscrepancy({ discrepancyPublicId: 'RV-ADISC-SIMILAR', quantityObserved: 6 }),
+      makeDiscrepancy({ discrepancyPublicId: 'RV-ADISC-EXACT' }),
+    ]);
+    expect(settled.phase).toBe('committed');
+    expect(settled).toMatchObject({ discrepancyPublicId: 'RV-ADISC-EXACT' });
+    expect(creationMessage(settled)).toMatch(/RV-ADISC-EXACT/);
+    // And the message claims exactly what was checked, no more.
+    expect(creationMessage(settled)).toMatch(/scope, kind, quantities and detail/i);
+  });
+
   // THE LOAD-BEARING CASE. A failed verification is not an absence.
   it('keeps creation locked when verification itself fails', () => {
     const verifying = beginVerify(submitFailed(INTENT, ['RV-ADISC-OLD']));
@@ -139,10 +181,50 @@ describe('matching an attempt against the governed record', () => {
     expect(matchesIntent(makeDiscrepancy(over), INTENT)).toBe(false);
   });
 
-  // Quantities are optional evidence; the same report is the same report.
-  it('matches regardless of recorded quantities', () => {
-    expect(matchesIntent(makeDiscrepancy({ quantityExpected: null, quantityObserved: null }), INTENT))
-      .toBe(true);
+  // POST-MERGE CORRECTION.
+  //
+  // This block replaces an assertion that said quantities could differ and the
+  // record would still count as "the same report". That was wrong:
+  // `raise_acquisition_discrepancy` PERSISTS both quantities as immutable
+  // evidence, so a record carrying different ones is different evidence — very
+  // plausibly a colleague's report of the same physical problem with their own
+  // count. Accepting it would have told the operator their attempt committed on
+  // evidence that does not establish it.
+  it('matches when both quantities are exactly equal', () => {
+    expect(matchesIntent(makeDiscrepancy({ quantityExpected: 3, quantityObserved: 5 }), INTENT)).toBe(true);
+  });
+
+  it('does not match when quantityExpected differs', () => {
+    expect(matchesIntent(makeDiscrepancy({ quantityExpected: 4 }), INTENT)).toBe(false);
+  });
+
+  it('does not match when quantityObserved differs', () => {
+    expect(matchesIntent(makeDiscrepancy({ quantityObserved: 6 }), INTENT)).toBe(false);
+  });
+
+  // A null is not a wildcard. It is part of what the operator confirmed.
+  it('does not match a null expected against a numeric expected', () => {
+    expect(matchesIntent(makeDiscrepancy({ quantityExpected: null }), INTENT)).toBe(false);
+    expect(matchesIntent(
+      makeDiscrepancy({ quantityExpected: 3 }),
+      { ...INTENT, quantityExpected: null },
+    )).toBe(false);
+  });
+
+  it('does not match a null observed against a numeric observed', () => {
+    expect(matchesIntent(makeDiscrepancy({ quantityObserved: null }), INTENT)).toBe(false);
+    expect(matchesIntent(
+      makeDiscrepancy({ quantityObserved: 5 }),
+      { ...INTENT, quantityObserved: null },
+    )).toBe(false);
+  });
+
+  it('matches null against null when the intent genuinely carried nulls', () => {
+    const nullIntent: DiscrepancyIntent = { ...INTENT, quantityExpected: null, quantityObserved: null };
+    expect(matchesIntent(
+      makeDiscrepancy({ quantityExpected: null, quantityObserved: null }),
+      nullIntent,
+    )).toBe(true);
   });
 
   it('treats an order-scoped never_arrived report as its own scope', () => {
