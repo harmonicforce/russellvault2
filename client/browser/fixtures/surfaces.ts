@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 import { DETAIL_LINE, SOURCE_SYSTEM } from './data';
 import { RECEIPT_PUBLIC_ID } from './receivingData';
+import { SHIPPING_COMPONENT } from './costData';
 
 /** The four canonical S1.6 surfaces the whole gate is measured against. */
 export interface CanonicalSurface {
@@ -81,6 +82,32 @@ export const RECEIPT_WORKSPACE: CanonicalSurface = {
   },
 };
 
+export const COST: CanonicalSurface = {
+  name: 'cost',
+  path: '/cost',
+  settled: async (page) => {
+    await expect(page.getByRole('heading', { level: 1, name: 'Cost allocation' })).toBeVisible();
+    // The governed answer has actually ARRIVED, not merely the page chrome.
+    //
+    // Deliberately NOT a row from the queue: the queue is rendered twice — a
+    // table above `md` and records below it — so a row locator resolves to the
+    // desktop copy, which is `display: none` on a phone. The attribution counts
+    // are rendered once, at every width, and only carry numbers once a governed
+    // answer has been read.
+    await expect(page.locator('[data-cost-count="awaiting_proposal"]')).toBeVisible();
+  },
+};
+
+export const COST_COMPONENT: CanonicalSurface = {
+  name: 'cost-component',
+  path: `/cost/${SHIPPING_COMPONENT}`,
+  settled: async (page) => {
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    // A single section at every width, unlike the allocation lists inside it.
+    await expect(page.getByRole('region', { name: 'Proposed split' })).toBeVisible();
+  },
+};
+
 export const CANONICAL_SURFACES: readonly CanonicalSurface[] = [
   HOME,
   WORKBENCH,
@@ -88,6 +115,8 @@ export const CANONICAL_SURFACES: readonly CanonicalSurface[] = [
   ACQUISITION_DETAIL,
   RECEIVING,
   RECEIPT_WORKSPACE,
+  COST,
+  COST_COMPONENT,
 ];
 
 /** Navigate to a surface and wait until it has actually settled. */

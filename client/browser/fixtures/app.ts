@@ -36,6 +36,7 @@ import {
 } from './identity';
 import { ALL_LINES, FACETS, FIXED_NOW, makeDetail } from './data';
 import { INVENTORY_SUBJECTS, ReceivingWorld, RECEIPT_PUBLIC_ID } from './receivingData';
+import { CostWorld, SHIPPING_COMPONENT } from './costData';
 import type { AcquisitionDetail } from '../../src/lib/acquisitionDetailApi';
 
 export type ThemeChoice = 'system' | 'light' | 'dark';
@@ -79,6 +80,29 @@ export interface Scenario {
    * to prove the verify-first recovery actually protects against it.
    */
   receivingDiscrepancyCommitsSilently: boolean;
+
+  // --- S2.5 cost allocation ---------------------------------------------
+  /** The governed cost queue read fails. Must never render as empty or zero. */
+  costQueueFails: boolean;
+  /** The governed queue answers truthfully that there are no cost components. */
+  costQueueEmpty: boolean;
+  /** The queue answer is a subset, so the page must say so. */
+  costQueuePartial: boolean;
+  /** The authoritative component re-read fails; drives failed verification. */
+  costComponentReadFails: boolean;
+  /** The caller's governed role, as the server reports it. */
+  costRole: 'owner' | 'operator' | 'viewer';
+  /** The live cost world these routes read and mutate. */
+  cost: CostWorld;
+  /**
+   * A proposal COMMITS and then the response is lost.
+   *
+   * This is the dangerous case, and the only way to prove the verify-first
+   * recovery actually protects against it. A proposal cannot be withdrawn, so
+   * an operator who retried blindly would be refused by the database with no
+   * way to tell whose pending proposal they are looking at.
+   */
+  costProposalCommitsSilently: boolean;
 }
 
 const DEFAULT_SCENARIO: Scenario = {
@@ -96,6 +120,13 @@ const DEFAULT_SCENARIO: Scenario = {
   receiving: new ReceivingWorld(),
   receivingSubjectsEmpty: false,
   receivingDiscrepancyCommitsSilently: false,
+  costQueueFails: false,
+  costQueueEmpty: false,
+  costQueuePartial: false,
+  costComponentReadFails: false,
+  costRole: 'owner',
+  cost: new CostWorld(),
+  costProposalCommitsSilently: false,
 };
 
 /**
@@ -118,7 +149,12 @@ export class ScenarioControl {
     // and let one test's recorded quantity become the next test's starting
     // state — the kind of cross-test leak that produces a failure nobody can
     // reproduce in isolation.
-    this.state = { ...DEFAULT_SCENARIO, receiving: new ReceivingWorld(), ...initial };
+    this.state = {
+      ...DEFAULT_SCENARIO,
+      receiving: new ReceivingWorld(),
+      cost: new CostWorld(),
+      ...initial,
+    };
   }
 
   /** @internal wired by `installScenario`. */
@@ -406,6 +442,63 @@ async function routeApi(route: Route, scenario: Scenario) {
     }
 
     return json(route, { error: 'receipt_not_found' }, 404);
+  }
+
+  // --- S2.5 governed cost allocation -------------------------------------
+  if (path.startsWith('/api/cost/')) {
+    const world = scenario.cost;
+    const role = scenario.costRole;
+
+    if (path === '/api/cost/queue') {
+      // A FAILED read, answered as a failure. The page must never render this
+      // as "every cost is attributed", and must never render a count of zero
+      // for a workspace it could not read.
+      if (scenario.costQueueFails) return json(route, { error: 'dependency_failed' }, 502);
+      const payload = world.queue(role, !scenario.costQueuePartial);
+      if (scenario.costQueueEmpty) return json(route, { ...payload, rows: [] });
+      return json(route, payload);
+    }
+
+    const componentMatch = path.match(/^\/api\/cost\/components\/([^/]+)$/);
+    if (method === 'GET' && componentMatch) {
+      if (scenario.costComponentReadFails) return json(route, { error: 'dependency_failed' }, 502);
+      const payload = world.component(role, decodeURIComponent(componentMatch[1]));
+      return payload ? json(route, payload) : json(route, { error: 'cost_component_not_found' }, 404);
+    }
+
+    if (method === 'POST') {
+      const body = JSON.parse(route.request().postData() ?? '{}');
+      // Every mutation is gated on the caller's governed role, exactly as the
+      // server gates it, so a browser test cannot pass by hiding a control the
+      // API would still have allowed.
+      if (role === 'viewer') return json(route, { error: 'unauthorized_workspace' }, 403);
+
+      if (path.endsWith('/allocation-preview')) {
+        const result = world.preview(body.method, body.lines);
+        return 'error' in result ? json(route, { error: result.error }, 409) : json(route, result);
+      }
+      if (path.endsWith('/allocations/confirm')) {
+        const result = world.confirm(body.expectedTotalMinor);
+        return 'error' in result ? json(route, { error: result.error }, 409) : json(route, result);
+      }
+      if (path.endsWith('/allocations/reverse')) {
+        const result = world.reverse();
+        return 'error' in result ? json(route, { error: result.error }, 409) : json(route, result);
+      }
+      if (path.endsWith('/allocations')) {
+        // Deliberately NOT idempotent, and deliberately not withdrawable: the
+        // proposal COMMITS and then the connection drops. That is what makes a
+        // blind retry dangerous and worth testing.
+        if (scenario.costProposalCommitsSilently) {
+          world.propose(body.method, body.allocations);
+          return route.abort('failed');
+        }
+        const result = world.propose(body.method, body.allocations);
+        return 'error' in result ? json(route, { error: result.error }, 409) : json(route, result);
+      }
+    }
+
+    return json(route, { error: 'cost_component_not_found' }, 404);
   }
 
   if (path === '/api/operations-dashboard/health') {

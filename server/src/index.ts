@@ -25,6 +25,7 @@ import mediaRouter from './routes/media.js';
 import listingPrepRouter from './routes/listingPrep.js';
 import operationsDashboardRouter from './routes/operationsDashboard.js';
 import receivingRouter from './routes/receiving.js';
+import costRouter from './routes/cost.js';
 
 // The ONE startup boundary for legacy-database writes. This used to be an
 // unconditional `seedIfEmpty(); migrateProductType();` pair, which ran before
@@ -92,6 +93,17 @@ app.use('/api/operations-dashboard', operationsDashboardRouter);
 // function under the caller's own JWT, so receiving semantics stay in the
 // database and this process only carries the request.
 app.use('/api/receiving', receivingRouter);
+// S2.5 governed cost allocation. Same gates as receiving: mounted before the
+// legacy write guard, 404 unless the governed surface is configured, and it
+// never touches SQLite. Every mutation is a call into a governed acquisition
+// cost function under the caller's own JWT, so allocation semantics stay in the
+// database and this process only carries the request and the arithmetic the
+// owner is shown before anything durable happens.
+//
+// Note the deliberate distinction from `/api/cost-links` below: that is the
+// LEGACY SQLite cost-link surface and is unrelated to governed acquisition cost
+// components. The two are not merged, and neither reads the other.
+app.use('/api/cost', costRouter);
 
 app.use('/api', legacyWriteGuard);
 
