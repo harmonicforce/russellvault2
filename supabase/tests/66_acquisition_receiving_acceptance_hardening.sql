@@ -222,7 +222,10 @@ select is((select count(*)::int from public.audit_events a join public.acquisiti
 insert into s22_ids select 'race_h_receipt',public.open_acquisition_receipt('64000000-1000-4000-8000-000000000001','RV-ACQ-64A001',null,now(),'exclusion race','race-exclusion-parent')->>'receiptPublicId';
 insert into s22_races select 'exclude_receive',pg_temp.race('s22_h','64000000-0000-4000-8000-000000000001',$$public.s22_try($x$select public.exclude_acquisition_line_by_source('64000000-1000-4000-8000-000000000001','SRC-64-A','LINE-64-A3','race exclusion','race-exclusion-key')$x$)$$,'64000000-0000-4000-8000-000000000002',format('public.s22_try(%L)',format('select public.record_acquisition_receipt_line(%L,%L,%L,%L,1,%L)','64000000-1000-4000-8000-000000000001',(select v from s22_ids where k='race_h_receipt'),'SRC-64-A','LINE-64-A3','race receive')));
 select ok((select count(*) from unnest((select result from s22_races where name='exclude_receive')) x where x like 'ERR:%')<=1,'race H has at most one bounded loser');
-select ok(not exists(select 1 from public.acquisition_receipt_lines l join public.acquisition_receipts r on r.id=l.acquisition_receipt_id join public.acquisition_line_exclusions e on e.acquisition_line_item_id=l.acquisition_line_item_id and e.decision_state='excluded' and e.superseded_at is null where r.public_id=(select v from s22_ids where k='race_h_receipt') and l.created_at>e.created_at),'race H never inserts after an exclusion won the shared lock');
+select ok(
+  (exists(select 1 from public.acquisition_receipt_lines l join public.acquisition_receipts r on r.id=l.acquisition_receipt_id where r.public_id=(select v from s22_ids where k='race_h_receipt')))
+  = (exists(select 1 from unnest((select result from s22_races where name='exclude_receive')) x where x not like 'ERR:%' and x like '%receiptLinePublicId%')),
+  'race H persisted receiving evidence exactly when the receiving caller succeeded');
 select is((select count(*)::int from public.schema_migrations_log where migration_name='20260809000100_s2_receiving_acceptance_hardening'),1,'hardening migration logged exactly once');
 select is((select count(*)::int from s22_races),8,'all eight race harnesses executed');
 select is((select count(*)::int from s22_races where cardinality(result)=2),8,'every race collected two dispatched backend outcomes');

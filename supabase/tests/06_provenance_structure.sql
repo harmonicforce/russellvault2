@@ -392,7 +392,7 @@ select ok(
 -- layer BEFORE a listing exists: preparation records, their checklist, their
 -- history, and package presets. Those five tables are named individually so
 -- the tripwire still fires on an actual marketplace `listings` table, on a
--- sale, on cost basis, or on anything else that would mean inventory exit had
+-- sale, or on anything else that would mean inventory exit had
 -- arrived without a work order. Listing Prep creates no such table: it records
 -- where the owner listed something as a text reference and moves no stock.
 select is(
@@ -403,9 +403,14 @@ select is(
      and table_name not in ('listing_prep', 'listing_prep_requirements',
                             'listing_prep_checks', 'listing_prep_events',
                             'listing_prep_readiness', 'listing_prep_candidates',
-                            'listing_package_presets')),
+                            'listing_package_presets',
+                            'inventory_cost_basis',
+                            'inventory_cost_basis_contributions',
+                            'inventory_cost_basis_events',
+                            'inventory_cost_basis_current',
+                            'unresolved_inventory_cost_basis')),
   0,
-  'no COGS, cost-basis, marketplace listing, sale, or purchase table exists yet (Phase 6+)'
+  'no COGS, marketplace listing, sale, or purchase table exists yet (Phase 6+)'
 );
 
 -- Phase 2 (5) + Phase 3 (5) + Phase 4 (5) + Phase 5 (4) + Phase 6A (5)
@@ -426,8 +431,8 @@ select is(
 -- reconcile a mismatch by lowering the number.
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  73,
-  'seventy-three migrations are recorded, one per file in supabase/migrations'
+  74,
+  'seventy-four migrations are recorded, one per file in supabase/migrations'
 );
 
 select results_eq(
@@ -505,8 +510,9 @@ select results_eq(
     ('20260806000800_acquisition_list_pagination_repair'),
     ('20260807000100_s2_receiving_schema'),
     ('20260808000100_s2_receiving_functions'),
-    ('20260809000100_s2_receiving_acceptance_hardening')$$,
-  'the migration ledger matches every governed migration through S2.2 hardening'
+    ('20260809000100_s2_receiving_acceptance_hardening'),
+    ('20260812000100_governed_inventory_cost_basis')$$,
+  'the migration ledger matches every governed migration through S2.4 cost basis'
 );
 
 select * from finish();

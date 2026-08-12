@@ -13,14 +13,14 @@ have to re-derive them from SQL.
 | **S2.1** | Governed receiving schema — `acquisition_receipts`, `acquisition_receipt_lines`, `acquisition_discrepancies` | complete |
 | **S2.2** | Receiving mutation functions + behavioural pgTAP | **implemented** |
 | S2.3 | Receiving UI (`/receiving`) | not started |
-| S2.4 | Cost-basis schema + `recompute_inventory_cost_basis` + pgTAP (**the critical PR**) | not started |
+| S2.4 | Cost-basis schema + `recompute_inventory_cost_basis` + pgTAP (**the critical PR**) | implemented on `codex/s2-4-governed-inventory-cost-basis`; awaiting exact-head CI and owner merge decision |
 | S2.5 | Cost-allocation owner surface (`/cost`) | not started |
 | S2.6 | Unresolved-cost queue | not started |
 
 Receiving is delivered before cost basis because a cost basis with no governed
 receipt is exactly the legacy `cost_links` design the program exists to retire.
 
-**D-8 (cost basis method) blocks S2.4, not S2.1.** Nothing in the receiving
+**D-8 (cost basis method) is resolved for S2.4.** Nothing in the receiving
 schema presumes FIFO, weighted average, or specific identification.
 
 ## 2. What S2.1 establishes
@@ -637,7 +637,9 @@ dialog. Screenshot baselines stay at 60; only the two receiving surfaces changed
 
 ### S2.3 completion boundary
 
-S2.3 ends at governed owner reconciliation. No cost-basis schema, no
-`recompute_inventory_cost_basis`, no cost allocation surface, no `/cost`, no
-unresolved-cost queue. S2.4 is the next checkpoint and is blocked until owner
-decision D-8 is explicitly resolved.
+S2.3 ends at governed owner reconciliation. S2.4 additively derives stored,
+history-preserving basis only from reconciled receipt-inventory links. Direct
+components and confirmed shared allocations remain distinct contribution rows;
+candidate/reversed inputs are excluded. Expected quantity remains the denominator
+for partial receipts, overage remains unresolved, and currencies remain separate.
+S2.4 includes no allocation UI, `/cost` route, COGS, sales, returns, or FX.
