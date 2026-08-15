@@ -1,7 +1,7 @@
 begin;
 create extension if not exists pgtap;
 create extension if not exists dblink;
-select plan(28);
+select plan(41);
 create function pg_temp.h(p_seed text) returns text language sql immutable as $$select encode(sha256(p_seed::bytea),'hex')$$;
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$begin perform set_config('request.jwt.claims',json_build_object('sub',p_uid,'role','authenticated')::text,true); execute 'set local role authenticated'; end$$;
 insert into auth.users(id,email) values
@@ -130,30 +130,50 @@ insert into public.acquisition_cost_allocations(id,workspace_id,public_id,cost_c
  ('67000000-5000-4000-8000-000000000001','68000000-1000-4000-8000-000000000001','RV-ACALLOC-COST001','67000000-4000-4000-8000-000000000003','68000000-5000-4000-8000-000000000001',3000,'equal','confirmed','68000000-0000-4000-8000-000000000001',now(),null,'test.cost'),
  ('67000000-5000-4000-8000-000000000002','68000000-1000-4000-8000-000000000001','RV-ACALLOC-COST002','67000000-4000-4000-8000-000000000004','68000000-5000-4000-8000-000000000001',9999,'equal','candidate',null,null,null,'test.cost'),
  ('67000000-5000-4000-8000-000000000003','68000000-1000-4000-8000-000000000001','RV-ACALLOC-COST003','67000000-4000-4000-8000-000000000004','68000000-5000-4000-8000-000000000001',9999,'equal','reversed',null,null,now(),'test.cost');
+update public.acquisition_cost_allocations set state='withdrawn' where id='67000000-5000-4000-8000-000000000002';
 update public.acquisition_line_items set source_detail='{"specific_unit_costs_minor":[70,31,0,0,0,0,0]}' where id='68000000-5000-4000-8000-000000000003';
 set local session_replication_role=origin;
 
+select set_config('request.jwt.claims',json_build_object('sub','68000000-0000-4000-8000-000000000001','role','authenticated')::text,true);
+reset app.governed_cost_basis_mutation;
+select throws_ok($$insert into public.inventory_cost_basis(workspace_id,recompute_id,subject_kind,inventory_lot_id,acquisition_line_item_id,acquisition_receipt_line_inventory_link_id,layer_seq,source_unit_ordinal,total_cost_minor,currency,basis_method,state,algorithm_version,input_content_hash) values('68000000-1000-4000-8000-000000000001',gen_random_uuid(),'lot','69000000-9200-4000-8000-000000000001','68000000-5000-4000-8000-000000000001','67000000-3000-4000-8000-000000000001',98,98,0,'USD','fifo','current','1.1.0',repeat('0',64))$$,'55000','inventory_cost_basis_is_derived','a completely unset governed-mutation GUC fails closed');
+-- Restore the pending candidate to reproduce the old partial-basis defect.
+set local session_replication_role=replica;
+update public.acquisition_cost_allocations set state='candidate' where id='67000000-5000-4000-8000-000000000002';
+update public.acquisition_cost_components set attribution_state='unresolved' where id='67000000-4000-4000-8000-000000000004';
+set local session_replication_role=origin;
+select public.recompute_inventory_cost_basis('68000000-1000-4000-8000-000000000001');
+select is((select count(*)::int from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000001' and currency='USD' and state='current'),0,'candidate order-shared cost blocks complete/current basis despite known direct cost');
+select ok((select bool_and(total_cost_minor is null and state='unresolved') from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000001' and currency='USD' and state in ('current','unresolved')),'partial known subtotal is not published as authoritative total');
+select throws_ok($$select public.withdraw_cost_allocation('67000000-4000-4000-8000-000000000004',null)$$,'22023','a reason is required to withdraw an allocation proposal','withdrawal requires a reason');
+select is((public.withdraw_cost_allocation('67000000-4000-4000-8000-000000000004','wrong allocation target')->>'withdrawn')::int,1,'candidate allocation can be withdrawn governably');
+select is((select state::text from public.acquisition_cost_allocations where id='67000000-5000-4000-8000-000000000002'),'withdrawn','withdrawal preserves the original row as terminal history');
+select is((public.propose_cost_allocation('67000000-4000-4000-8000-000000000004','equal','[{"line_item_id":"68000000-5000-4000-8000-000000000001","amount_minor":9999}]')->>'proposed')::int,1,'a corrected proposal is allowed after withdrawal');
+select is((public.withdraw_cost_allocation('67000000-4000-4000-8000-000000000004','baseline after replacement proof')->>'withdrawn')::int,1,'replacement candidate is independently withdrawable');
+set local session_replication_role=replica;
+update public.acquisition_cost_components set attribution_state='allocated' where id='67000000-4000-4000-8000-000000000004';
+set local session_replication_role=origin;
 select is((public.recompute_inventory_cost_basis('68000000-1000-4000-8000-000000000001')->>'recomputed'),'true','first recompute publishes basis');
 select ok((select bool_and(not has_table_privilege('authenticated',format('public.%I',t),'insert')) from unnest(array['inventory_cost_basis','inventory_cost_basis_contributions','inventory_cost_basis_events']) t),'authenticated has no direct writes');
 select throws_ok($$insert into public.inventory_cost_basis(workspace_id,recompute_id,subject_kind,inventory_lot_id,acquisition_line_item_id,acquisition_receipt_line_inventory_link_id,layer_seq,source_unit_ordinal,total_cost_minor,currency,basis_method,state,algorithm_version,input_content_hash) values('68000000-1000-4000-8000-000000000001',gen_random_uuid(),'lot','69000000-9200-4000-8000-000000000001','68000000-5000-4000-8000-000000000001','67000000-3000-4000-8000-000000000001',99,99,0,'USD','fifo','current','1.0.0',repeat('0',64))$$,'55000','inventory_cost_basis_is_derived','even privileged direct writes are guarded');
 select is((select count(*)::int from public.inventory_cost_basis where acquisition_receipt_line_inventory_link_id='67000000-3000-4000-8000-000000000005'),0,'submitted-only receiving never derives basis');
 select is((select sum(total_cost_minor)::bigint from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000001' and currency='USD' and state='current'),7200::bigint,'six of ten units receive six tenths of direct plus confirmed allocated cost and discount');
-select is((select sum(amount_minor)::bigint from public.inventory_cost_basis_contributions where acquisition_cost_component_id='67000000-4000-4000-8000-000000000002'),-600::bigint,'discount contribution subtracts');
-select is((select count(*)::int from public.inventory_cost_basis_contributions where acquisition_cost_component_id='67000000-4000-4000-8000-000000000004'),0,'candidate and reversed allocations are excluded');
+select is((select sum(amount_minor)::bigint from public.inventory_cost_basis_contributions c join public.inventory_cost_basis b on b.id=c.inventory_cost_basis_id where b.state in ('current','unresolved') and c.acquisition_cost_component_id='67000000-4000-4000-8000-000000000002'),-600::bigint,'discount contribution subtracts');
+select is((select count(*)::int from public.inventory_cost_basis_contributions c join public.inventory_cost_basis b on b.id=c.inventory_cost_basis_id where b.state in ('current','unresolved') and c.acquisition_cost_component_id='67000000-4000-4000-8000-000000000004'),0,'candidate and reversed allocations are excluded');
 select is((select pending_expected_quantity from public.unresolved_inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000001'),4::bigint,'unreconciled expected quantity remains pending');
-select is((select array_agg(total_cost_minor order by source_unit_ordinal) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000002' and currency='USD'),array[34,33,33,null,null]::bigint[],'minor-unit remainder and overage are deterministic');
+select is((select array_agg(total_cost_minor order by source_unit_ordinal) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000002' and currency='USD' and state in ('current','unresolved')),array[34,33,33,null,null]::bigint[],'minor-unit remainder and overage are deterministic');
 select is((select overage_quantity from public.unresolved_inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000002'),2::bigint,'overreceipt quantity is explicit');
 select is((select count(*)::int from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000002' and state='unresolved'),2,'overage basis is unresolved, never zero');
-select is((select array_agg(layer_seq order by source_unit_ordinal) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000001' and currency='USD'),array[1,2,3,4,5,6]::integer[],'FIFO layers follow stable receiving order');
-select is((select array_agg(total_cost_minor order by inventory_item_id) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000003' and currency='USD'),array[70,31]::bigint[],'serialized source evidence preserves actual unit costs');
-select ok((select bool_and(basis_method='source_observed_specific') from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000003' and currency='USD'),'source-supported serialized amounts are labeled specific');
-select is((select array_agg(total_cost_minor order by inventory_item_id) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000003' and currency='EUR'),array[15,15]::bigint[],'serialized aggregate cost uses deterministic equal attribution');
-select ok((select bool_and(basis_method='deterministic_equal_attribution') from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000003' and currency='EUR'),'equal split is never mislabeled source-specific');
+select is((select array_agg(layer_seq order by source_unit_ordinal) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000001' and currency='USD' and state in ('current','unresolved')),array[1,2,3,4,5,6]::integer[],'FIFO layers follow stable receiving order');
+select is((select array_agg(total_cost_minor order by inventory_item_id) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000003' and currency='USD' and state in ('current','unresolved')),array[15,15]::bigint[],'multi-unit serialized cost uses deterministic equal attribution');
+select ok((select bool_and(basis_method='deterministic_equal_attribution') from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000003' and currency='USD' and state in ('current','unresolved')),'arbitrary source JSON cannot label multi-unit costs source-specific');
+select is((select array_agg(total_cost_minor order by inventory_item_id) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000003' and currency='EUR' and state in ('current','unresolved')),array[15,15]::bigint[],'serialized aggregate cost uses deterministic equal attribution');
+select ok((select bool_and(basis_method='deterministic_equal_attribution') from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000003' and currency='EUR' and state in ('current','unresolved')),'equal split is never mislabeled source-specific');
 select is((select count(distinct currency)::int from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000001'),2,'currencies remain separate');
 select ok((select bool_and(b.total_cost_minor=(select sum(c.amount_minor) from public.inventory_cost_basis_contributions c where c.inventory_cost_basis_id=b.id)) from public.inventory_cost_basis b where b.state='current'),'basis equals contribution provenance exactly');
 select is((select count(*)::int from public.inventory_cost_basis where state in ('current','unresolved')),21,'one derived layer exists for every reconciled linked unit and currency');
 select is((public.recompute_inventory_cost_basis('68000000-1000-4000-8000-000000000001')->>'recomputed'),'false','unchanged inputs are an idempotent no-op');
-select is((select count(*)::int from public.inventory_cost_basis_events where inventory_cost_basis_id is null),1,'no-op creates no history');
+select is((select count(*)::int from public.inventory_cost_basis_events where inventory_cost_basis_id is null),2,'no-op creates no history');
 -- Change one authoritative input and prove supersession/history.
 set local session_replication_role=replica;
 insert into public.acquisition_cost_components(id,workspace_id,public_id,line_item_id,component_type,amount_state,amount_minor,currency,attribution_state,acquisition_import_job_id,created_by_process) values
@@ -161,7 +181,7 @@ insert into public.acquisition_cost_components(id,workspace_id,public_id,line_it
 set local session_replication_role=origin;
 select is((public.recompute_inventory_cost_basis('68000000-1000-4000-8000-000000000001')->>'recomputed'),'true','changed authority creates a new version');
 select ok((select count(*)>0 from public.inventory_cost_basis where state='superseded'),'prior truth is preserved as superseded history');
-select is((select count(*)::int from public.inventory_cost_basis_events where inventory_cost_basis_id is null),2,'two effective recomputes have two run events');
+select is((select count(*)::int from public.inventory_cost_basis_events where inventory_cost_basis_id is null),3,'three effective recomputes have three run events');
 select is((select count(*)::int from public.inventory_cost_basis b where state in ('current','unresolved') and exists(select 1 from public.inventory_cost_basis x where x.workspace_id=b.workspace_id and x.acquisition_receipt_line_inventory_link_id=b.acquisition_receipt_line_inventory_link_id and x.source_unit_ordinal=b.source_unit_ordinal and x.currency=b.currency and x.state in ('current','unresolved') and x.id<>b.id)),0,'there are never competing current truths');
 -- Genuine overlapping dblink recompute calls use the password-aware DSN pattern.
 commit;
@@ -174,5 +194,32 @@ create temporary table s24_results(v text); insert into s24_results select v fro
 select dblink_disconnect('s24a'); select dblink_disconnect('s24b');
 select is((select count(*)::int from s24_results where v like 'ERR:%'),0,'genuine concurrent recomputes both complete without error');
 select is((select count(*)::int from s24_results where v='false'),2,'concurrent unchanged recomputes both observe the same no-op truth');
+-- Unknown direct evidence, lot-shared unresolved evidence, and negative net all fail closed.
+begin;
+set local session_replication_role=replica;
+insert into public.acquisition_cost_components(id,workspace_id,public_id,line_item_id,lot_id,component_type,amount_state,amount_minor,currency,attribution_state,acquisition_import_job_id,created_by_process) values
+ ('67000000-4000-4000-8000-000000000010','68000000-1000-4000-8000-000000000001','RV-ACOST-COST0010','68000000-5000-4000-8000-000000000002',null,'fee','unknown',null,'USD','direct','68000000-4000-4000-8000-000000000001','test.cost'),
+ ('67000000-4000-4000-8000-000000000011','68000000-1000-4000-8000-000000000001','RV-ACOST-COST0011',null,'68000000-7300-4000-8000-000000000001','shipping','known',500,'CAD','unresolved','68000000-4000-4000-8000-000000000001','test.cost'),
+ ('67000000-4000-4000-8000-000000000012','68000000-1000-4000-8000-000000000001','RV-ACOST-COST0012','68000000-5000-4000-8000-000000000003',null,'discount','known',1000,'USD','direct','68000000-4000-4000-8000-000000000001','test.cost');
+set local session_replication_role=origin;
+select public.recompute_inventory_cost_basis('68000000-1000-4000-8000-000000000001');
+select ok((select bool_and(state='unresolved' and total_cost_minor is null) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000002' and currency='USD' and state in ('current','unresolved')),'unknown direct cost blocks complete basis');
+select ok((select count(*)>0 and bool_and(state='unresolved' and total_cost_minor is null) from public.inventory_cost_basis where currency='CAD' and state in ('current','unresolved')),'lot-scoped unresolved shared cost propagates to affected inventory coverage');
+select ok((select bool_and(state='unresolved' and total_cost_minor is null) from public.inventory_cost_basis where acquisition_line_item_id='68000000-5000-4000-8000-000000000003' and currency='USD' and state in ('current','unresolved')),'negative net basis is explicit unresolved truth, never current negative value');
+rollback;
+
+-- Confirm and withdrawal serialize on the same component lock: exactly one wins.
+create function public.s241_race(p_sql text) returns text language plpgsql as $$begin execute p_sql; return 'OK'; exception when others then return 'ERR:'||sqlstate; end$$;
+set local session_replication_role=replica; update public.acquisition_cost_components set attribution_state='unresolved' where id='67000000-4000-4000-8000-000000000004'; set local session_replication_role=origin;
+select public.propose_cost_allocation('67000000-4000-4000-8000-000000000004','equal','[{"line_item_id":"68000000-5000-4000-8000-000000000001","amount_minor":9999}]');
+select dblink_connect('s241c',(select dsn from s24_conn)); select dblink_connect('s241w',(select dsn from s24_conn));
+select dblink_send_query('s241c',format($q$with s as materialized(select set_config('request.jwt.claims',%L,false)) select public.s241_race('select public.confirm_cost_allocation(''67000000-4000-4000-8000-000000000004'',9999)') from s$q$,json_build_object('sub','68000000-0000-4000-8000-000000000001','role','authenticated')::text));
+select dblink_send_query('s241w',format($q$with s as materialized(select set_config('request.jwt.claims',%L,false)) select public.s241_race('select public.withdraw_cost_allocation(''67000000-4000-4000-8000-000000000004'',''concurrent correction'')') from s$q$,json_build_object('sub','68000000-0000-4000-8000-000000000001','role','authenticated')::text));
+create temporary table s241_results(v text); insert into s241_results select v from dblink_get_result('s241c') t(v text); insert into s241_results select v from dblink_get_result('s241w') t(v text);
+select dblink_disconnect('s241c'); select dblink_disconnect('s241w');
+select is((select count(*)::int from s241_results where v='OK'),1,'confirm versus withdrawal has exactly one winner');
+select is((select count(*)::int from s241_results where v like 'ERR:%'),1,'confirm versus withdrawal has exactly one coherent loser');
+drop function public.s241_race(text);
+
 select is((select count(*)::int from public.schema_migrations_log where migration_name='20260812000100_governed_inventory_cost_basis'),1,'S2.4 migration is logged once');
 select * from finish();
