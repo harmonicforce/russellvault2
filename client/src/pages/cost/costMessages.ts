@@ -27,9 +27,9 @@ const MESSAGES: Record<string, string> = {
     + 'reported is not zero, and the governed contract will not let it be treated as one. The amount has '
     + 'to be established before any allocation can happen.',
   proposal_already_pending:
-    'This component already has a PENDING proposal, so a second one was refused. The governed contract '
-    + 'cannot withdraw a pending proposal — it can only be confirmed or left — so check whose proposal is '
-    + 'on record before doing anything else.',
+    'This component already has a PENDING proposal, so a second one was refused. Check whose proposal '
+    + 'is on record before acting: it can be confirmed, or withdrawn and replaced with a corrected '
+    + 'split, but a second proposal cannot sit alongside it.',
   duplicate_line_in_proposal:
     'The same acquisition line appeared more than once in the split. Each line may be allocated at most '
     + 'once per proposal.',
@@ -52,12 +52,20 @@ const MESSAGES: Record<string, string> = {
     'The pending proposal does not add up to the component’s own amount, so the governed contract refused '
     + 'to confirm it. Cost is conserved by the database, not by this screen.',
   proposal_would_not_conserve:
-    'This split does not add up to the component’s amount, so it was NOT sent. That refusal is '
-    + 'deliberate: a proposal that does not conserve can never be confirmed and can never be withdrawn, '
-    + 'so writing one would leave this component permanently stuck. Adjust the amounts until they total '
+    'This split does not add up to the component’s amount, so it was NOT sent. A proposal that does '
+    + 'not conserve can never be confirmed — it would have to be withdrawn and replaced, which is a '
+    + 'governed act with its own audit record rather than an undo. Adjust the amounts until they total '
     + 'the component amount.',
   nothing_to_reverse:
     'This component has no confirmed allocation to reverse.',
+  nothing_to_withdraw:
+    'There is no pending proposal to withdraw. It may have been withdrawn already, or confirmed — '
+    + 'check what the component now shows before acting again.',
+  allocation_terminal:
+    'That allocation has already reached a final state, so the governed contract will not move it '
+    + 'again. Reversed and withdrawn rows are permanent history.',
+  cost_basis_is_derived:
+    'The inventory cost basis is derived by the governed recompute and cannot be written directly.',
   no_value_basis:
     'None of the lines in scope has a known direct cost, so there is no value to split in proportion to. '
     + 'A split was NOT invented from an even share and labelled as value-weighted — that would record a '

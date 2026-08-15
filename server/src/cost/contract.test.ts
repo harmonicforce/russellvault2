@@ -13,7 +13,7 @@
 //     governed migration, so a reworded message fails here rather than
 //     degrading silently into a generic 502.
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
@@ -549,43 +549,47 @@ describe('governed refusals keep their meaning', () => {
   /**
    * THE ANTI-DRIFT TEST.
    *
-   * Every phrase this transport matches on must actually be in the governed
-   * migration. If a future migration rewords one, this fails here rather than
-   * the refusal silently degrading into a generic 502 — which is the failure
-   * that matters, because "this component already has a pending proposal" and
-   * "the database is unreachable" need completely different actions.
+   * Every phrase this transport matches on must actually be raised by a
+   * governed migration. If a future migration rewords one, this fails here
+   * rather than the refusal silently degrading into a generic 502 — which is
+   * the failure that matters, because "this component already has a pending
+   * proposal" and "the database is unreachable" need completely different
+   * actions.
    *
-   * `authentication required` is excluded because it is raised by
-   * `app.require_uid` in a different migration, and is asserted separately.
+   * It scans EVERY migration rather than a named one. The phrases now come from
+   * at least three: the S1 acquisition functions, the S2.4/S2.4.1 cost-basis
+   * work, and the shared provenance helpers. Pinning a file list here would
+   * mean the test quietly stopped covering a phrase the moment it moved.
    *
-   * The migration text is normalised first: plpgsql wraps a long message across
+   * Migration text is normalised first: plpgsql wraps a long message across
    * source lines as adjacent string literals, which Postgres concatenates
    * before it raises. The RUNTIME message is therefore contiguous even though
    * the source is not, so the source is joined the same way before matching.
    */
-  it('matches only phrases that are present verbatim in the governed migration', () => {
-    const migration = joinWrappedLiterals(readFileSync(
-      fileURLToPath(new URL(
-        '../../../supabase/migrations/20260720000400_acquisition_functions.sql', import.meta.url)),
-      'utf8'));
-    const elsewhere = new Set(['authentication required', 'exceeds the maximum of']);
+  it('matches only phrases a governed migration actually raises', () => {
+    const dir = fileURLToPath(new URL('../../../supabase/migrations/', import.meta.url));
+    const corpus = readdirSync(dir)
+      .filter((name) => name.endsWith('.sql'))
+      .map((name) => joinWrappedLiterals(readFileSync(`${dir}${name}`, 'utf8')))
+      .join('\n');
+
     for (const refusal of COST_REFUSALS) {
-      if (elsewhere.has(refusal.phrase)) continue;
-      expect(migration, `phrase not found in migration: ${refusal.phrase}`)
+      expect(corpus, `phrase not found in any migration: ${refusal.phrase}`)
         .toContain(refusal.phrase);
     }
   });
 
-  it('finds the two externally-raised phrases in their own migrations', () => {
-    const provenance = readFileSync(
-      fileURLToPath(new URL(
-        '../../../supabase/migrations/20260719000900_provenance_functions.sql', import.meta.url)),
-      'utf8');
-    const workflow = readFileSync(
-      fileURLToPath(new URL(
-        '../../../supabase/migrations/20260719001000_provenance_import_workflow.sql', import.meta.url)),
-      'utf8');
-    expect(provenance).toContain('authentication required');
-    expect(workflow).toContain('exceeds the maximum of');
+  // And the phrases are DISTINCT enough to classify. Two refusals may share a
+  // code, but no phrase may be a substring of another phrase that maps to a
+  // DIFFERENT code, or the longest-first match would be the only thing keeping
+  // them apart by accident rather than by design.
+  it('keeps differently-coded phrases from shadowing one another', () => {
+    for (const a of COST_REFUSALS) {
+      for (const b of COST_REFUSALS) {
+        if (a === b || a.code === b.code) continue;
+        if (a.phrase.length <= b.phrase.length) continue;
+        expect(a.phrase.includes(b.phrase), `${b.phrase} shadows ${a.phrase}`).toBe(false);
+      }
+    }
   });
 });

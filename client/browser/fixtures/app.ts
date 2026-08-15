@@ -36,7 +36,7 @@ import {
 } from './identity';
 import { ALL_LINES, FACETS, FIXED_NOW, makeDetail } from './data';
 import { INVENTORY_SUBJECTS, ReceivingWorld, RECEIPT_PUBLIC_ID } from './receivingData';
-import { CostWorld, SHIPPING_COMPONENT } from './costData';
+import { CostWorld } from './costData';
 import type { AcquisitionDetail } from '../../src/lib/acquisitionDetailApi';
 
 export type ThemeChoice = 'system' | 'light' | 'dark';
@@ -103,6 +103,20 @@ export interface Scenario {
    * way to tell whose pending proposal they are looking at.
    */
   costProposalCommitsSilently: boolean;
+  /**
+   * A withdrawal COMMITS and then the response is lost.
+   *
+   * The dangerous case for this operation: withdrawing and confirming both
+   * empty the candidate set, so an owner who retried blindly could act on a
+   * proposal that has already become the cost basis.
+   */
+  costWithdrawalCommitsSilently: boolean;
+  /** A withdrawal is lost AND a confirmation wins the race meanwhile. */
+  costConfirmWinsTheRace: boolean;
+  /** The governed basis recompute fails. The mutation still committed. */
+  costRecomputeFails: boolean;
+  /** No governed recompute has ever published a basis for these lines. */
+  costBasisNotDerived: boolean;
 }
 
 const DEFAULT_SCENARIO: Scenario = {
@@ -127,6 +141,10 @@ const DEFAULT_SCENARIO: Scenario = {
   costRole: 'owner',
   cost: new CostWorld(),
   costProposalCommitsSilently: false,
+  costWithdrawalCommitsSilently: false,
+  costConfirmWinsTheRace: false,
+  costRecomputeFails: false,
+  costBasisNotDerived: false,
 };
 
 /**
@@ -166,6 +184,23 @@ export class ScenarioControl {
     Object.assign(this.state, patch);
     if (this.reseed) await this.reseed();
   }
+}
+
+/**
+ * The governed basis recompute, reported as its OWN outcome.
+ *
+ * A failure here never turns the allocation result into a failure — that is the
+ * whole rule this fixture exists to let the browser suite exercise.
+ */
+function recompute(scenario: Scenario) {
+  return scenario.costRecomputeFails
+    ? { status: 'failed', code: 'dependency_failed', retryable: true }
+    : {
+        status: 'refreshed',
+        algorithmVersion: '1.1.0',
+        contentHash: 'a'.repeat(64),
+        basisRows: 4,
+      };
 }
 
 function json(route: Route, body: unknown, status = 200) {
@@ -462,7 +497,8 @@ async function routeApi(route: Route, scenario: Scenario) {
     const componentMatch = path.match(/^\/api\/cost\/components\/([^/]+)$/);
     if (method === 'GET' && componentMatch) {
       if (scenario.costComponentReadFails) return json(route, { error: 'dependency_failed' }, 502);
-      const payload = world.component(role, decodeURIComponent(componentMatch[1]));
+      const payload = world.component(
+        role, decodeURIComponent(componentMatch[1]), !scenario.costBasisNotDerived);
       return payload ? json(route, payload) : json(route, { error: 'cost_component_not_found' }, 404);
     }
 
@@ -479,11 +515,36 @@ async function routeApi(route: Route, scenario: Scenario) {
       }
       if (path.endsWith('/allocations/confirm')) {
         const result = world.confirm(body.expectedTotalMinor);
-        return 'error' in result ? json(route, { error: result.error }, 409) : json(route, result);
+        return 'error' in result
+          ? json(route, { error: result.error }, 409)
+          : json(route, { ...result, basisRecompute: recompute(scenario) });
       }
       if (path.endsWith('/allocations/reverse')) {
         const result = world.reverse();
-        return 'error' in result ? json(route, { error: result.error }, 409) : json(route, result);
+        return 'error' in result
+          ? json(route, { error: result.error }, 409)
+          : json(route, { ...result, basisRecompute: recompute(scenario) });
+      }
+      if (path.endsWith('/allocations/withdraw')) {
+        // A blank reason is refused before anything happens, exactly as the
+        // governed function refuses it.
+        if (!body.reason || String(body.reason).trim() === '') {
+          return json(route, { error: 'invalid_request' }, 400);
+        }
+        // Deliberately NOT idempotent: the withdrawal COMMITS and then the
+        // connection drops. Optionally a confirmation wins the race instead.
+        if (scenario.costConfirmWinsTheRace) {
+          world.confirm(String(world.totalMinor));
+          return route.abort('failed');
+        }
+        if (scenario.costWithdrawalCommitsSilently) {
+          world.withdraw(String(body.reason));
+          return route.abort('failed');
+        }
+        const result = world.withdraw(String(body.reason));
+        return 'error' in result
+          ? json(route, { error: result.error }, result.error === 'invalid_request' ? 400 : 409)
+          : json(route, { ...result, basisRecompute: recompute(scenario) });
       }
       if (path.endsWith('/allocations')) {
         // Deliberately NOT idempotent, and deliberately not withdrawable: the

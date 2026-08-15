@@ -29,6 +29,7 @@ import CostComponentWorkspace from './CostComponentWorkspace';
 import {
   CostError,
   type AllocationPreview,
+  type BasisImpact,
   type AllocationRecord,
   type CostComponentDetail,
   type CostComponentSummary,
@@ -75,6 +76,7 @@ vi.mock('../lib/costApi', async (importOriginal) => ({
     propose: (...a: unknown[]) => record('propose', ...a),
     confirm: (...a: unknown[]) => record('confirm', ...a),
     reverse: (...a: unknown[]) => record('reverse', ...a),
+    withdraw: (...a: unknown[]) => record('withdraw', ...a),
   }),
 }));
 
@@ -168,13 +170,69 @@ function makeDetail(over: Partial<CostComponentDetail> = {}): CostComponentDetai
   };
 }
 
-function makeView(component: CostComponentDetail): CostComponentView {
+const BASIS_METHODS = [
+  { method: 'fifo' as const, description: 'First-in, first-out layering. An ACCOUNTING CONVENTION only; it does not assert which physical unit arrived first.' },
+  { method: 'source_observed_specific' as const, description: 'The source reported a cost for this specific unit.' },
+  { method: 'deterministic_equal_attribution' as const, description: 'Attributed equally by a deterministic rule.' },
+  { method: 'unresolved' as const, description: 'The governed recompute could not establish a cost for this unit.' },
+];
+
+function makeBasisImpact(over: Partial<BasisImpact> = {}): BasisImpact {
+  return {
+    derived: true,
+    lines: [
+      {
+        sourceSystemPublicId: 'RV-SS-WHATNOT',
+        acquisitionLinePublicId: 'RV-AL-AAA111',
+        title: 'Vintage card lot A',
+        subjects: [{ subjectKind: 'item', publicId: 'RV-IITM-000001' }],
+        currencies: [{
+          currency: 'USD', knownTotalMinor: '6600', resolvedUnitCount: 2,
+          unresolvedUnitCount: 0, methods: ['fifo'],
+        }],
+        unresolved: null,
+        algorithmVersion: '1.1.0',
+        derivedAt: '2026-08-15T10:00:00.000Z',
+      },
+      {
+        sourceSystemPublicId: 'RV-SS-WHATNOT',
+        acquisitionLinePublicId: 'RV-AL-BBB222',
+        title: null,
+        subjects: [{ subjectKind: 'lot', publicId: 'RV-ILOT-000002' }],
+        currencies: [
+          {
+            currency: 'EUR', knownTotalMinor: '500', resolvedUnitCount: 1,
+            unresolvedUnitCount: 0, methods: ['deterministic_equal_attribution'],
+          },
+          {
+            currency: 'USD', knownTotalMinor: null, resolvedUnitCount: 0,
+            unresolvedUnitCount: 1, methods: ['unresolved'],
+          },
+        ],
+        unresolved: {
+          expectedQuantity: 1, reconciledQuantity: 2, pendingExpectedQuantity: 0,
+          overageQuantity: 1, hasUnresolvedCostEvidence: true,
+        },
+        algorithmVersion: '1.1.0',
+        derivedAt: '2026-08-15T10:00:00.000Z',
+      },
+    ],
+    ...over,
+  };
+}
+
+function makeView(
+  component: CostComponentDetail,
+  basisImpact: BasisImpact = makeBasisImpact(),
+): CostComponentView {
   return {
     coverage: 'governed_native_committed',
     historicalLegacyImported: false,
     role,
     methods: METHODS,
+    basisMethods: BASIS_METHODS,
     component,
+    basisImpact,
   };
 }
 
@@ -381,7 +439,7 @@ describe('one cost component', () => {
     await waitFor(() => expect(screen.getByText('RV-ACALLOC-AAA111')).toBeTruthy());
     const panel = within(screen.getByRole('region', { name: 'Proposed split' }));
     expect(panel.getAllByText(/NOT a cost basis|not a cost basis/i).length).toBeGreaterThan(0);
-    expect(panel.getByText(/cannot be withdrawn/i)).toBeTruthy();
+    expect(panel.getByText(/withdrawing is not a deletion/i)).toBeTruthy();
     // And each row says a proposal has not been reviewed.
     expect(panel.getAllByText(/Not reviewed — a proposal is not a cost basis/i).length).toBe(2);
   });
@@ -458,12 +516,21 @@ describe('proposing a split', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /Propose a split/i })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: /Propose a split/i }));
-    await waitFor(() => expect(screen.getByText(/A proposal cannot be withdrawn/i)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText(/A proposal is durable and cannot be edited/i)).toBeTruthy());
   }
 
-  it('warns that a proposal cannot be withdrawn, before anything is chosen', async () => {
+  // The copy corrected in Batch 2. Withdrawal now EXISTS, so claiming it does
+  // not would be false — but it is a governed act with a permanent record, not
+  // an undo, and the warning has to say which.
+  it('warns that a proposal is durable and that withdrawal is not an undo', async () => {
     await openEditor();
-    expect(screen.getByText(/no way to delete a proposed split/i)).toBeTruthy();
+    // Scoped to the dialog: the page behind it makes the same point in its own
+    // words, and an unscoped match would find both.
+    const warning = within(screen.getByRole('dialog'));
+    expect(warning.getByText(/not an undo/i)).toBeTruthy();
+    expect(warning.getByText(/stay on record as history/i)).toBeTruthy();
+    expect(screen.queryByText(/no way to delete a proposed split/i)).toBeNull();
   });
 
   it('will not send until a split has been computed', async () => {
@@ -571,7 +638,8 @@ describe('a lost proposal response', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /Propose a split/i })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: /Propose a split/i }));
-    await waitFor(() => expect(screen.getByText(/A proposal cannot be withdrawn/i)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText(/A proposal is durable and cannot be edited/i)).toBeTruthy());
     fireEvent.click(screen.getByLabelText(/By quantity/i));
     fireEvent.click(screen.getByRole('button', { name: /Compute the split/i }));
     await waitFor(() =>
@@ -591,7 +659,7 @@ describe('a lost proposal response', () => {
   // holds the fix in place.
   it('closes the split editor so the recovery control is reachable', async () => {
     await loseTheResponse();
-    expect(screen.queryByText(/A proposal cannot be withdrawn/i)).toBeNull();
+    expect(screen.queryByText(/A proposal is durable and cannot be edited/i)).toBeNull();
     expect(screen.getByRole('button', { name: /Check what is on record/i })).toBeTruthy();
   });
 
@@ -610,7 +678,7 @@ describe('a lost proposal response', () => {
         .toBe(false));
     fireEvent.click(screen.getByRole('button', { name: /Propose this split/i }));
     await waitFor(() => expect(screen.getAllByText(/does not add up/i).length).toBeGreaterThan(0));
-    expect(screen.getByText(/A proposal cannot be withdrawn/i)).toBeTruthy();
+    expect(screen.getByText(/A proposal is durable and cannot be edited/i)).toBeTruthy();
   });
 
   it('locks proposing and never claims nothing was sent', async () => {
@@ -800,5 +868,383 @@ describe('reversing a confirmed allocation', () => {
     fireEvent.click(screen.getByRole('button', { name: /Reverse the allocation/i }));
     await waitFor(() => expect(screen.getByText(/kept as history/i)).toBeTruthy());
     expect(screen.getByText(/nothing was deleted/i)).toBeTruthy();
+  });
+});
+
+// === S2.5 Batch 2 ============================================================
+
+const PENDING = () => makeView(makeDetail({
+  workflowState: 'proposed_awaiting_confirmation',
+  candidateCount: 2,
+  candidateTotalMinor: '1000',
+  conservationDeltaMinor: '0',
+  allocations: [
+    makeAllocation(),
+    makeAllocation({
+      allocationPublicId: 'RV-ACALLOC-BBB222',
+      acquisitionLinePublicId: 'RV-AL-BBB222',
+      amountMinor: '250',
+    }),
+  ],
+}));
+
+const REFRESHED = {
+  status: 'refreshed' as const, algorithmVersion: '1.1.0', contentHash: 'a'.repeat(64), basisRows: 4,
+};
+
+describe('withdrawing a pending proposal', () => {
+  beforeEach(() => { view = PENDING(); });
+
+  it('offers withdrawal beside confirmation for an owner', async () => {
+    renderWorkspace();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Withdraw this proposal/i })).toBeTruthy());
+    expect(screen.getByRole('button', { name: /Confirm this split as the cost basis/i })).toBeTruthy();
+  });
+
+  it('offers withdrawal to an operator', async () => {
+    role = 'operator';
+    view = PENDING();
+    renderWorkspace();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Withdraw this proposal/i })).toBeTruthy());
+  });
+
+  // A viewer remains read-only, exactly as in Batch 1.
+  it('offers a viewer no withdrawal control at all', async () => {
+    role = 'viewer';
+    view = PENDING();
+    renderWorkspace();
+    await waitFor(() => expect(screen.getByText('RV-ACALLOC-AAA111')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /Withdraw this proposal/i })).toBeNull();
+  });
+
+  it('requires a reason before it will send', async () => {
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole('button', { name: /Withdraw this proposal/i }));
+    await waitFor(() => expect(screen.getByText(/It is NOT a\s+deletion/i)).toBeTruthy());
+    expect((screen.getByRole('button', { name: /Withdraw the proposal/i }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    expect(calls.some((call) => call.fn === 'withdraw')).toBe(false);
+  });
+
+  it('sends the reason the owner gave', async () => {
+    outcomes.withdraw = [{
+      componentPublicId: 'RV-ACOST-SHIP01', withdrawn: 2, replayable: false, basisRecompute: REFRESHED,
+    }];
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole('button', { name: /Withdraw this proposal/i }));
+    fireEvent.change(await screen.findByLabelText(/Why is this proposal being withdrawn/i), {
+      target: { value: 'The weighting used quantity instead of value' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Withdraw the proposal/i }));
+    await waitFor(() => expect(calls.find((call) => call.fn === 'withdraw')).toBeTruthy());
+    expect(calls.find((call) => call.fn === 'withdraw')!.args[2])
+      .toBe('The weighting used quantity instead of value');
+  });
+
+  // NEVER AS A DELETION.
+  it('says what withdrawal preserved, and never calls it a deletion', async () => {
+    outcomes.withdraw = [{
+      componentPublicId: 'RV-ACOST-SHIP01', withdrawn: 2, replayable: false, basisRecompute: REFRESHED,
+    }];
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole('button', { name: /Withdraw this proposal/i }));
+    fireEvent.change(await screen.findByLabelText(/Why is this proposal being withdrawn/i), {
+      target: { value: 'Wrong weighting' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Withdraw the proposal/i }));
+    await waitFor(() => expect(screen.getByText(/were NOT deleted/i)).toBeTruthy());
+    expect(screen.getByText(/remain on record as history/i)).toBeTruthy();
+  });
+
+  it('keeps withdrawn rows visible as history', async () => {
+    view = makeView(makeDetail({
+      workflowState: 'awaiting_proposal',
+      candidateCount: 0,
+      candidateTotalMinor: '0',
+      allocations: [
+        makeAllocation({ state: 'withdrawn' }),
+        makeAllocation({
+          allocationPublicId: 'RV-ACALLOC-BBB222', acquisitionLinePublicId: 'RV-AL-BBB222',
+          amountMinor: '250', state: 'withdrawn',
+        }),
+      ],
+    }));
+    renderWorkspace();
+    const history = within(await screen.findByRole('region', { name: 'Withdrawn proposals' }));
+    expect(history.getByText('RV-ACALLOC-AAA111')).toBeTruthy();
+    expect(history.getByText('RV-ACALLOC-BBB222')).toBeTruthy();
+    expect(history.getAllByText(/never became a cost basis/i).length).toBeGreaterThan(0);
+    expect(history.getAllByText(/was not deleted/i).length).toBeGreaterThan(0);
+  });
+
+  // A corrected proposal after withdrawal is a NEW proposal, and is offered.
+  it('permits a corrected proposal once the old one is withdrawn', async () => {
+    view = makeView(makeDetail({
+      workflowState: 'awaiting_proposal',
+      candidateCount: 0,
+      candidateTotalMinor: '0',
+      allocations: [makeAllocation({ state: 'withdrawn' })],
+    }));
+    renderWorkspace();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Propose a split/i })).toBeTruthy());
+  });
+
+  it('reports "nothing to withdraw" as a refusal, not a silent success', async () => {
+    outcomes.withdraw = [new CostError('nothing_to_withdraw', 409)];
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole('button', { name: /Withdraw this proposal/i }));
+    fireEvent.change(await screen.findByLabelText(/Why is this proposal being withdrawn/i), {
+      target: { value: 'Wrong weighting' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Withdraw the proposal/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/no pending proposal to withdraw/i)).toBeTruthy());
+    // A named refusal proves nothing was written, so recovery is not engaged.
+    expect(screen.queryByText(/It is unknown whether the proposal was withdrawn/i)).toBeNull();
+  });
+});
+
+describe('a lost withdrawal response', () => {
+  async function loseTheResponse() {
+    view = PENDING();
+    outcomes.withdraw = [new CostError('dependency_failed', 502)];
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole('button', { name: /Withdraw this proposal/i }));
+    fireEvent.change(await screen.findByLabelText(/Why is this proposal being withdrawn/i), {
+      target: { value: 'Wrong weighting' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Withdraw the proposal/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/It is unknown whether the proposal was withdrawn/i)).toBeTruthy());
+  }
+
+  it('locks withdrawal and never claims nothing was sent', async () => {
+    await loseTheResponse();
+    expect(document.body.textContent ?? '').not.toMatch(/nothing was sent|was not sent/i);
+    expect(screen.queryByRole('button', { name: /^Withdraw this proposal$/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /Check what is on record/i })).toBeTruthy();
+  });
+
+  it('proves the withdrawal COMMITTED when the retained rows are withdrawn', async () => {
+    await loseTheResponse();
+    view = makeView(makeDetail({
+      workflowState: 'awaiting_proposal',
+      candidateCount: 0,
+      candidateTotalMinor: '0',
+      allocations: [
+        makeAllocation({ state: 'withdrawn' }),
+        makeAllocation({
+          allocationPublicId: 'RV-ACALLOC-BBB222', acquisitionLinePublicId: 'RV-AL-BBB222',
+          amountMinor: '250', state: 'withdrawn',
+        }),
+      ],
+    }));
+    fireEvent.click(screen.getByRole('button', { name: /Check what is on record/i }));
+    await waitFor(() => expect(screen.getByText('The proposal was withdrawn')).toBeTruthy());
+    expect(screen.getAllByText(/did reach the database/i).length).toBeGreaterThan(0);
+  });
+
+  // THE CONCURRENT-CONFIRM CASE, REFLECTED TRUTHFULLY.
+  it('reports a confirmation winning the race, and never as a withdrawal', async () => {
+    await loseTheResponse();
+    view = makeView(makeDetail({
+      workflowState: 'allocated',
+      attributionState: 'allocated',
+      candidateCount: 0,
+      confirmedCount: 2,
+      candidateTotalMinor: '0',
+      allocations: [
+        makeAllocation({ state: 'confirmed', reviewedAt: '2026-08-15T12:00:00.000Z' }),
+        makeAllocation({
+          allocationPublicId: 'RV-ACALLOC-BBB222', acquisitionLinePublicId: 'RV-AL-BBB222',
+          amountMinor: '250', state: 'confirmed', reviewedAt: '2026-08-15T12:00:00.000Z',
+        }),
+      ],
+    }));
+    fireEvent.click(screen.getByRole('button', { name: /Check what is on record/i }));
+    await waitFor(() =>
+      expect(screen.getByText('The proposal was CONFIRMED, not withdrawn')).toBeTruthy());
+    expect(screen.getByText(/now the governed cost basis/i)).toBeTruthy();
+    expect(screen.getByText(/reverse it rather than withdrawing it/i)).toBeTruthy();
+  });
+
+  it('proves the withdrawal did NOT commit when the same proposal is still pending', async () => {
+    await loseTheResponse();
+    view = PENDING();
+    fireEvent.click(screen.getByRole('button', { name: /Check what is on record/i }));
+    await waitFor(() => expect(screen.getByText('The proposal was not withdrawn')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Withdraw this proposal/i })).toBeTruthy());
+  });
+
+  it('stays locked when the candidate set moved unattributably', async () => {
+    await loseTheResponse();
+    view = makeView(makeDetail({
+      workflowState: 'proposed_awaiting_confirmation',
+      candidateCount: 1,
+      candidateTotalMinor: '750',
+      allocations: [makeAllocation()],
+    }));
+    fireEvent.click(screen.getByRole('button', { name: /Check what is on record/i }));
+    await waitFor(() =>
+      expect(screen.getByText('What happened cannot be attributed from the record')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /^Withdraw this proposal$/i })).toBeNull();
+  });
+
+  it('stays locked when verification itself fails', async () => {
+    await loseTheResponse();
+    viewError = new CostError('dependency_failed', 502);
+    fireEvent.click(screen.getByRole('button', { name: /Check what is on record/i }));
+    await waitFor(() =>
+      expect(screen.getByText('It is still unknown whether the proposal was withdrawn')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /^Withdraw this proposal$/i })).toBeNull();
+  });
+});
+
+describe('the derived basis refresh is reported as its own operation', () => {
+  beforeEach(() => { view = PENDING(); });
+
+  async function confirmWith(basisRecompute: unknown) {
+    outcomes.confirm = [{
+      componentPublicId: 'RV-ACOST-SHIP01', confirmed: 2, totalMinor: '1000',
+      replayable: false, basisRecompute,
+    }];
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole('button', { name: /Confirm this split as the cost basis/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Confirm the cost basis/i }));
+  }
+
+  it('says the basis was recomputed', async () => {
+    await confirmWith(REFRESHED);
+    await waitFor(() =>
+      expect(screen.getByText(/recomputed by algorithm\s+1\.1\.0/i)).toBeTruthy());
+  });
+
+  it('says an unchanged derivation still stands', async () => {
+    await confirmWith({
+      status: 'unchanged', algorithmVersion: '1.1.0', contentHash: 'b'.repeat(64), basisRows: 4,
+    });
+    await waitFor(() => expect(screen.getByText(/had not changed/i)).toBeTruthy());
+    expect(screen.getByText(/Nothing needed recomputing/i)).toBeTruthy();
+  });
+
+  // THE LOAD-BEARING TRUTH RULE OF THIS BATCH, AT THE SCREEN.
+  it('never relabels a committed allocation as failed when the recompute fails', async () => {
+    await confirmWith({ status: 'failed', code: 'dependency_failed', retryable: true });
+    await waitFor(() =>
+      expect(screen.getByText(/The allocation change is recorded; the derived basis was not refreshed/i))
+        .toBeTruthy());
+    // The allocation is still reported as the success it was.
+    expect(screen.getByText(/are now the governed cost basis/i)).toBeTruthy();
+    // And nothing tells the owner the allocation failed.
+    expect(screen.queryByText(/allocation failed|could not be confirmed/i)).toBeNull();
+    expect(screen.getByText(/Retrying is safe/i)).toBeTruthy();
+  });
+
+  it('reports the basis refresh after a withdrawal too', async () => {
+    outcomes.withdraw = [{
+      componentPublicId: 'RV-ACOST-SHIP01', withdrawn: 2, replayable: false,
+      basisRecompute: { status: 'failed', code: 'dependency_failed', retryable: true },
+    }];
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole('button', { name: /Withdraw this proposal/i }));
+    fireEvent.change(await screen.findByLabelText(/Why is this proposal being withdrawn/i), {
+      target: { value: 'Wrong weighting' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Withdraw the proposal/i }));
+    await waitFor(() => expect(screen.getByText(/were NOT deleted/i)).toBeTruthy());
+    expect(screen.getByText(/the derived basis was not refreshed/i)).toBeTruthy();
+  });
+});
+
+describe('the derived cost basis, shown beside the evidence', () => {
+  const basisPanel = () =>
+    within(screen.getByRole('region', { name: 'Derived inventory cost basis' }));
+
+  it('is a separate region from the allocation evidence', async () => {
+    renderWorkspace();
+    await waitFor(() => expect(basisPanel().getByText(/DERIVED, not decided/i)).toBeTruthy());
+    expect(screen.getByRole('region', { name: 'Proposed split' })).toBeTruthy();
+  });
+
+  it('shows an established basis as an exact figure', async () => {
+    renderWorkspace();
+    await waitFor(() => expect(basisPanel().getByText('66.00 USD')).toBeTruthy());
+  });
+
+  // AN UNRESOLVED BASIS IS NOT A ZERO.
+  it('shows an unresolved currency as words, never as 0.00', async () => {
+    renderWorkspace();
+    await waitFor(() => expect(basisPanel().getByText(/No established basis/i)).toBeTruthy());
+    const line = document.querySelector('[data-basis-line="RV-AL-BBB222"]');
+    const usd = line?.querySelector('[data-basis-currency="USD"]');
+    expect(usd?.textContent).toMatch(/No established basis/);
+    expect(usd?.textContent).not.toMatch(/0\.00/);
+    expect(usd?.querySelector('[data-basis-total="none"]')).toBeTruthy();
+  });
+
+  // CURRENCIES ARE SHOWN SEPARATELY AND NEVER COMBINED.
+  it('shows each currency separately and offers no combined total', async () => {
+    renderWorkspace();
+    await waitFor(() => expect(basisPanel().getByText('5.00 EUR')).toBeTruthy());
+    const line = document.querySelector('[data-basis-line="RV-AL-BBB222"]');
+    expect(line?.querySelector('[data-basis-currency="EUR"]')).toBeTruthy();
+    expect(line?.querySelector('[data-basis-currency="USD"]')).toBeTruthy();
+    // 500 EUR-minor + 0 would be 5.00; a combined figure must not appear.
+    expect(basisPanel().queryByText(/combined|grand total/i)).toBeNull();
+  });
+
+  // FIFO MUST NEVER READ AS PROOF OF PHYSICAL MOVEMENT.
+  it('states the FIFO caveat prominently, not only in a tooltip', async () => {
+    renderWorkspace();
+    // The prominent alert. This is the copy an owner cannot miss.
+    await waitFor(() =>
+      expect(basisPanel().getByText(/FIFO here is an accounting convention/i)).toBeTruthy());
+    // The caveat itself appears in the alert AND in the method glossary. Both
+    // are wanted, so the assertion counts rather than demanding exactly one.
+    expect(basisPanel().getAllByText(/does not assert which physical unit arrived first/i).length)
+      .toBeGreaterThan(0);
+    expect(basisPanel().getAllByText(/FIFO layer \(accounting convention\)/i).length)
+      .toBeGreaterThan(0);
+  });
+
+  it('distinguishes the three attribution methods truthfully', async () => {
+    renderWorkspace();
+    await waitFor(() => expect(basisPanel().getAllByText(/FIFO layer/i).length).toBeGreaterThan(0));
+    expect(basisPanel().getAllByText(/Equal attribution \(stated convention\)/i).length)
+      .toBeGreaterThan(0);
+    expect(basisPanel().getAllByText(/^Not established$/).length).toBeGreaterThan(0);
+  });
+
+  it('says why a line is not fully resolved', async () => {
+    renderWorkspace();
+    await waitFor(() =>
+      expect(basisPanel().getByText(/units arrived beyond/i)).toBeTruthy());
+    expect(basisPanel().getByText(/Cost evidence on this line is still unresolved/i)).toBeTruthy();
+  });
+
+  it('names inventory subjects by governed public identity only', async () => {
+    renderWorkspace();
+    await waitFor(() => expect(basisPanel().getByText(/RV-IITM-000001/)).toBeTruthy());
+    expect(document.body.textContent ?? '').not.toMatch(UUID);
+  });
+
+  // NOT DERIVED is a third state, and must not render as zeroes.
+  it('says the basis has never been derived rather than showing zeroes', async () => {
+    view = makeView(makeDetail(), { derived: false, lines: [] });
+    renderWorkspace();
+    await waitFor(() =>
+      expect(basisPanel().getByText(/No cost basis has been derived for these lines yet/i)).toBeTruthy());
+    expect(basisPanel().getByText(/not a cost basis of zero/i)).toBeTruthy();
+    expect(basisPanel().queryByText(/0\.00/)).toBeNull();
+  });
+
+  it('states the algorithm version the derivation came from', async () => {
+    renderWorkspace();
+    await waitFor(() =>
+      expect(basisPanel().getAllByText(/Derived by algorithm 1\.1\.0/i).length).toBeGreaterThan(0));
   });
 });

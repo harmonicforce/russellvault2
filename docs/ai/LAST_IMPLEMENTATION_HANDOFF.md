@@ -1,135 +1,105 @@
 # Last Implementation Handoff
 
-## S2.5 Batch 1 — Cost Allocation Owner Surface (branch checkpoint, NOT complete)
+## S2.5 — Cost Allocation Owner Surface (Batches 1 and 2, COMPLETE)
 
-S2.5 turns the already-governed acquisition cost machinery into an owner-usable
-allocation workflow: **see every cost → preview a split → propose it → confirm
-it as the basis → reverse it.** Batch 1 is a **checkpoint**, not the slice.
+S2.5 turns the governed acquisition cost machinery into the complete
+owner-usable allocation workflow: **see every cost → preview a split → propose
+it → confirm it as the basis → reverse it → withdraw and correct it → see the
+derived basis it produced.**
 
 - Repository: `harmonicforce/russellvault2`. Canonical branch: `main`.
 - Branch: `claude/s2-5-cost-allocation-ui`.
-- Base SHA: `33d182eb787df76f0af3119af2d17402fc9975a7`.
-- Final SHA: see the branch head; PR: **none opened** (the work order preferred
-  no PR for this batch). Status: **implemented and validated locally; not
-  merged, not deployed, not hosted-accepted.**
+- Base SHA: `2a858591c12b0b2a1a13bd186eadfd2baaaafbe3` (current `main`).
+- Status: **implemented and validated locally.** Not merged, not deployed, not
+  hosted-accepted.
+
+### Integration with S2.4 / S2.4.1
+
+Batch 1 was rebased from `33d182e` onto current `main`. One conflict, in
+`docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`, which `main` had rewritten; resolved
+by keeping both records. No code conflict. Batch 1 behaviour was preserved and
+re-verified on the new base before any Batch 2 work began (828 server + 1552
+client tests passing at that point).
 
 ### Scope discipline
 
 **Zero Supabase edits, zero migrations, zero pgTAP changes, zero function
-changes.** Verified by `git diff 33d182e -- supabase/` returning empty. Codex
-owns S2.4; the three files reserved to it and `docs/ai/CURRENT_STATE.md` were
-not touched, verified the same way.
+changes**, across both batches. Verified by `git diff 2a85859 -- supabase/`
+returning empty. `docs/ai/CURRENT_STATE.md` untouched.
 
-The whole surface is built over the EXISTING governed functions
-`propose_cost_allocation`, `confirm_cost_allocation` and
-`reverse_cost_allocation`, and over the existing `select` grant on
-`acquisition_cost_components` / `acquisition_cost_allocations`. No new SQL was
-needed and none was written.
+`public.reverse_cost_component` remains deliberately **unexposed**; a test
+asserts no route reaches it and it is never called.
 
-`public.reverse_cost_component` exists and is deliberately **not exposed**.
-There is no route that reaches it, and a test asserts it is never called.
+### Batch 2, item by item
 
-### The governed dead end this batch had to design around
+**Withdrawal.** `/api/cost/components/:id/allocations/withdraw` calls
+`withdraw_cost_allocation`. Owner and operator may withdraw; a viewer is refused
+before any governed call. A reason is REQUIRED by this surface and by the
+database. Withdrawn rows stay visible in their own history region, and nothing
+anywhere describes withdrawal as deletion — asserted by a test that scans every
+recovery phase for affirmative deletion language.
 
-`propose_cost_allocation` writes durable `candidate` rows, has **no idempotency
-key**, and returns **no `replayed` flag**. Nothing in the governed contract can
-remove a candidate row: propose refuses while candidates exist, confirm refuses
-unless they conserve the component amount, and reverse requires a CONFIRMED
-allocation. A proposal that does not add up is therefore **permanent and
-unusable** — it can never be confirmed, never be reversed, and never be
-replaced.
+**Response-loss truth for withdrawal.** `withdraw_cost_allocation` has no
+idempotency key, and — the reason this needed its own coordinator rather than
+reusing the proposal one — **withdrawing and confirming both empty the candidate
+set**, so "the proposal is no longer pending" is the question, not the answer.
+The intent therefore retains the EXACT allocation public identities that were
+candidates at confirmation time, and the re-read distinguishes five outcomes:
 
-Two consequences, both handled in the application rather than left to the owner:
+| Re-read shows | Outcome | Locked? |
+| --- | --- | --- |
+| those exact rows now `withdrawn` | withdrawal committed | yes |
+| those exact rows `confirmed`, or component `allocated` | a confirmation won | yes |
+| those exact rows still `candidate`, set unchanged | proven absent | **no** — a new attempt is allowed |
+| the set moved some other way | not safely attributable | yes |
+| the re-read failed | still unknown | yes |
 
-1. **A pre-flight conservation guard.** The transport refuses a non-conserving
-   proposal before the RPC. This is not a duplicated rule — the database
-   performs no conservation check at propose time at all — it is a guard against
-   writing an irreversible mistake through a door the contract leaves open. It
-   quotes the database's own one-minor-unit tolerance so it can never refuse
-   something confirm would have accepted.
-2. **Verify-first recovery, with four outcomes.** A lost response is resolved by
-   an authoritative re-read, never a retry:
-   *committed* (pending candidates match line-for-line and amount-for-amount),
-   *foreign* (a pending proposal exists that is NOT the one attempted — neither
-   proof it landed nor proof it did not), *absent* (nothing pending, so a new
-   attempt is permitted), *superseded* (the component became allocated or was
-   reversed meanwhile), and *unverified* (the re-read itself failed, so it stays
-   locked). Nothing anywhere says "nothing was sent".
+Nothing says "nothing was sent". The confirmation-won case points at reversal,
+which is the correct governed operation for a confirmed allocation.
 
-### Money
+**The conservation guard is KEPT.** Withdrawal now provides recovery, but a
+non-conserving proposal still cannot be confirmed and undoing it costs a
+governed act with a permanent audit record. Every claim that a proposal "can
+never be withdrawn" has been corrected in code comments, UI copy and tests.
 
-Every amount is an integer number of minor units carried as a **canonical
-decimal string** and computed on in `BigInt`, in both directions. No amount is a
-JavaScript float at any point where it is authoritative. Splits use exact
-largest-remainder distribution, so every minor unit is accounted for, including
-for negative totals. An operator's typed amount carrying more precision than the
-currency has is **refused, not rounded**.
+**Cost-basis recomputation.** Confirm, reverse and withdraw each invoke
+`recompute_inventory_cost_basis` afterwards, as a SEPARATE operation.
+`refreshBasis` never throws. Its outcome travels beside the allocation result as
+`basisRecompute: refreshed | unchanged | failed`, and a failure is reported as
+*"The allocation change is recorded; the derived basis was not refreshed"* —
+never as an allocation failure. Retry is stated as safe because S2.4
+short-circuits on an unchanged content hash and holds an advisory lock. There is
+deliberately **no recompute after a proposal-only candidate write**, per the work
+order.
 
-An amount the source never reported has **no `minor` field at all** in the wire
-type, so no rendering path can reach for one. It renders as words. A
-`documented_free` zero is a different fact and renders as a real zero.
+**Basis impact.** The component workspace reads
+`inventory_cost_basis_current` and `unresolved_inventory_cost_basis` for its
+scope lines, with explicit column lists (the view is `select b.*`, so `*` would
+have leaked seven internal identifiers). Truth rules: exact minor-unit money for
+established basis; **no figure at all** where unresolved; `null` never becomes
+zero; currencies rendered separately with **no combined total**; FIFO labelled
+and described as an accounting convention that does not assert physical
+movement. A third state — **not derived** — is distinct from both resolved and
+unresolved and never renders as zeroes. Component-scoped only; **no S2.6 global
+queue was built.**
 
-There is **no headline total anywhere** on the cost surface, and the page says
-why: mixed currencies, unknown amounts, and a possibly-subset read.
+### Defects found and fixed in Batch 2
 
-### Files added
-
-- `server/src/cost/contract.ts` — pure assembly, split strategies, exact
-  integer arithmetic, conservation guard, bounded refusal vocabulary.
-- `server/src/routes/cost.ts` — `/api/cost`: `GET /queue`,
-  `GET /components/:componentPublicId`,
-  `POST /components/:id/allocation-preview` (writes nothing),
-  `POST /components/:id/allocations`,
-  `POST /components/:id/allocations/confirm`,
-  `POST /components/:id/allocations/reverse`.
-- `server/src/cost/contract.test.ts`, `server/src/routes/cost.test.ts`.
-- `client/src/lib/costApi.ts` — transport and wire types.
-- `client/src/pages/cost/costMoney.ts` — BigInt money, exact formatting.
-- `client/src/pages/cost/costTruth.ts` — the S1.6 truth model.
-- `client/src/pages/cost/costMessages.ts` — bounded refusals in the owner's words.
-- `client/src/pages/cost/costPresentation.tsx` — the domain adapter.
-- `client/src/pages/cost/proposalCreation.ts` — the verify-first coordinator.
-- `client/src/pages/cost/AllocationEditor.tsx` — the split editor.
-- `client/src/pages/Cost.tsx`, `client/src/pages/CostComponentWorkspace.tsx`.
-- Tests: `costMoney.test.ts`, `proposalCreation.test.ts`, `Cost.test.tsx`.
-- Browser gate: `client/browser/fixtures/costData.ts`,
-  `client/browser/specs/cost.spec.ts`, plus two new canonical surfaces.
-
-### Files modified
-
-`server/src/index.ts` (mounts `/api/cost`), `client/src/app/routing/AppRoutes.tsx`
-and its route-preservation test (`/cost`, `/cost/:componentPublicId`),
-`client/src/app/navigation/navigationModel.ts` (advertises Cost Allocation),
-`client/browser/fixtures/app.ts` and `surfaces.ts`.
-
-`/api/cost` is deliberately distinct from the legacy SQLite `/api/cost-links`
-surface; neither reads the other.
-
-### No raw UUID, in either direction
-
-The governed cost functions take internal UUIDs. The browser never supplies one:
-a component is named `RV-ACOST-…`, and an allocation target is named by the
-**source-qualified pair** (`sourceSystemPublicId`, `acquisitionLinePublicId`),
-because a line public id alone is unique only within its source system.
-Resolution happens server-side under the caller's own JWT and proves same
-workspace, caller readability, and membership of the component's governed scope
-before any UUID is used. A request carrying a UUID is refused. Route tests
-assert no internal id appears in any response body.
-
-### Defect found by the browser gate and fixed
-
-The split editor is a `<dialog>`. When a proposal's outcome became unknown it
-stayed open, sat on top of the recovery banner, and swallowed every click aimed
-at the only control that could resolve the situation. jsdom applies no CSS and
-has no top layer, so nothing in the unit suites could see it. The editor now
-closes on an unknown outcome (where it has nothing left to do) and stays open on
-a named refusal (which the owner can fix in place). Pinned by a jsdom test and
-two browser tests.
-
-A second defect was found the same way: the queue's narrow rendering was handed
-raw domain rows instead of records, producing a list of empty cards at every
-phone width while the desktop table was fine. Corrected to `DataTable`'s
-`responsive` slot and pinned by a jsdom test.
+1. **Batch 1's typecheck claim was wrong.** `client/tsconfig.json` has
+   `"files": []` and only project references, so the `npx tsc --noEmit` used in
+   Batch 1 typechecked **zero files**. The repo's real `npm run typecheck`
+   (`tsc -b`) surfaced **four** genuine type errors in Batch 1 code:
+   `size="large"` on a `Dialog` that has no such size; an unsound
+   `as Exclude<…>` cast handing `DependencyState` a state it cannot describe;
+   `EmptyState body=` (the prop is `description`); and a non-existent `subject`
+   prop on `DependencyState`. All four are fixed, and verification now runs the
+   repo's own scripts rather than a bare compiler invocation.
+2. **Two raw control bytes shipped in Batch 1 source** — a `NUL` in
+   `server/src/routes/cost.ts` and a `NUL`/`SOH` pair in
+   `client/src/pages/cost/proposalCreation.ts`, used as string separators. Inert
+   at runtime, but they made the files binary to `grep`, `diff` and review
+   tools. Replaced with printable separators and documented. A repo-wide sweep
+   confirms no control bytes remain in any source file.
 
 ### Validation, on this branch
 
@@ -137,60 +107,62 @@ All commands exited 0.
 
 | Command | Result |
 | --- | --- |
-| `npm run typecheck` (server + client) | clean |
-| `npm run lint` | 0 errors; warnings only, all `only-export-components`, matching the existing presentation-adapter files |
-| `npx vitest run` (server) | 34 files, **828 tests passed** |
-| `npx vitest run` (client) | 67 files, **1552 tests passed** (1431 → 1552) |
+| `npm run lint` | 0 errors; warnings only, all `only-export-components`, matching existing presentation adapters |
+| `npm run typecheck` | clean (`tsc -b`, all three client projects + server) |
+| `npm test` | server **861**, client **1601**, guards **23** — all passed |
+| `npm run build:ci` | client bundle + server typecheck, clean |
 | `node --test scripts/db/guard.test.mjs scripts/ci/client-audit-gate.test.mjs` | 23 passed |
-| `PGOPTIONS='-c jit=off' npm run db:test` | all files passed, **2551 assertions** |
-| Playwright, 5 chromium viewports, full suite | **723 passed**, 0 failed, 107 skipped |
+| `PGOPTIONS='-c jit=off' npm run db:test` | all files passed, **2592 assertions** |
+| Playwright, 5 chromium viewports, full suite | **818 passed**, 0 failed, 107 skipped |
+| `git diff --check` | clean |
 
-New tests in this batch: **142 server** (81 contract + 61 route), **121 client**
-(61 money + 20 proposal coordinator + 40 rendered), **22 browser** × 5 chromium
-viewports = 110 browser runs.
+Batch 2 added 33 server tests (861 vs 828), 49 client tests (1601 vs 1552) and
+19 browser tests (41 cost tests × 5 viewports).
 
 ### Explicitly NOT proved
 
 - **WebKit is unverified.** The WebKit binary is absent in this sandbox
-  (`Executable doesn't exist at /opt/pw-browsers/webkit-2215/pw_run.sh`), so the
-  six `webkit-ipad` tests could not run locally. `webkit-ipad.spec.ts` iterates
-  `CANONICAL_SURFACES`, which now includes the two cost surfaces, so CI will
-  cover them. **WebKit results must come from CI.**
-- **No CI run.** No PR was opened, so there are no CI run IDs or conclusions.
+  (`Executable doesn't exist at /opt/pw-browsers/webkit-2215/pw_run.sh`).
+  `webkit-ipad.spec.ts` iterates `CANONICAL_SURFACES`, which includes both cost
+  surfaces, so **CI is the only place WebKit results can come from.**
+- **CI has not run** at the time of writing; the PR was opened at the end of
+  this batch.
 - **Live Supabase migration count and parity: not checked.** No migration was
-  written, so no parity change is expected, but this was not verified.
-- **Railway deployment and `/api/version`: not checked.** Nothing was deployed.
-- **Hosted acceptance: not performed.** The workflow has not been exercised
-  against the deployed app or the live schema.
+  written by this branch.
+- **Railway deployment and `/api/version`: not checked.**
+- **Hosted acceptance: not performed.**
 - **No production data touched.**
-- Batch 2 was not begun, and S2.5 acceptance was not attempted.
+
+### An interaction worth the owner's attention
+
+The S2.4.1 blocker rule treats a component with a pending `candidate` allocation
+as blocking its lines' basis. So PROPOSING moves a line to `unresolved`, but the
+work order specifies no recompute after a proposal-only write — which is
+correct, since a proposal is not a basis. The consequence is that the displayed
+basis can lag a proposal until the next confirm/reverse/withdraw. This is
+stated, not hidden: the basis panel always reports what the last derivation
+concluded, with its algorithm version and timestamp.
 
 ### Visual baselines
 
-Adding a navigation entry shifted the sidebar on every governed page. Twenty new
-cost baselines were generated. Regenerating the full chromium set rewrote
-**only** `receiving-{light,dark}-chromium-wide-desktop-1728x1117` (2% of pixels,
-the one pair that exceeded the 1% threshold); every other existing baseline
-matched byte-for-byte, so no unrelated regression is being masked.
+Eight `cost-component` baselines were regenerated because the workspace gained
+the derived-basis region. Every other baseline — including the `cost` queue —
+matched byte-for-byte, so nothing unrelated is masked.
 
 ### Known flakiness
 
 `40_cycle_count_concurrency.sql` and race H in
 `66_acquisition_receiving_acceptance_hardening.sql` are load-sensitive. Both
-passed on this run. Neither was modified.
+passed. Neither was modified.
 
 ### Rollback
 
-Delete the branch, or revert its commits. Nothing outside the branch was
-changed: no migration, no deployment, no live data, no shared configuration.
+Revert the branch's commits or close the PR. No migration, no deployment, no
+live data, no shared configuration was changed.
 
 ### Exact next owner decision
 
-Whether to proceed to S2.5 Batch 2 on this branch, and whether the pre-flight
-conservation guard should instead be closed in the database — a governed
-function that can discard a `candidate` set would remove the dead end entirely
-and make the transport guard unnecessary. That is an S2.4-adjacent SQL decision
-this batch was not permitted to make.
+Whether to merge S2.5 once CI (including WebKit) is green. S2.6 was not started.
 
 ## S2.4.1 — Cost Basis Truth Hardening + Allocation Proposal Recovery
 

@@ -54,6 +54,8 @@ import { isProvenanceEnabled } from '../provenance/config.js';
 import {
   ALLOCATION_METHOD_DESCRIPTION,
   ALLOCATION_METHODS,
+  BASIS_METHOD_DESCRIPTION,
+  buildBasisImpact,
   buildComponentDetail,
   buildCostQueue,
   classifyCostError,
@@ -62,6 +64,7 @@ import {
   isAllocationMethod,
   knownDirectCostByLine,
   parseMinor,
+  readRecomputeResult,
   scopeLineIdsOf,
   splittableTotal,
   amountOf,
@@ -71,8 +74,11 @@ import {
   type AcquisitionOrderRow,
   type AllocationMethod,
   type CostAllocationRow,
+  type BasisRecomputeOutcome,
   type CostComponentRow,
+  type InventoryCostBasisRow,
   type ScopeLine,
+  type UnresolvedBasisRow,
 } from '../cost/contract.js';
 
 const router = Router();
@@ -219,6 +225,48 @@ async function readLinesByPublicId(
       .select(LINE_COLUMNS)
       .eq('workspace_id', workspaceId)
       .in('acquisition_line_public_id', publicIds)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+/**
+ * The derived inventory cost basis for specific acquisition lines.
+ *
+ * Columns are listed EXPLICITLY rather than taken as `*`. The governed view is
+ * `select b.*, …`, so `*` would pull `id`, `workspace_id`, `recompute_id`,
+ * `inventory_lot_id`, `inventory_item_id`,
+ * `acquisition_receipt_line_inventory_link_id` and `superseded_by_recompute_id`
+ * — seven internal identifiers, straight into a payload.
+ * `acquisition_line_item_id` is the one internal id read here, and it is a join
+ * key the assembly never copies out.
+ */
+async function readBasisRows(client: Supa, workspaceId: string, lineItemIds: readonly string[]) {
+  if (lineItemIds.length === 0) return [];
+  return readRows<InventoryCostBasisRow>(() =>
+    client
+      .from('inventory_cost_basis_current')
+      .select(
+        'public_id,subject_kind,inventory_lot_public_id,inventory_item_public_id,'
+        + 'acquisition_line_item_id,layer_seq,source_unit_ordinal,total_cost_minor,currency,'
+        + 'basis_method,state,algorithm_version,derived_at')
+      .eq('workspace_id', workspaceId)
+      .in('acquisition_line_item_id', lineItemIds)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+/** Why the governed view says a line's basis is not fully established. */
+async function readUnresolvedBasis(
+  client: Supa, workspaceId: string, lineItemIds: readonly string[],
+) {
+  if (lineItemIds.length === 0) return [];
+  return readRows<UnresolvedBasisRow>(() =>
+    client
+      .from('unresolved_inventory_cost_basis')
+      .select(
+        'acquisition_line_item_id,acquisition_line_public_id,expected_quantity,'
+        + 'reconciled_quantity,pending_expected_quantity,overage_quantity,'
+        + 'has_unresolved_cost_evidence')
+      .eq('workspace_id', workspaceId)
+      .in('acquisition_line_item_id', lineItemIds)
       .limit(MAX_ASSEMBLY_ROWS));
 }
 
@@ -436,12 +484,38 @@ router.get('/components/:componentPublicId', requireMember, asyncRoute(async (re
   const context = await loadComponentContext(
     client, workspaceId, publicId(req.params.componentPublicId));
 
+  const scopeLines = scopeLinesOf(context);
+
+  /*
+   * The DERIVED basis for the lines this component touches.
+   *
+   * Read in the same request as the evidence, and rendered in a separate,
+   * clearly-labelled region beside it — never merged into it. Allocation
+   * evidence is what an owner DECIDED; the basis is what the governed S2.4
+   * recompute CONCLUDED under a versioned algorithm. Showing them as one thing
+   * would let a proposal look like a cost.
+   *
+   * This is component-scoped visibility only. It is deliberately not a
+   * workspace-wide unresolved-cost queue; that is S2.6 and is not built here.
+   */
+  const scopeLineItemIds = [...context.scope.keys()];
+  const [basisRows, unresolvedRows] = await Promise.all([
+    readBasisRows(client, workspaceId, scopeLineItemIds),
+    readUnresolvedBasis(client, workspaceId, scopeLineItemIds),
+  ]);
+
   res.json({
     coverage: 'governed_native_committed',
     historicalLegacyImported: false,
     role,
     methods: ALLOCATION_METHODS.map((method) => ({
       method, description: ALLOCATION_METHOD_DESCRIPTION[method],
+    })),
+    // The method vocabulary travels with the data so the screen describes the
+    // derivation in the algorithm's own terms rather than in a caption written
+    // separately and free to drift.
+    basisMethods: Object.entries(BASIS_METHOD_DESCRIPTION).map(([method, description]) => ({
+      method, description,
     })),
     component: buildComponentDetail({
       component: context.component,
@@ -451,6 +525,9 @@ router.get('/components/:componentPublicId', requireMember, asyncRoute(async (re
       orders: context.orders,
       lines: context.lines,
       scopeComponents: context.scopeComponents,
+    }),
+    basisImpact: buildBasisImpact({
+      scopeLines, lines: context.lines, basisRows, unresolvedRows,
     }),
   });
 }));
@@ -550,7 +627,7 @@ function selectLines(
 }
 
 function lineKey(sourceSystemPublicId: string, acquisitionLinePublicId: string): string {
-  return `${sourceSystemPublicId} ${acquisitionLinePublicId}`;
+  return `${sourceSystemPublicId} ${acquisitionLinePublicId}`;
 }
 
 // --- mutations ---------------------------------------------------------------
@@ -560,6 +637,44 @@ async function rpc(client: Supa, fn: string, args: Record<string, unknown>) {
   if (error) fail(error);
   if (!data) throw new CostError('dependency_failed', 502);
   return data as Record<string, unknown>;
+}
+
+/**
+ * Refresh the derived inventory cost basis, as a SEPARATE governed operation.
+ *
+ * THE ONE RULE THIS FUNCTION EXISTS TO ENFORCE: A FAILED RECOMPUTE MUST NEVER
+ * BE REPORTED AS A FAILED ALLOCATION.
+ *
+ * By the time this runs, `confirm`/`reverse`/`withdraw` has already committed —
+ * the database returned a result. The basis is DERIVED from that commit and
+ * lives in different tables behind a different function, so it can fail on its
+ * own: a transient error, a role the caller has for allocation but not for
+ * recompute, a deployment without the S2.4 migration.
+ *
+ * If that failure were allowed to propagate, the owner would be told the
+ * allocation failed, would try again, and would be refused — because the first
+ * attempt DID work. They would end up certain nothing had happened while the
+ * cost basis had in fact changed. That is the worst available outcome, so this
+ * function never throws.
+ *
+ * Retrying is safe and the response says so: S2.4 short-circuits on an
+ * unchanged content hash, holds an advisory lock across the whole publish, and
+ * is deterministic for identical inputs.
+ */
+async function refreshBasis(client: Supa, workspaceId: string): Promise<BasisRecomputeOutcome> {
+  try {
+    const data = await rpc(client, 'recompute_inventory_cost_basis', {
+      p_workspace_id: workspaceId,
+    });
+    return readRecomputeResult(data);
+  } catch (error) {
+    const { code } = error instanceof CostError
+      ? { code: error.code }
+      : classifyCostError(error);
+    // `retryable: true` is a fact about the governed function, not optimism:
+    // recompute is idempotent, so a retry can only re-establish truth.
+    return { status: 'failed', code, retryable: true };
+  }
 }
 
 /**
@@ -709,6 +824,10 @@ router.post('/components/:componentPublicId/allocations/confirm', requireOperato
       p_expected_total_minor: expected.toString(),
     });
 
+    // The allocation is COMMITTED at this point. Everything after it is a
+    // separate governed operation whose failure cannot retract that.
+    const basisRecompute = await refreshBasis(client, workspaceId);
+
     res.json({
       componentPublicId: component.public_id,
       confirmed: Number(result.confirmed ?? 0),
@@ -717,6 +836,7 @@ router.post('/components/:componentPublicId/allocations/confirm', requireOperato
       // and is refused with `no_candidates_to_confirm`. Saying so lets the
       // client tell "already done" apart from "did not happen".
       replayable: false,
+      basisRecompute,
     });
   }));
 
@@ -750,12 +870,59 @@ router.post('/components/:componentPublicId/allocations/reverse', requireOperato
       p_reason: reason,
     });
 
+    const basisRecompute = await refreshBasis(client, workspaceId);
+
     res.json({
       componentPublicId: component.public_id,
       reversed: Number(result.reversed ?? 0),
       // Reversing twice is refused with `nothing_to_reverse`: the component is
       // no longer `allocated`. Not a replay, and not a silent success.
       replayable: false,
+      basisRecompute,
+    });
+  }));
+
+/**
+ * Withdraw the pending proposal.
+ *
+ * THE CAPABILITY BATCH 1 SAID DID NOT EXIST, AND WAS RIGHT ABOUT AT THE TIME.
+ *
+ * Before S2.4.1 nothing could remove a candidate row, so a proposal that did
+ * not conserve stranded its component permanently. `withdraw_cost_allocation`
+ * closes that: every candidate moves to the TERMINAL `withdrawn` state.
+ *
+ * IT IS NOT A DELETE. The rows stay, with their original amounts and method,
+ * and `app.enforce_cost_allocation_transition` refuses to move them anywhere
+ * afterwards. The reason becomes governed audit history. This surface therefore
+ * requires a reason — the governed function does too, refusing a blank one —
+ * and never describes the operation as removal.
+ *
+ * NO IDEMPOTENCY KEY, and no `replayed` flag. A lost response cannot be
+ * retried blindly: the request may have committed, and the client must verify
+ * against an authoritative re-read before it acts again.
+ */
+router.post('/components/:componentPublicId/allocations/withdraw', requireOperator,
+  asyncRoute(async (req, res) => {
+    const { workspaceId, client } = caller(req);
+    const component = await resolveComponent(
+      client, workspaceId, publicId(req.params.componentPublicId));
+
+    const reason = requiredText(req.body?.reason, 1, 500);
+
+    const result = await rpc(client, 'withdraw_cost_allocation', {
+      p_cost_component_id: component.id,
+      p_reason: reason,
+    });
+
+    // Withdrawal changes the allocation states the S2.4 content hash covers, so
+    // the derived basis is refreshed here too — as its own operation.
+    const basisRecompute = await refreshBasis(client, workspaceId);
+
+    res.json({
+      componentPublicId: component.public_id,
+      withdrawn: Number(result.withdrawn ?? 0),
+      replayable: false,
+      basisRecompute,
     });
   }));
 

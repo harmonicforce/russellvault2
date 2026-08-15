@@ -53,11 +53,38 @@ export interface BrowserAllocation {
   acquisitionLinePublicId: string | null;
   amountMinor: string;
   method: string;
-  state: 'candidate' | 'confirmed' | 'reversed';
+  /** `withdrawn` arrived with S2.4.1. Terminal, and history-preserving. */
+  state: 'candidate' | 'confirmed' | 'reversed' | 'withdrawn';
   reviewedAt: string | null;
   reversedAt: string | null;
   createdAt: string;
 }
+
+const BASIS_METHODS = [
+  {
+    method: 'fifo',
+    description:
+      'First-in, first-out layering. An ACCOUNTING CONVENTION for ordering cost layers within a '
+      + 'lot — it does not assert which physical unit arrived first, and it is not evidence of item '
+      + 'movement.',
+  },
+  {
+    method: 'source_observed_specific',
+    description: 'The source reported a cost for this specific unit, and that reported figure was used directly.',
+  },
+  {
+    method: 'deterministic_equal_attribution',
+    description:
+      'The line’s cost was attributed equally across its units by a deterministic rule, because the '
+      + 'source did not report a per-unit figure. It is a stated convention, not an observation.',
+  },
+  {
+    method: 'unresolved',
+    description:
+      'The governed recompute could not establish a cost for this unit. There is no figure, and a '
+      + 'figure must not be inferred for it.',
+  },
+];
 
 const METHODS = [
   {
@@ -263,6 +290,21 @@ export class CostWorld {
     };
   }
 
+  /**
+   * Withdraw, with the governed refusals the real function raises.
+   *
+   * Rows are RETAINED in the TERMINAL `withdrawn` state, exactly as
+   * `withdraw_cost_allocation` retains them. Nothing here deletes anything, so
+   * a spec asserting the rows survive is asserting the real semantics.
+   */
+  withdraw(reason: string) {
+    if (!reason || reason.trim() === '') return { error: 'invalid_request' as const };
+    const candidates = this.candidates();
+    if (candidates.length === 0) return { error: 'nothing_to_withdraw' as const };
+    for (const row of candidates) row.state = 'withdrawn';
+    return { componentPublicId: SHIPPING_COMPONENT, withdrawn: candidates.length, replayable: false };
+  }
+
   /** Reverse. Rows are RETAINED, exactly as the governed function retains them. */
   reverse() {
     if (this.attribution !== 'allocated') return { error: 'nothing_to_reverse' as const };
@@ -334,6 +376,57 @@ export class CostWorld {
     ];
   }
 
+  /**
+   * The derived S2.4 basis for the two in-scope lines.
+   *
+   * Line A resolves in USD. Line B carries BOTH a resolved EUR unit and an
+   * `unresolved` USD one — the case that proves currencies are never combined
+   * and that an unresolved unit contributes no figure rather than a zero.
+   */
+  basisImpact(derived: boolean) {
+    if (!derived) return { derived: false, lines: [] };
+    return {
+      derived: true,
+      lines: [
+        {
+          sourceSystemPublicId: COST_SOURCE_SYSTEM,
+          acquisitionLinePublicId: 'RV-AL-000001',
+          title: 'Vintage card lot, mixed condition',
+          subjects: [{ subjectKind: 'item', publicId: 'RV-IITM-000001' }],
+          currencies: [{
+            currency: 'USD', knownTotalMinor: '6600', resolvedUnitCount: 2,
+            unresolvedUnitCount: 0, methods: ['fifo'],
+          }],
+          unresolved: null,
+          algorithmVersion: '1.1.0',
+          derivedAt: '2026-08-15T10:00:00.000Z',
+        },
+        {
+          sourceSystemPublicId: COST_SOURCE_SYSTEM,
+          acquisitionLinePublicId: 'RV-AL-000002',
+          title: 'Sealed booster box',
+          subjects: [{ subjectKind: 'lot', publicId: 'RV-ILOT-000002' }],
+          currencies: [
+            {
+              currency: 'EUR', knownTotalMinor: '500', resolvedUnitCount: 1,
+              unresolvedUnitCount: 0, methods: ['deterministic_equal_attribution'],
+            },
+            {
+              currency: 'USD', knownTotalMinor: null, resolvedUnitCount: 0,
+              unresolvedUnitCount: 1, methods: ['unresolved'],
+            },
+          ],
+          unresolved: {
+            expectedQuantity: 1, reconciledQuantity: 2, pendingExpectedQuantity: 0,
+            overageQuantity: 1, hasUnresolvedCostEvidence: true,
+          },
+          algorithmVersion: '1.1.0',
+          derivedAt: '2026-08-15T10:00:00.000Z',
+        },
+      ],
+    };
+  }
+
   queue(role: 'owner' | 'operator' | 'viewer', complete: boolean) {
     return {
       coverage: 'governed_native_committed',
@@ -345,7 +438,11 @@ export class CostWorld {
     };
   }
 
-  component(role: 'owner' | 'operator' | 'viewer', componentPublicId: string) {
+  component(
+    role: 'owner' | 'operator' | 'viewer',
+    componentPublicId: string,
+    basisDerived = true,
+  ) {
     if (componentPublicId === SHIPPING_COMPONENT) {
       const candidateTotal = this.candidateTotal();
       return {
@@ -353,6 +450,8 @@ export class CostWorld {
         historicalLegacyImported: false,
         role,
         methods: METHODS,
+        basisMethods: BASIS_METHODS,
+        basisImpact: this.basisImpact(basisDerived),
         component: {
           ...this.shippingSummary(),
           order: {
@@ -377,6 +476,8 @@ export class CostWorld {
       historicalLegacyImported: false,
       role,
       methods: METHODS,
+      basisMethods: BASIS_METHODS,
+      basisImpact: { derived: false, lines: [] },
       component: {
         ...summary,
         order: {

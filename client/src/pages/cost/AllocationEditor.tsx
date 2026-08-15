@@ -150,7 +150,7 @@ export function AllocationEditor({
       onDismiss={onCancel}
       title="Propose a cost split"
       description="Records a durable, reviewable proposal. It does not yet establish a cost basis."
-      size="large"
+      size="wide"
       dismissible={!pending}
       footer={
         <div className="flex flex-wrap justify-end gap-2">
@@ -178,11 +178,12 @@ export function AllocationEditor({
           The single most important warning on this surface, stated before the
           owner touches anything rather than after they have made a mistake.
         */}
-        <Alert tone="warning" title="A proposal cannot be withdrawn">
-          The governed contract has no way to delete a proposed split. Once proposed, it can be
-          confirmed — which makes it the cost basis — or it can sit pending, but it cannot be removed
-          or replaced. A split that does not add up to the component amount could never be confirmed,
-          so it is refused before it is sent rather than after.
+        <Alert tone="warning" title="A proposal is durable and cannot be edited">
+          Proposing writes a governed record. It can be confirmed — which makes it the cost basis — or
+          withdrawn, which is a separate governed act with its own reason and audit trail, not an undo:
+          the withdrawn amounts stay on record as history and a corrected split is a NEW proposal.
+          A split that does not add up to the component amount could never be confirmed, so it is
+          refused before it is sent rather than after.
         </Alert>
 
         {locked && (
@@ -401,7 +402,7 @@ export function conservationSentence(
       return (
         `The split is ${formatMinor(magnitude, currency)} ${currency} ${over ? 'more' : 'less'} than the `
         + 'component amount, so it cannot be proposed. A proposal that does not add up can never be '
-        + 'confirmed and can never be withdrawn.'
+        + 'confirmed, and undoing it would take a governed withdrawal that stays on the record.'
       );
     }
     case 'no_total':

@@ -111,11 +111,15 @@ test.describe('one cost component', () => {
 });
 
 test.describe('proposing a split', () => {
-  test('warns that a proposal cannot be withdrawn before anything is chosen', async ({ app }) => {
+  // Copy corrected in Batch 2: withdrawal now EXISTS, so claiming it does not
+  // would be false. It is still a governed act with a permanent record rather
+  // than an undo, and the warning says which.
+  test('warns that a proposal is durable and that withdrawal is not an undo', async ({ app }) => {
     await openSurface(app, COST_COMPONENT);
     await app.getByRole('button', { name: /Propose a split/i }).click();
-    await expect(app.getByText('A proposal cannot be withdrawn')).toBeVisible();
-    await expect(app.getByText(/no way to delete a proposed split/i)).toBeVisible();
+    await expect(app.getByText('A proposal is durable and cannot be edited')).toBeVisible();
+    await expect(app.getByRole('dialog').getByText(/not an undo/i)).toBeVisible();
+    await expect(app.getByText(/no way to delete a proposed split/i)).toHaveCount(0);
   });
 
   test('computes an exact split on the server and sends what was displayed', async ({ app }) => {
@@ -315,5 +319,252 @@ test.describe('capability comes from the server', () => {
     // And a viewer still SEES the governed record. Read access is not the
     // thing being withheld.
     await expect(proposedPanel(app).getByText('RV-ACALLOC-000001')).toBeVisible();
+  });
+});
+
+// === S2.5 Batch 2 ============================================================
+
+/**
+ * The DERIVED basis region.
+ *
+ * Named apart from `basisPanel` above, which is the CONFIRMED COST BASIS
+ * evidence region. Two different things, two different names — collapsing them
+ * in the harness would be the same mistake the UI is designed to avoid.
+ */
+const derivedBasis = (app: import('@playwright/test').Page) =>
+  app.getByRole('region', { name: 'Derived inventory cost basis' });
+
+/** Put a real pending proposal on the component. */
+async function withPendingProposal(
+  app: import('@playwright/test').Page,
+  scenario: { state: { cost: { propose: (m: string, a: readonly { sourceSystemPublicId: string; acquisitionLinePublicId: string; amountMinor: string }[]) => unknown } } },
+) {
+  scenario.state.cost.propose('manual_quantity', [
+    { sourceSystemPublicId: 'RV-SRC-WHATNOT', acquisitionLinePublicId: 'RV-AL-000001', amountMinor: '750' },
+    { sourceSystemPublicId: 'RV-SRC-WHATNOT', acquisitionLinePublicId: 'RV-AL-000002', amountMinor: '250' },
+  ]);
+  await openSurface(app, COST_COMPONENT);
+}
+
+test.describe('withdrawing a pending proposal', () => {
+  test('requires a reason and never calls itself a deletion', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await app.getByRole('button', { name: /Withdraw this proposal/i }).click();
+
+    await expect(app.getByText(/It is NOT a deletion/i)).toBeVisible();
+    await expect(app.getByRole('button', { name: /Withdraw the proposal/i })).toBeDisabled();
+
+    await app.getByLabel(/Why is this proposal being withdrawn/i)
+      .fill('The weighting used quantity instead of value');
+    await app.getByRole('button', { name: /Withdraw the proposal/i }).click();
+
+    await expect(app.getByText(/were NOT deleted/i).first()).toBeVisible();
+    await expect(app.getByText(/remain on record as history/i).first()).toBeVisible();
+  });
+
+  test('keeps the withdrawn rows visible as history', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await app.getByRole('button', { name: /Withdraw this proposal/i }).click();
+    await app.getByLabel(/Why is this proposal being withdrawn/i).fill('Wrong weighting');
+    await app.getByRole('button', { name: /Withdraw the proposal/i }).click();
+
+    const history = app.getByRole('region', { name: 'Withdrawn proposals' });
+    await expect(history.locator('[data-allocation]')).toHaveCount(2);
+    await expect(history.getByText('RV-ACALLOC-000001')).toBeVisible();
+    await expect(history.getByText(/never became a cost basis/i).first()).toBeVisible();
+  });
+
+  // The recovery Batch 1 could not offer: a corrected split after withdrawal.
+  test('permits a corrected proposal once the old one is withdrawn', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await app.getByRole('button', { name: /Withdraw this proposal/i }).click();
+    await app.getByLabel(/Why is this proposal being withdrawn/i).fill('Wrong weighting');
+    await app.getByRole('button', { name: /Withdraw the proposal/i }).click();
+    await expect(app.getByText(/were NOT deleted/i).first()).toBeVisible();
+
+    // A NEW proposal, not an edit of the old one.
+    await app.getByRole('button', { name: /^Propose a split$/i }).click();
+    await app.getByLabel(/By known value/i).check();
+    await app.getByRole('button', { name: /Compute the split/i }).click();
+    await app.getByRole('button', { name: /Propose this split/i }).click();
+    await expect(app.getByText(/A split of 2 lines was proposed/i)).toBeVisible();
+    // And the withdrawn history survives the new proposal.
+    await expect(app.getByRole('region', { name: 'Withdrawn proposals' })
+      .locator('[data-allocation]')).toHaveCount(2);
+  });
+
+  test('offers a viewer no withdrawal control at all', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await scenario.set({ costRole: 'viewer' });
+    await openSurface(app, COST_COMPONENT);
+    await expect(app.getByRole('button', { name: /Withdraw this proposal/i })).toHaveCount(0);
+    // And still SEES the proposal. Read access is not what is withheld.
+    await expect(proposedPanel(app).getByText('RV-ACALLOC-000001')).toBeVisible();
+  });
+
+  test('offers an operator the withdrawal control', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await scenario.set({ costRole: 'operator' });
+    await openSurface(app, COST_COMPONENT);
+    await expect(app.getByRole('button', { name: /Withdraw this proposal/i })).toBeVisible();
+  });
+});
+
+test.describe('a withdrawal that commits and then loses its response', () => {
+  test('locks withdrawal, never claims nothing was sent, and proves what happened', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await scenario.set({ costWithdrawalCommitsSilently: true });
+
+    await app.getByRole('button', { name: /Withdraw this proposal/i }).click();
+    await app.getByLabel(/Why is this proposal being withdrawn/i).fill('Wrong weighting');
+    await app.getByRole('button', { name: /Withdraw the proposal/i }).click();
+
+    await expect(app.getByText('It is unknown whether the proposal was withdrawn')).toBeVisible();
+    await expect(app.getByText(/nothing was sent/i)).toHaveCount(0);
+    await expect(app.getByRole('button', { name: /^Withdraw this proposal$/i })).toHaveCount(0);
+
+    await scenario.set({ costWithdrawalCommitsSilently: false });
+    await app.getByRole('button', { name: /Check what is on record/i }).click();
+    await expect(app.getByText('The proposal was withdrawn')).toBeVisible();
+    // Exactly two rows, withdrawn once — a blind retry would have been refused.
+    await expect(app.getByRole('region', { name: 'Withdrawn proposals' })
+      .locator('[data-allocation]')).toHaveCount(2);
+  });
+
+  // THE CONCURRENT-CONFIRM CASE.
+  test('reports a confirmation winning the race, never as a withdrawal', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await scenario.set({ costConfirmWinsTheRace: true });
+
+    await app.getByRole('button', { name: /Withdraw this proposal/i }).click();
+    await app.getByLabel(/Why is this proposal being withdrawn/i).fill('Wrong weighting');
+    await app.getByRole('button', { name: /Withdraw the proposal/i }).click();
+    await expect(app.getByText('It is unknown whether the proposal was withdrawn')).toBeVisible();
+
+    await scenario.set({ costConfirmWinsTheRace: false });
+    await app.getByRole('button', { name: /Check what is on record/i }).click();
+
+    await expect(app.getByText('The proposal was CONFIRMED, not withdrawn')).toBeVisible();
+    await expect(app.getByText(/now the governed cost basis/i)).toBeVisible();
+    await expect(app.getByText(/reverse it rather than withdrawing it/i)).toBeVisible();
+    // And it must never claim the withdrawal landed.
+    await expect(app.getByText('The proposal was withdrawn')).toHaveCount(0);
+  });
+
+  test('stays locked when verification itself fails', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await scenario.set({ costWithdrawalCommitsSilently: true });
+    await app.getByRole('button', { name: /Withdraw this proposal/i }).click();
+    await app.getByLabel(/Why is this proposal being withdrawn/i).fill('Wrong weighting');
+    await app.getByRole('button', { name: /Withdraw the proposal/i }).click();
+    await expect(app.getByText('It is unknown whether the proposal was withdrawn')).toBeVisible();
+
+    await scenario.set({ costComponentReadFails: true });
+    await app.getByRole('button', { name: /Check what is on record/i }).click();
+    await expect(app.getByText('It is still unknown whether the proposal was withdrawn')).toBeVisible();
+    await expect(app.getByRole('button', { name: /^Withdraw this proposal$/i })).toHaveCount(0);
+  });
+});
+
+test.describe('the derived basis refresh', () => {
+  test('reports a successful recompute beside the allocation result', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await app.getByRole('button', { name: /Confirm this split as the cost basis/i }).click();
+    await app.getByRole('button', { name: /Confirm the cost basis/i }).click();
+
+    await expect(app.getByText(/are now the governed cost basis/i)).toBeVisible();
+    await expect(app.getByText(/recomputed by algorithm 1\.1\.0/i)).toBeVisible();
+  });
+
+  // THE LOAD-BEARING TRUTH RULE, IN A REAL BROWSER.
+  test('never relabels a committed allocation as failed when the recompute fails', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await scenario.set({ costRecomputeFails: true });
+    await app.getByRole('button', { name: /Confirm this split as the cost basis/i }).click();
+    await app.getByRole('button', { name: /Confirm the cost basis/i }).click();
+
+    // The allocation is reported as the success it was …
+    await expect(app.getByText(/are now the governed cost basis/i)).toBeVisible();
+    // … and the basis refresh as the separate failure it was.
+    await expect(app.getByText(/The allocation change is recorded; the derived basis was not refreshed/i))
+      .toBeVisible();
+    await expect(app.getByText(/Retrying is safe/i)).toBeVisible();
+    await expect(app.getByText(/allocation failed/i)).toHaveCount(0);
+  });
+
+  test('reports the basis refresh after a withdrawal too', async ({ app, scenario }) => {
+    await withPendingProposal(app, scenario);
+    await scenario.set({ costRecomputeFails: true });
+    await app.getByRole('button', { name: /Withdraw this proposal/i }).click();
+    await app.getByLabel(/Why is this proposal being withdrawn/i).fill('Wrong weighting');
+    await app.getByRole('button', { name: /Withdraw the proposal/i }).click();
+
+    await expect(app.getByText(/were NOT deleted/i).first()).toBeVisible();
+    await expect(app.getByText(/the derived basis was not refreshed/i)).toBeVisible();
+  });
+});
+
+test.describe('the derived cost basis, shown beside the evidence', () => {
+  test('is its own region, separate from the allocation evidence', async ({ app }) => {
+    await openSurface(app, COST_COMPONENT);
+    await expect(derivedBasis(app).getByText(/DERIVED, not decided/i)).toBeVisible();
+    await expect(proposedPanel(app)).toBeVisible();
+  });
+
+  test('shows an established basis as an exact figure', async ({ app }) => {
+    await openSurface(app, COST_COMPONENT);
+    await expect(derivedBasis(app).getByText('66.00 USD')).toBeVisible();
+  });
+
+  // AN UNRESOLVED BASIS IS NOT A ZERO.
+  test('shows an unresolved currency as words, never as 0.00', async ({ app }) => {
+    await openSurface(app, COST_COMPONENT);
+    const usd = app.locator('[data-basis-line="RV-AL-000002"] [data-basis-currency="USD"]');
+    await expect(usd).toContainText('No established basis');
+    await expect(usd).not.toContainText('0.00');
+    await expect(usd.locator('[data-basis-total="none"]')).toBeVisible();
+  });
+
+  test('shows each currency separately and offers no combined total', async ({ app }) => {
+    await openSurface(app, COST_COMPONENT);
+    const line = app.locator('[data-basis-line="RV-AL-000002"]');
+    await expect(line.locator('[data-basis-currency="EUR"]')).toContainText('5.00 EUR');
+    await expect(line.locator('[data-basis-currency="USD"]')).toBeVisible();
+    await expect(derivedBasis(app).getByText(/combined|grand total/i)).toHaveCount(0);
+  });
+
+  // FIFO MUST NEVER READ AS PROOF OF PHYSICAL MOVEMENT.
+  test('states the FIFO caveat prominently', async ({ app }) => {
+    await openSurface(app, COST_COMPONENT);
+    await expect(derivedBasis(app).getByText(/FIFO here is an accounting convention/i)).toBeVisible();
+    await expect(derivedBasis(app).getByText(/does not assert which physical unit arrived first/i).first())
+      .toBeVisible();
+  });
+
+  test('says why a line is not fully resolved', async ({ app }) => {
+    await openSurface(app, COST_COMPONENT);
+    await expect(derivedBasis(app).getByText(/units arrived beyond/i)).toBeVisible();
+    await expect(derivedBasis(app).getByText(/Cost evidence on this line is still unresolved/i))
+      .toBeVisible();
+  });
+
+  // NOT DERIVED is a third state and must not render as zeroes.
+  test('says the basis has never been derived rather than showing zeroes', async ({ app, scenario }) => {
+    await scenario.set({ costBasisNotDerived: true });
+    await openSurface(app, COST_COMPONENT);
+    await expect(derivedBasis(app).getByText(/No cost basis has been derived for these lines yet/i))
+      .toBeVisible();
+    await expect(derivedBasis(app).getByText(/not a cost basis of zero/i)).toBeVisible();
+    await expect(derivedBasis(app).getByText('0.00')).toHaveCount(0);
+  });
+
+  test('does not overflow horizontally with the basis panel rendered', async ({ app }, testInfo) => {
+    await openSurface(app, COST_COMPONENT);
+    await expect(derivedBasis(app)).toBeVisible();
+    const { scrollWidth, clientWidth } = await documentOverflow(app);
+    expect(
+      scrollWidth,
+      `${testInfo.project.name}: widest offenders ${(await overflowingElements(app)).join(' | ')}`,
+    ).toBeLessThanOrEqual(clientWidth + 1);
   });
 });

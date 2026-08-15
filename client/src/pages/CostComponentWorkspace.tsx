@@ -32,6 +32,7 @@ import {
   DependencyState,
   EmptyState,
   LoadingState,
+  isIndeterminate,
   MutationConfirmation,
   hasValue,
 } from '../design-system';
@@ -40,6 +41,7 @@ import {
   createCostTransport,
   type AllocationMethod,
   type AllocationPreview,
+  type BasisRecomputeOutcome,
   type CostComponentDetail,
 } from '../lib/costApi';
 import { useWorkspace } from '../lib/workspaceContext';
@@ -63,6 +65,7 @@ import {
   scopeText,
 } from './cost/costPresentation';
 import { AllocationEditor } from './cost/AllocationEditor';
+import { BasisImpactPanel } from './cost/BasisImpactPanel';
 import {
   beginSubmit,
   beginVerify,
@@ -76,6 +79,19 @@ import {
   type ProposalPhase,
 } from './cost/proposalCreation';
 import { toMinor } from './cost/costMoney';
+import {
+  beginSubmit as beginWithdrawSubmit,
+  beginVerify as beginWithdrawVerify,
+  candidateIdentities,
+  outcomeUnknown as withdrawalOutcomeUnknown,
+  submitFailed as withdrawSubmitFailed,
+  verificationFailed as withdrawVerificationFailed,
+  verify as verifyWithdrawal,
+  withdrawalAllowed,
+  withdrawalMessage,
+  type WithdrawalIntent,
+  type WithdrawalPhase,
+} from './cost/withdrawalCreation';
 
 export default function CostComponentWorkspace() {
   const { componentPublicId = '' } = useParams();
@@ -119,6 +135,17 @@ export default function CostComponentWorkspace() {
   const [confirming, setConfirming] = useState(false);
   const [reversing, setReversing] = useState(false);
   const [reversalReason, setReversalReason] = useState('');
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [withdrawalReason, setWithdrawalReason] = useState('');
+  const [withdrawal, setWithdrawal] = useState<WithdrawalPhase>({ phase: 'idle' });
+  /**
+   * How the derived basis refresh went, kept SEPARATE from `outcome`.
+   *
+   * The allocation change and the basis refresh are two governed operations,
+   * and the whole point is that the second one failing does not make the first
+   * one a failure. Two pieces of state, two sentences, never one blended claim.
+   */
+  const [basisRecompute, setBasisRecompute] = useState<BasisRecomputeOutcome | null>(null);
 
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: costComponentKey(workspace?.id, componentPublicId) });
@@ -237,6 +264,7 @@ export default function CostComponentWorkspace() {
         `${result.confirmed} allocations were confirmed for ${result.componentPublicId}. These amounts `
         + 'are now the governed cost basis for the lines they name.',
       );
+      setBasisRecompute(result.basisRecompute);
       await refresh();
     } catch (error) {
       setFailure(costMessage(error));
@@ -259,11 +287,69 @@ export default function CostComponentWorkspace() {
         + 'rows were kept as history with their original review attribution; nothing was deleted, and '
         + 'the component is unresolved again.',
       );
+      setBasisRecompute(result.basisRecompute);
       await refresh();
     } catch (error) {
       setFailure(costMessage(error));
     } finally {
       setPending(false);
+    }
+  };
+
+  // --- withdrawing ----------------------------------------------------------
+
+  /**
+   * Withdraw the pending proposal.
+   *
+   * The intent retains the EXACT allocation identities on screen, because
+   * `confirm` and `withdraw` both empty the candidate set and only the
+   * per-row outcome can tell them apart afterwards.
+   */
+  const runWithdraw = async () => {
+    if (!workspace || !component || withdrawalReason.trim() === '') return;
+    const intent: WithdrawalIntent = {
+      componentPublicId,
+      candidatePublicIds: candidateIdentities(component),
+      reason: withdrawalReason.trim(),
+    };
+    setWithdrawal(beginWithdrawSubmit(intent));
+    setPending(true);
+    setFailure(null);
+    try {
+      const result = await api.withdraw(workspace.id, componentPublicId, intent.reason);
+      setWithdrawal({ phase: 'idle' });
+      setWithdrawing(false);
+      setWithdrawalReason('');
+      setOutcome(
+        `${result.withdrawn} proposed allocations were withdrawn for ${result.componentPublicId}. They `
+        + 'were NOT deleted — the amounts and method remain on record as history — and a corrected '
+        + 'split can now be proposed.',
+      );
+      setBasisRecompute(result.basisRecompute);
+      await refresh();
+    } catch (error) {
+      const message = costMessage(error);
+      setFailure(message);
+      const refused = provesRefusal(message.code);
+      setWithdrawal(refused ? { phase: 'idle' } : withdrawSubmitFailed(intent));
+      if (!refused) setWithdrawing(false);
+      await refresh();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const runWithdrawalVerification = async () => {
+    if (!workspace) return;
+    const verifying = beginWithdrawVerify(withdrawal);
+    setWithdrawal(verifying);
+    try {
+      const fresh = await api.component(workspace.id, componentPublicId);
+      queryClient.setQueryData(costComponentKey(workspace.id, componentPublicId), fresh);
+      setWithdrawal(verifyWithdrawal(verifying, fresh.component));
+    } catch {
+      // A failed verification is NOT an absence. Withdrawing stays locked.
+      setWithdrawal(withdrawVerificationFailed(verifying));
     }
   };
 
@@ -276,7 +362,7 @@ export default function CostComponentWorkspace() {
     return (
       <EmptyState
         title="No such cost component"
-        body={
+        description={
           'The governed record contains no cost component with this identity in this workspace. This is '
           + 'an answer from the database, not a failure to look.'
         }
@@ -284,12 +370,21 @@ export default function CostComponentWorkspace() {
     );
   }
   if (!component) {
-    return (
-      <DependencyState
-        state={truth as Exclude<typeof truth, { kind: 'ready' }>}
-        subject="this cost component"
-      />
-    );
+    /*
+     * Narrowed by the TYPE, not by a cast.
+     *
+     * An earlier version asserted `truth as Exclude<typeof truth, {kind:'ready'}>`,
+     * which is unsound: `partial` and `stale` both carry a value and are not
+     * indeterminate, so the assertion would have handed `DependencyState` a
+     * state it cannot describe. `isIndeterminate` is the design system's own
+     * predicate and narrows honestly; anything else reaching here has no value
+     * and no failure to report, which only `loading` can be — and that is
+     * already handled above.
+     */
+    if (isIndeterminate(truth)) {
+      return <DependencyState state={truth} onRetry={() => void refresh()} />;
+    }
+    return <LoadingState label="Reading the governed cost component…" />;
   }
 
   const candidates = component.allocations.filter((row) => row.state === 'candidate');
@@ -300,7 +395,11 @@ export default function CostComponentWorkspace() {
   const canConfirm = canAllocate
     && component.workflowState === 'proposed_awaiting_confirmation'
     && toMinor(displayedCandidateTotal) !== null;
+  const withdrawnRows = component.allocations.filter((row) => row.state === 'withdrawn');
   const canReverse = canAllocate && component.workflowState === 'allocated';
+  const canWithdraw = canAllocate
+    && component.workflowState === 'proposed_awaiting_confirmation'
+    && withdrawalAllowed(withdrawal);
 
   return (
     <div className="grid gap-4 p-4 sm:p-6">
@@ -336,6 +435,48 @@ export default function CostComponentWorkspace() {
       )}
 
       {/*
+        THE DERIVED BASIS REFRESH, REPORTED AS ITS OWN OPERATION.
+
+        Deliberately a SEPARATE alert from `outcome` above. The allocation
+        change and the basis refresh are two governed operations against two
+        different tables, and the second one failing does not retract the first.
+        Blending them into one sentence is exactly how an owner ends up being
+        told their allocation failed when it did not — and then retrying it, and
+        being refused, and concluding nothing ever happened.
+      */}
+      {basisRecompute && (
+        <Alert
+          tone={basisRecompute.status === 'failed' ? 'warning' : 'information'}
+          title={
+            basisRecompute.status === 'failed'
+              ? 'The allocation change is recorded; the derived basis was not refreshed'
+              : 'Derived inventory cost basis'
+          }
+        >
+          {basisRecompute.status === 'failed' ? (
+            <>
+              The allocation change above IS recorded in the governed record. What did not happen is
+              the recompute of the derived inventory cost basis, so the basis shown below may not yet
+              reflect it. Retrying is safe — the governed recompute is deterministic and does nothing
+              when its inputs have not changed.{' '}
+              <span className="font-mono text-xs">({basisRecompute.code})</span>
+            </>
+          ) : basisRecompute.status === 'refreshed' ? (
+            <>
+              The derived inventory cost basis was recomputed by algorithm{' '}
+              {basisRecompute.algorithmVersion} and now covers {basisRecompute.basisRows} basis rows.
+            </>
+          ) : (
+            <>
+              The governed inputs to the cost basis had not changed, so the existing derivation
+              (algorithm {basisRecompute.algorithmVersion}, {basisRecompute.basisRows} basis rows)
+              still stands. Nothing needed recomputing.
+            </>
+          )}
+        </Alert>
+      )}
+
+      {/*
         A refusal is shown where the action was taken, and in exactly one place.
         While the split editor is open it owns the message — repeating it on the
         page behind the modal would put the same sentence on screen twice and
@@ -346,7 +487,7 @@ export default function CostComponentWorkspace() {
         making overlapping claims about one event is how an operator ends up
         reading the weaker one.
       */}
-      {failure && !editorOpen && !outcomeUnknown(proposal) && (
+      {failure && !editorOpen && !outcomeUnknown(proposal) && !withdrawalOutcomeUnknown(withdrawal) && (
         <Alert tone="critical" title="The governed cost contract refused this">
           {failure.message} <span className="font-mono text-xs">({failure.code})</span>
         </Alert>
@@ -365,6 +506,23 @@ export default function CostComponentWorkspace() {
           {(proposal.phase === 'unknown' || proposal.phase === 'unverified') && (
             <p className="mt-2">
               <Button variant="secondary" size="small" onClick={runVerification}>
+                Check what is on record
+              </Button>
+            </p>
+          )}
+        </Alert>
+      )}
+
+      {/* The withdrawal recovery banner. Same discipline, different evidence. */}
+      {withdrawal.phase !== 'idle' && withdrawal.phase !== 'submitting' && (
+        <Alert
+          tone={withdrawal.phase === 'absent' ? 'information' : 'critical'}
+          title={WITHDRAWAL_TITLE[withdrawal.phase]}
+        >
+          <p>{withdrawalMessage(withdrawal)}</p>
+          {(withdrawal.phase === 'unknown' || withdrawal.phase === 'unverified') && (
+            <p className="mt-2">
+              <Button variant="secondary" size="small" onClick={runWithdrawalVerification}>
                 Check what is on record
               </Button>
             </p>
@@ -405,21 +563,33 @@ export default function CostComponentWorkspace() {
               Proposed split
             </h2>
             <p className="mt-1 max-w-prose text-xs text-ink-secondary">
-              A proposal is durable and reviewable, and it is NOT a cost basis. It also cannot be
-              withdrawn: the governed contract can confirm it or leave it pending, but it has no way to
-              remove it.
+              A proposal is durable and reviewable, and it is NOT a cost basis. It can be confirmed,
+              which makes it one, or withdrawn — a separate governed act with its own reason and audit
+              trail. Withdrawing is not a deletion: the amounts stay on record as history below.
             </p>
           </div>
-          {canPropose && (
-            <Button
-              variant="primary"
-              size="small"
-              onClick={() => { setEditorOpen(true); setPreview(null); setFailure(null); }}
-              disabled={pending}
-            >
-              Propose a split
-            </Button>
-          )}
+          <div className="flex flex-wrap gap-2">
+            {canPropose && (
+              <Button
+                variant="primary"
+                size="small"
+                onClick={() => { setEditorOpen(true); setPreview(null); setFailure(null); }}
+                disabled={pending}
+              >
+                Propose a split
+              </Button>
+            )}
+            {canWithdraw && (
+              <Button
+                variant="secondary"
+                size="small"
+                onClick={() => { setWithdrawing(true); setFailure(null); }}
+                disabled={pending}
+              >
+                Withdraw this proposal
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className="grid gap-3 px-4 py-3">
@@ -503,7 +673,33 @@ export default function CostComponentWorkspace() {
         </div>
       </section>
 
+      {/* --- the derived basis, beside the evidence and never merged into it -- */}
+
+      <BasisImpactPanel impact={view?.basisImpact ?? { derived: false, lines: [] }}
+        basisMethods={view?.basisMethods ?? []} />
+
       {/* --- history --------------------------------------------------------- */}
+
+      {withdrawnRows.length > 0 && (
+        <section
+          aria-label="Withdrawn proposals"
+          className="rounded-instrument border border-subtle bg-surface-raised"
+        >
+          <div className="border-b border-subtle px-4 py-3">
+            <h2 className="font-display text-sm font-semibold uppercase tracking-wide text-ink">
+              Withdrawn proposals
+            </h2>
+            <p className="mt-1 max-w-prose text-xs text-ink-secondary">
+              Proposals that were withdrawn before ever being confirmed, so they never became a cost
+              basis. They were NOT deleted: the amounts and method are exactly as proposed, and the
+              governed contract will not move these rows again.
+            </p>
+          </div>
+          <div className="px-4 py-3">
+            <AllocationList rows={withdrawnRows} currency={component.amount.currency} />
+          </div>
+        </section>
+      )}
 
       {component.allocations.some((row) => row.state === 'reversed') && (
         <section
@@ -611,9 +807,60 @@ export default function CostComponentWorkspace() {
         confirmDisabled={pending || reversalReason.trim() === ''}
         pending={pending}
       />
+
+      <MutationConfirmation
+        open={withdrawing}
+        onCancel={() => { setWithdrawing(false); setWithdrawalReason(''); }}
+        onConfirm={runWithdraw}
+        title="Withdraw this proposed split"
+        consequence={
+          'This retracts the pending proposal so a corrected split can be proposed. It is NOT a '
+          + 'deletion: the proposed amounts and method stay on record as withdrawn history, and the '
+          + 'governed contract will not move those rows again. The proposal never became a cost basis, '
+          + 'so no cost basis is being retracted here. The reason you give becomes governed audit '
+          + 'history.'
+        }
+        objectFacts={
+          <dl className="grid gap-1">
+            <Fact label="Cost component">{component.componentPublicId}</Fact>
+            <Fact label="Proposed rows to withdraw"><Count value={candidates.length} /></Fact>
+            <Fact label="Proposed total, as shown on this screen">
+              <MinorAmount
+                minor={component.candidateTotalMinor}
+                currency={component.amount.currency}
+              />
+            </Fact>
+          </dl>
+        }
+        reason={{
+          value: withdrawalReason,
+          onChange: setWithdrawalReason,
+          required: true,
+          label: 'Why is this proposal being withdrawn?',
+          description:
+            'Recorded as governed audit history. The governed function refuses a blank reason, and so '
+            + 'does this screen.',
+          multiline: true,
+          maxLength: 500,
+        }}
+        confirmLabel={pending ? 'Withdrawing…' : 'Withdraw the proposal'}
+        confirmVariant="destructive"
+        confirmDisabled={pending || withdrawalReason.trim() === ''}
+        pending={pending}
+      />
     </div>
   );
 }
+
+const WITHDRAWAL_TITLE: Record<string, string> = {
+  unknown: 'It is unknown whether the proposal was withdrawn',
+  verifying: 'Checking the governed record',
+  committed: 'The proposal was withdrawn',
+  confirmed_instead: 'The proposal was CONFIRMED, not withdrawn',
+  absent: 'The proposal was not withdrawn',
+  inconclusive: 'What happened cannot be attributed from the record',
+  unverified: 'It is still unknown whether the proposal was withdrawn',
+};
 
 const PROPOSAL_TITLE: Record<string, string> = {
   unknown: 'It is unknown whether the split was recorded',
@@ -651,6 +898,10 @@ function provesRefusal(code: string): boolean {
     'no_weight_basis',
     'no_lines_in_scope',
     'method_not_computable',
+    // Withdrawal refusals. Each is the database answering, so nothing was
+    // written and the outcome is not in doubt.
+    'nothing_to_withdraw',
+    'allocation_terminal',
   ].includes(code);
 }
 

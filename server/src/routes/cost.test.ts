@@ -142,8 +142,72 @@ const LINE_ROWS = [
   },
 ];
 
+const RECOMPUTE_ID = 'eeee5555-5555-5555-5555-555555555555';
+const HASH = 'a'.repeat(64);
+
+/** The governed recompute reports no change (unchanged content hash). */
+let recomputeUnchanged = false;
+/** No governed recompute has ever published a row for these lines. */
+let basisEmpty = false;
+
+/**
+ * Derived S2.4 cost-basis rows for the two in-scope lines.
+ *
+ * Line A resolves in USD. Line B carries BOTH a resolved EUR unit and an
+ * `unresolved` USD unit, which is the case that proves two things at once:
+ * currencies are never combined, and an unresolved unit contributes no figure
+ * rather than a zero.
+ */
+const BASIS_ROWS = [
+  {
+    public_id: 'RV-ICB-AAAAAAAAAAAA', subject_kind: 'item',
+    inventory_lot_public_id: null, inventory_item_public_id: 'RV-IITM-000001',
+    acquisition_line_item_id: LINE_A, layer_seq: 1, source_unit_ordinal: 1,
+    total_cost_minor: 3300, currency: 'USD', basis_method: 'source_observed_specific',
+    state: 'current', algorithm_version: '1.1.0', derived_at: '2026-08-15T10:00:00.000Z',
+  },
+  {
+    public_id: 'RV-ICB-BBBBBBBBBBBB', subject_kind: 'lot',
+    inventory_lot_public_id: 'RV-ILOT-000001', inventory_item_public_id: null,
+    acquisition_line_item_id: LINE_A, layer_seq: 2, source_unit_ordinal: 2,
+    total_cost_minor: 3300, currency: 'USD', basis_method: 'fifo',
+    state: 'current', algorithm_version: '1.1.0', derived_at: '2026-08-15T10:00:00.000Z',
+  },
+  {
+    public_id: 'RV-ICB-CCCCCCCCCCCC', subject_kind: 'lot',
+    inventory_lot_public_id: 'RV-ILOT-000002', inventory_item_public_id: null,
+    acquisition_line_item_id: LINE_B, layer_seq: 1, source_unit_ordinal: 1,
+    total_cost_minor: 500, currency: 'EUR', basis_method: 'deterministic_equal_attribution',
+    state: 'current', algorithm_version: '1.1.0', derived_at: '2026-08-15T10:00:00.000Z',
+  },
+  {
+    public_id: 'RV-ICB-DDDDDDDDDDDD', subject_kind: 'lot',
+    inventory_lot_public_id: 'RV-ILOT-000002', inventory_item_public_id: null,
+    acquisition_line_item_id: LINE_B, layer_seq: 2, source_unit_ordinal: 2,
+    // NULL exactly when the method is `unresolved`; the schema enforces it.
+    total_cost_minor: null, currency: 'USD', basis_method: 'unresolved',
+    state: 'unresolved', algorithm_version: '1.1.0', derived_at: '2026-08-15T10:00:00.000Z',
+  },
+];
+
+const UNRESOLVED_BASIS_ROWS = [
+  {
+    acquisition_line_item_id: LINE_B, acquisition_line_public_id: 'RV-AL-BBB222',
+    expected_quantity: 1, reconciled_quantity: 2, pending_expected_quantity: 0,
+    overage_quantity: 1, has_unresolved_cost_evidence: true,
+  },
+];
+
 /** Set by a test to make the next rpc call fail with a governed refusal. */
 let rpcFailure: string | null = null;
+/**
+ * Make ONE named function fail while the rest succeed.
+ *
+ * Needed because the recompute truth rule is precisely about an allocation that
+ * SUCCEEDS while the basis refresh that follows it FAILS. A blanket failure
+ * switch cannot express that case, which is the only case worth testing here.
+ */
+let rpcFailureByFn: Record<string, string> = {};
 /** Every rpc call the router made, for exact-argument assertions. */
 let rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 
@@ -180,6 +244,12 @@ function makeFakeClient(token: string) {
     if (table === 'acquisition_lot_lines') return narrow(LOT_LINE_ROWS);
     if (table === 'acquisition_orders') return narrow(ORDER_ROWS);
     if (table === 'acquisition_line_overview') return narrow(LINE_ROWS);
+    if (table === 'inventory_cost_basis_current') {
+      return basisEmpty ? [] : narrow(BASIS_ROWS);
+    }
+    if (table === 'unresolved_inventory_cost_basis') {
+      return basisEmpty ? [] : narrow(UNRESOLVED_BASIS_ROWS);
+    }
     return [];
   }
 
@@ -208,6 +278,7 @@ function makeFakeClient(token: string) {
     },
     rpc: async (fn: string, args: Record<string, unknown>) => {
       rpcCalls.push({ fn, args });
+      if (rpcFailureByFn[fn]) return { data: null, error: { message: rpcFailureByFn[fn] } };
       if (rpcFailure) return { data: null, error: { message: rpcFailure } };
       if (fn === 'propose_cost_allocation') {
         return { data: { proposed: (args.p_allocations as unknown[]).length }, error: null };
@@ -217,6 +288,17 @@ function makeFakeClient(token: string) {
       }
       if (fn === 'reverse_cost_allocation') {
         return { data: { reversed: 2 }, error: null };
+      }
+      if (fn === 'withdraw_cost_allocation') {
+        return { data: { withdrawn: 2 }, error: null };
+      }
+      if (fn === 'recompute_inventory_cost_basis') {
+        return {
+          data: recomputeUnchanged
+            ? { recomputed: false, algorithmVersion: '1.1.0', contentHash: HASH, basisRows: 4 }
+            : { recomputed: true, recomputeId: RECOMPUTE_ID, algorithmVersion: '1.1.0', contentHash: HASH, basisRows: 4 },
+          error: null,
+        };
       }
       return { data: null, error: { message: 'unexpected rpc' } };
     },
@@ -253,7 +335,13 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-beforeEach(() => { rpcFailure = null; rpcCalls = []; });
+beforeEach(() => {
+  rpcFailure = null;
+  rpcFailureByFn = {};
+  rpcCalls = [];
+  recomputeUnchanged = false;
+  basisEmpty = false;
+});
 
 async function get(path: string, token?: string) {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -807,5 +895,275 @@ describe('governed refusals arrive as themselves, not as a 500', () => {
       });
     expect(response.status).toBe(502);
     expect(JSON.stringify(response.body)).not.toMatch(/permission denied|_secret/);
+  });
+});
+
+// --- S2.5 Batch 2: withdrawal ------------------------------------------------
+
+describe('withdrawing a pending proposal', () => {
+  const withdraw = (token: string, body: Record<string, unknown> = {}) => post(
+    ws(`${component('RV-ACOST-PROPOS')}/allocations/withdraw`), token,
+    { workspaceId: WS_A, reason: 'The split used the wrong weighting', ...body });
+
+  it('calls the governed function with the arguments it declares', async () => {
+    const { status, body } = await withdraw('owner-token');
+    expect(status).toBe(200);
+    const call = rpcCalls.find((entry) => entry.fn === 'withdraw_cost_allocation');
+    expect(call).toBeTruthy();
+    expect(Object.keys(call!.args).sort()).toEqual(['p_cost_component_id', 'p_reason']);
+    expect(call!.args.p_reason).toBe('The split used the wrong weighting');
+    expect(body.withdrawn).toBe(2);
+  });
+
+  it('resolves the component from its RV-ACOST public identity, server-side', async () => {
+    await withdraw('owner-token');
+    const call = rpcCalls.find((entry) => entry.fn === 'withdraw_cost_allocation')!;
+    expect(call.args.p_cost_component_id).toBe(PROPOSED_COMPONENT);
+  });
+
+  it('refuses a component named by UUID instead of public identity', async () => {
+    const { status } = await post(
+      ws(`/api/cost/components/${PROPOSED_COMPONENT}/allocations/withdraw`), 'owner-token',
+      { workspaceId: WS_A, reason: 'Wrong split' });
+    expect(status).toBe(404);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  // THE ROLE MATRIX. Owner and operator may withdraw; a viewer may not.
+  it.each([['owner-token', 200], ['operator-token', 200]])(
+    'permits %s', async (token, expected) => {
+      expect((await withdraw(token as string)).status).toBe(expected);
+    });
+
+  it('refuses a viewer before any governed call happens', async () => {
+    const { status } = await withdraw('viewer-token');
+    expect(status).toBe(403);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ['a missing reason', {}],
+    ['an empty reason', { reason: '' }],
+    ['a whitespace-only reason', { reason: '   ' }],
+  ])('refuses %s', async (_label, over) => {
+    const { status } = await post(
+      ws(`${component('RV-ACOST-PROPOS')}/allocations/withdraw`), 'owner-token',
+      { workspaceId: WS_A, ...over });
+    expect(status).toBe(400);
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it('tells the client there is no safe resend', async () => {
+    expect((await withdraw('owner-token')).body.replayable).toBe(false);
+  });
+
+  it('passes "nothing to withdraw" through as a refusal, not a silent success', async () => {
+    rpcFailureByFn.withdraw_cost_allocation = 'cost component has no candidate allocations to withdraw';
+    const { status, body } = await withdraw('owner-token');
+    expect(status).toBe(409);
+    expect(body).toEqual({ error: 'nothing_to_withdraw' });
+  });
+
+  it('passes the governed terminal-state refusal through with its meaning', async () => {
+    rpcFailureByFn.withdraw_cost_allocation = 'cost allocation abc is terminal';
+    const { status, body } = await withdraw('owner-token');
+    expect(status).toBe(409);
+    expect(body).toEqual({ error: 'allocation_terminal' });
+  });
+});
+
+// --- S2.5 Batch 2: derived cost basis is refreshed as its OWN operation -------
+
+describe('the derived basis is refreshed after a committing mutation', () => {
+  const confirm = () => post(
+    ws(`${component('RV-ACOST-PROPOS')}/allocations/confirm`), 'owner-token',
+    { workspaceId: WS_A, expectedTotalMinor: '1000' });
+  const reverse = () => post(
+    ws(`${component('RV-ACOST-PROPOS')}/allocations/reverse`), 'owner-token',
+    { workspaceId: WS_A, reason: 'Wrong order' });
+  const withdraw = () => post(
+    ws(`${component('RV-ACOST-PROPOS')}/allocations/withdraw`), 'owner-token',
+    { workspaceId: WS_A, reason: 'Wrong weighting' });
+
+  it.each([
+    ['confirmation', confirm],
+    ['reversal', reverse],
+    ['withdrawal', withdraw],
+  ])('recomputes after %s', async (_label, run) => {
+    const { status, body } = await (run as () => Promise<{ status: number; body: Record<string, unknown> }>)();
+    expect(status).toBe(200);
+    const call = rpcCalls.find((entry) => entry.fn === 'recompute_inventory_cost_basis');
+    expect(call).toBeTruthy();
+    expect(call!.args).toEqual({ p_workspace_id: WS_A });
+    expect(body.basisRecompute).toMatchObject({ status: 'refreshed', algorithmVersion: '1.1.0' });
+  });
+
+  // A proposal writes candidates and nothing else. Recomputing after it would
+  // be work with no derived consequence to publish.
+  it('does NOT recompute after a proposal-only candidate write', async () => {
+    await post(
+      ws(`${component('RV-ACOST-SHIP01')}/allocations`), 'owner-token',
+      {
+        workspaceId: WS_A, method: 'manual_equal',
+        allocations: [{ sourceSystemPublicId: 'RV-SS-WHATNOT', acquisitionLinePublicId: 'RV-AL-AAA111', amountMinor: '1000' }],
+      });
+    expect(rpcCalls.map((entry) => entry.fn)).not.toContain('recompute_inventory_cost_basis');
+  });
+
+  it('reports an unchanged derivation as its own successful outcome', async () => {
+    recomputeUnchanged = true;
+    const { body } = await confirm();
+    expect(body.basisRecompute).toMatchObject({ status: 'unchanged', basisRows: 4 });
+  });
+
+  // THE LOAD-BEARING TRUTH RULE OF THIS BATCH.
+  //
+  // The allocation committed. The recompute did not. Telling the owner the
+  // allocation failed would send them to retry an operation that already
+  // succeeded — and the retry would be refused, leaving them certain nothing
+  // happened while the cost basis had in fact changed.
+  it.each([
+    ['confirmation', confirm, 'confirmed'],
+    ['reversal', reverse, 'reversed'],
+    ['withdrawal', withdraw, 'withdrawn'],
+  ])('never relabels a committed %s as failed when the recompute fails', async (_label, run, countField) => {
+    rpcFailureByFn.recompute_inventory_cost_basis = 'insufficient role for this operation';
+    const { status, body } = await (run as () => Promise<{ status: number; body: Record<string, unknown> }>)();
+
+    // The mutation is reported as what it is: successful.
+    expect(status).toBe(200);
+    expect(body[countField as string]).toBe(2);
+    // And the basis refresh is reported separately as what IT is.
+    expect(body.basisRecompute).toEqual({
+      status: 'failed', code: 'unauthorized_workspace', retryable: true,
+    });
+  });
+
+  it('reports a missing S2.4 migration as a recompute failure, not an allocation failure', async () => {
+    rpcFailureByFn.recompute_inventory_cost_basis =
+      'Could not find the function public.recompute_inventory_cost_basis in the schema cache';
+    const { status, body } = await confirm();
+    expect(status).toBe(200);
+    expect(body.confirmed).toBe(2);
+    expect(body.basisRecompute).toMatchObject({ status: 'failed', code: 'cost_contract_missing' });
+  });
+
+  // A recompute failure must never leak the database's own sentence either.
+  it('does not leak the recompute error text', async () => {
+    rpcFailureByFn.recompute_inventory_cost_basis = 'permission denied for relation secret_basis_table';
+    const { body } = await confirm();
+    expect(JSON.stringify(body)).not.toMatch(/permission denied|secret_basis_table/);
+  });
+
+  // A REFUSED mutation must not trigger a recompute: nothing committed.
+  it('does not recompute when the allocation itself was refused', async () => {
+    rpcFailureByFn.confirm_cost_allocation = 'cost component has no candidate allocations to confirm';
+    const { status } = await confirm();
+    expect(status).toBe(409);
+    expect(rpcCalls.map((entry) => entry.fn)).not.toContain('recompute_inventory_cost_basis');
+  });
+});
+
+// --- S2.5 Batch 2: basis impact on the component workspace -------------------
+
+describe('the derived basis reported beside the evidence', () => {
+  const read = () => get(ws(component('RV-ACOST-SHIP01')), 'owner-token');
+
+  it('reports the derived basis for the component’s scope lines', async () => {
+    const { status, body } = await read();
+    expect(status).toBe(200);
+    expect(body.basisImpact.derived).toBe(true);
+    expect(body.basisImpact.lines.map((line: { acquisitionLinePublicId: string }) =>
+      line.acquisitionLinePublicId)).toEqual(['RV-AL-AAA111', 'RV-AL-BBB222']);
+  });
+
+  it('sums exactly, in minor-unit strings, never as JSON numbers', async () => {
+    const { body } = await read();
+    const lineA = body.basisImpact.lines[0];
+    expect(lineA.currencies).toEqual([
+      {
+        currency: 'USD', knownTotalMinor: '6600', resolvedUnitCount: 2,
+        unresolvedUnitCount: 0, methods: ['fifo', 'source_observed_specific'],
+      },
+    ]);
+  });
+
+  // CURRENCIES ARE NEVER COMBINED. A single total across them would be true in
+  // neither, and it is exactly the figure somebody would later reuse.
+  it('keeps currencies separate and offers no combined total', async () => {
+    const { body } = await read();
+    const lineB = body.basisImpact.lines[1];
+    expect(lineB.currencies.map((entry: { currency: string }) => entry.currency)).toEqual(['EUR', 'USD']);
+    expect(JSON.stringify(body.basisImpact)).not.toMatch(/combinedTotal|grandTotal|totalMinor"/);
+  });
+
+  // AN UNRESOLVED UNIT IS NOT A ZERO.
+  it('reports an unresolved unit with no figure at all', async () => {
+    const { body } = await read();
+    const usd = body.basisImpact.lines[1].currencies.find(
+      (entry: { currency: string }) => entry.currency === 'USD');
+    expect(usd).toEqual({
+      currency: 'USD', knownTotalMinor: null, resolvedUnitCount: 0,
+      unresolvedUnitCount: 1, methods: ['unresolved'],
+    });
+  });
+
+  it('carries the governed reason a line is unresolved', async () => {
+    const { body } = await read();
+    expect(body.basisImpact.lines[1].unresolved).toEqual({
+      expectedQuantity: 1, reconciledQuantity: 2, pendingExpectedQuantity: 0,
+      overageQuantity: 1, hasUnresolvedCostEvidence: true,
+    });
+    // Line A has no unresolved row, and that is an absence, not a zeroed one.
+    expect(body.basisImpact.lines[0].unresolved).toBeNull();
+  });
+
+  it('names inventory subjects by governed public identity only', async () => {
+    const { body } = await read();
+    // Sorted by public identity, so the order is total and stable rather than
+    // whatever order the derivation happened to return rows in.
+    expect(body.basisImpact.lines[0].subjects).toEqual([
+      { subjectKind: 'item', publicId: 'RV-IITM-000001' },
+      { subjectKind: 'lot', publicId: 'RV-ILOT-000001' },
+    ]);
+    expect(containsInternalId(body)).toBe(false);
+  });
+
+  it('states the algorithm version the derivation came from', async () => {
+    const { body } = await read();
+    expect(body.basisImpact.lines[0].algorithmVersion).toBe('1.1.0');
+    expect(body.basisImpact.lines[0].derivedAt).toBe('2026-08-15T10:00:00.000Z');
+  });
+
+  // NOT DERIVED is a third state, distinct from "resolved" and "unresolved".
+  it('says the basis has never been derived rather than showing zeroes', async () => {
+    basisEmpty = true;
+    const { body } = await read();
+    expect(body.basisImpact.derived).toBe(false);
+    for (const line of body.basisImpact.lines) {
+      expect(line.currencies).toEqual([]);
+      expect(line.algorithmVersion).toBeNull();
+    }
+    expect(JSON.stringify(body.basisImpact)).not.toMatch(/"knownTotalMinor":"0"/);
+  });
+
+  it('describes every governed basis method, including FIFO’s caveat', async () => {
+    const { body } = await read();
+    const methods = Object.fromEntries(
+      body.basisMethods.map((entry: { method: string; description: string }) =>
+        [entry.method, entry.description]));
+    expect(Object.keys(methods).sort()).toEqual([
+      'deterministic_equal_attribution', 'fifo', 'source_observed_specific', 'unresolved',
+    ]);
+    // FIFO must never be allowed to read as proof of physical movement.
+    expect(methods.fifo).toMatch(/accounting convention/i);
+    expect(methods.fifo).toMatch(/does not assert which physical unit/i);
+  });
+
+  it('is component-scoped and is not a workspace-wide queue', async () => {
+    const { body } = await read();
+    // Only the two lines in THIS component's governed scope.
+    expect(body.basisImpact.lines).toHaveLength(2);
+    expect(JSON.stringify(body)).not.toContain('RV-AL-OUTSID');
   });
 });

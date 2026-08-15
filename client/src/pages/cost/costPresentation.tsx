@@ -5,6 +5,7 @@ import type {
   AllocationMethod,
   AllocationWorkflowState,
   Amount,
+  BasisMethod,
   CostAllocationState,
   CostComponentSummary,
   CostComponentType,
@@ -112,18 +113,26 @@ export const ALLOCATION_STATE_LABEL: Record<CostAllocationState, string> = {
   candidate: 'Proposed',
   confirmed: 'Confirmed',
   reversed: 'Reversed',
+  withdrawn: 'Withdrawn',
 };
 
 export const ALLOCATION_STATE_DESCRIPTION: Record<CostAllocationState, string> = {
   candidate: 'Durably recorded, but NOT a cost basis. It becomes one only when confirmed.',
   confirmed: 'A cost basis for this acquisition line.',
-  reversed: 'Retracted. Preserved as history with its original review attribution intact.',
+  reversed: 'Retracted after being confirmed. Preserved as history with its original review attribution intact.',
+  // The wording is deliberate. "Withdrawn" must never read as "deleted": the
+  // row is still here, with the amount and method it was proposed under, and
+  // the governed transition trigger will not let it move again.
+  withdrawn:
+    'Withdrawn before it was ever confirmed, so it never became a cost basis. It was not deleted — '
+    + 'the amount and method remain on record as history.',
 };
 
 const ALLOCATION_STATE_TONE: Record<CostAllocationState, StatusTone> = {
   candidate: 'warning',
   confirmed: 'success',
   reversed: 'neutral',
+  withdrawn: 'neutral',
 };
 
 export function AllocationStatePill({ state }: { readonly state: CostAllocationState }) {
@@ -319,4 +328,58 @@ export function costRecords(
     ],
     actions: renderActions?.(row),
   }));
+}
+
+// --- S2.5 Batch 2: the derived inventory cost basis ---------------------------
+
+/**
+ * The governed basis methods, in the owner's words.
+ *
+ * FIFO gets a caveat in its LABEL, not just in a tooltip. The S2.4 migration
+ * opens by saying FIFO is an accounting convention that does not assert
+ * physical movement, and an owner who reads "FIFO" as "this is the unit that
+ * physically arrived first" will draw conclusions the data cannot support. The
+ * caveat has to survive all the way to the pixel.
+ */
+export const BASIS_METHOD_LABEL: Record<BasisMethod, string> = {
+  fifo: 'FIFO layer (accounting convention)',
+  source_observed_specific: 'Source-reported for this unit',
+  deterministic_equal_attribution: 'Equal attribution (stated convention)',
+  unresolved: 'Not established',
+};
+
+const BASIS_METHOD_TONE: Record<BasisMethod, StatusTone> = {
+  fifo: 'information',
+  source_observed_specific: 'success',
+  deterministic_equal_attribution: 'information',
+  unresolved: 'warning',
+};
+
+export function BasisMethodPill({ method }: { readonly method: BasisMethod }) {
+  return <StatusPill tone={BASIS_METHOD_TONE[method]}>{BASIS_METHOD_LABEL[method]}</StatusPill>;
+}
+
+/**
+ * A derived basis total for ONE currency.
+ *
+ * `null` renders as words, never as `0.00`. A currency in which no unit has an
+ * established basis has no total — which is a different fact from a total that
+ * happens to be zero, and the difference is the whole reason this component
+ * exists rather than a bare `MinorAmount`.
+ */
+export function BasisTotal({
+  minor, currency,
+}: { readonly minor: string | null; readonly currency: string }) {
+  if (minor === null) {
+    return (
+      <span
+        className="text-ink-secondary"
+        data-basis-total="none"
+        title="No unit in this currency has an established cost basis. That is not a basis of zero."
+      >
+        No established basis
+      </span>
+    );
+  }
+  return <span data-basis-total="known"><MinorAmount minor={minor} currency={currency} /></span>;
 }

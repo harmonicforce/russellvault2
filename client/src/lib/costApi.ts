@@ -34,8 +34,15 @@ export type CostComponentType = 'item_price' | 'shipping' | 'tax' | 'fee' | 'dis
 /** `public.cost_attribution_state`. */
 export type CostAttributionState = 'direct' | 'allocated' | 'unresolved';
 
-/** `public.cost_allocation_state`. */
-export type CostAllocationState = 'candidate' | 'confirmed' | 'reversed';
+/**
+ * `public.cost_allocation_state`.
+ *
+ * `withdrawn` arrived with S2.4.1. It is TERMINAL and history-preserving: the
+ * row stays on record with its original amount and method, and the governed
+ * transition trigger refuses to move it anywhere else. It is NOT a deletion and
+ * nothing on this surface may present it as one.
+ */
+export type CostAllocationState = 'candidate' | 'confirmed' | 'reversed' | 'withdrawn';
 
 /**
  * A governed amount.
@@ -142,7 +149,16 @@ export interface CostComponentView {
   readonly historicalLegacyImported: false;
   readonly role: Role;
   readonly methods: readonly MethodOption[];
+  readonly basisMethods: readonly BasisMethodOption[];
   readonly component: CostComponentDetail;
+  /**
+   * The DERIVED basis for this component's scope lines.
+   *
+   * Carried separately from `component` on purpose: the component is evidence
+   * an owner decided, this is what the governed recompute concluded from it,
+   * and merging them would let a proposal read as a cost.
+   */
+  readonly basisImpact: BasisImpact;
 }
 
 export interface SplitShare {
@@ -186,13 +202,105 @@ export interface ConfirmationResult {
   readonly confirmed: number;
   readonly totalMinor: string;
   readonly replayable: false;
+  readonly basisRecompute: BasisRecomputeOutcome;
 }
 
 export interface ReversalResult {
   readonly componentPublicId: string;
   readonly reversed: number;
   readonly replayable: false;
+  readonly basisRecompute: BasisRecomputeOutcome;
 }
+
+/**
+ * The result of withdrawing a pending proposal.
+ *
+ * `replayable: false` again: `withdraw_cost_allocation` has no idempotency key
+ * and returns no `replayed` flag, so a lost response can never be resolved by
+ * sending the same request again.
+ */
+export interface WithdrawalResult {
+  readonly componentPublicId: string;
+  readonly withdrawn: number;
+  readonly replayable: false;
+  readonly basisRecompute: BasisRecomputeOutcome;
+}
+
+// --- the derived inventory cost basis ----------------------------------------
+
+/** `public.inventory_cost_basis_method`. */
+export type BasisMethod =
+  | 'fifo'
+  | 'source_observed_specific'
+  | 'deterministic_equal_attribution'
+  | 'unresolved';
+
+export interface BasisMethodOption {
+  readonly method: BasisMethod;
+  readonly description: string;
+}
+
+export interface BasisCurrencyTotal {
+  readonly currency: string;
+  /** Null when no unit in this currency has an established basis. NOT zero. */
+  readonly knownTotalMinor: string | null;
+  readonly resolvedUnitCount: number;
+  readonly unresolvedUnitCount: number;
+  readonly methods: readonly BasisMethod[];
+}
+
+export interface BasisLineImpact {
+  readonly sourceSystemPublicId: string;
+  readonly acquisitionLinePublicId: string;
+  readonly title: string | null;
+  readonly subjects: readonly {
+    readonly subjectKind: 'lot' | 'item';
+    readonly publicId: string;
+  }[];
+  /** One entry PER CURRENCY. There is deliberately no combined total. */
+  readonly currencies: readonly BasisCurrencyTotal[];
+  readonly unresolved: {
+    readonly expectedQuantity: number;
+    readonly reconciledQuantity: number;
+    readonly pendingExpectedQuantity: number;
+    readonly overageQuantity: number;
+    readonly hasUnresolvedCostEvidence: boolean;
+  } | null;
+  readonly algorithmVersion: string | null;
+  readonly derivedAt: string | null;
+}
+
+export interface BasisImpact {
+  /**
+   * False when no governed recompute has ever published a row for these lines.
+   * A third state, distinct from both "resolved" and "unresolved".
+   */
+  readonly derived: boolean;
+  readonly lines: readonly BasisLineImpact[];
+}
+
+/**
+ * The outcome of the governed basis recompute, carried BESIDE an allocation
+ * result rather than folded into it.
+ *
+ * A `failed` recompute never means the allocation failed. The allocation had
+ * already committed when the recompute ran; saying otherwise would send an
+ * owner to retry an operation that succeeded, and the retry would be refused.
+ */
+export type BasisRecomputeOutcome =
+  | {
+      readonly status: 'refreshed';
+      readonly algorithmVersion: string;
+      readonly contentHash: string;
+      readonly basisRows: number;
+    }
+  | {
+      readonly status: 'unchanged';
+      readonly algorithmVersion: string;
+      readonly contentHash: string;
+      readonly basisRows: number;
+    }
+  | { readonly status: 'failed'; readonly code: string; readonly retryable: true };
 
 export class CostError extends Error {
   readonly code: string;
@@ -309,6 +417,17 @@ export function createCostTransport(tokens: () => Promise<string | null>) {
     reverse: (workspaceId: string, componentPublicId: string, reason: string) =>
       post<ReversalResult>(
         `${component(componentPublicId)}/allocations/reverse`, workspaceId, { reason }),
+
+    /**
+     * Withdraw the pending proposal.
+     *
+     * Recovery, not an undo. The withdrawn rows stay on record with their
+     * original amounts and method, and the reason becomes governed audit
+     * history — so a reason is required here as well as in the database.
+     */
+    withdraw: (workspaceId: string, componentPublicId: string, reason: string) =>
+      post<WithdrawalResult>(
+        `${component(componentPublicId)}/allocations/withdraw`, workspaceId, { reason }),
   };
 }
 

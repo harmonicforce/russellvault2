@@ -53,8 +53,15 @@ export type CostAmountState = 'known' | 'documented_free' | 'unknown';
 /** `public.cost_attribution_state`. */
 export type CostAttributionState = 'direct' | 'allocated' | 'unresolved';
 
-/** `public.cost_allocation_state`. */
-export type CostAllocationState = 'candidate' | 'confirmed' | 'reversed';
+/**
+ * `public.cost_allocation_state`.
+ *
+ * `withdrawn` arrived with S2.4.1. It is TERMINAL and history-preserving: a
+ * withdrawn row stays on record with its original amount and method, and
+ * `app.enforce_cost_allocation_transition` refuses to move it anywhere else.
+ * Nothing about it is a deletion, and nothing here may present it as one.
+ */
+export type CostAllocationState = 'candidate' | 'confirmed' | 'reversed' | 'withdrawn';
 
 /**
  * The allocation methods this application offers.
@@ -298,6 +305,24 @@ export function confirmationAllowed(state: AllocationWorkflowState): boolean {
 
 export function reversalAllowed(state: AllocationWorkflowState): boolean {
   return state === 'allocated';
+}
+
+/**
+ * May the pending proposal be withdrawn?
+ *
+ * THIS IS THE CAPABILITY BATCH 1 CORRECTLY SAID DID NOT EXIST.
+ *
+ * At the time, nothing in the governed contract could remove a candidate row,
+ * so a proposal that did not conserve stranded its component permanently.
+ * S2.4.1 added `withdraw_cost_allocation`, which moves every candidate to the
+ * TERMINAL `withdrawn` state while leaving the rows on record.
+ *
+ * Withdrawal is therefore recovery, NOT an undo and NOT a deletion: the
+ * withdrawn amounts stay visible as history with their original method, and a
+ * corrected proposal is a new proposal rather than an edit of the old one.
+ */
+export function withdrawalAllowed(state: AllocationWorkflowState): boolean {
+  return state === 'proposed_awaiting_confirmation';
 }
 
 // --- assembled payloads ------------------------------------------------------
@@ -621,8 +646,10 @@ export type SplitOutcome =
  * the leftover units go one each to the largest fractional remainders. That is
  * the whole reason this is not `Math.round(total * weight / sum)` — rounding
  * each share independently produces a set that does not add up, and a split
- * that does not add up is refused by `confirm_cost_allocation` and then cannot
- * be withdrawn.
+ * that does not add up is refused by `confirm_cost_allocation`. Since S2.4.1
+ * such a proposal can at least be withdrawn rather than stranding the
+ * component, but withdrawing is a governed act with its own audit record — not
+ * an undo — so producing a set that adds up in the first place still matters.
  *
  * Ties are broken by the caller's order, which is itself sorted by public id,
  * so the same inputs always produce the same split. A split that varies between
@@ -785,6 +812,16 @@ export const COST_REFUSALS: readonly CostRefusal[] = [
   { code: 'expected_total_mismatch', status: 409, phrase: 'but candidates sum to' },
   { code: 'allocation_does_not_conserve', status: 409, phrase: 'but the component amount is' },
   { code: 'nothing_to_reverse', status: 409, phrase: 'no confirmed allocation to reverse' },
+  // S2.4.1 withdrawal.
+  { code: 'nothing_to_withdraw', status: 409, phrase: 'no candidate allocations to withdraw' },
+  { code: 'invalid_request', status: 400, phrase: 'a reason is required to withdraw' },
+  { code: 'allocation_terminal', status: 409, phrase: 'is terminal' },
+  { code: 'allocation_terminal', status: 409, phrase: 'confirmed allocation may only be reversed' },
+  { code: 'allocation_terminal', status: 409, phrase: 'invalid candidate allocation transition' },
+  { code: 'allocation_terminal', status: 409, phrase: 'cannot return to candidate' },
+  // S2.4 recompute. Reported on its OWN result, never as an allocation failure.
+  { code: 'unauthorized_workspace', status: 403, phrase: 'insufficient role for this operation' },
+  { code: 'cost_basis_is_derived', status: 409, phrase: 'inventory_cost_basis_is_derived' },
   { code: 'invalid_request', status: 400, phrase: 'method must be a lowercase identifier' },
   { code: 'invalid_request', status: 400, phrase: 'at least one allocation line is required' },
   { code: 'invalid_request', status: 400, phrase: 'an expected total is required' },
@@ -812,6 +849,9 @@ export const COST_TRANSPORT_STATUS: Readonly<Record<string, number>> = {
   no_value_basis: 409,
   no_weight_basis: 409,
   amount_not_known: 409,
+  nothing_to_withdraw: 409,
+  allocation_terminal: 409,
+  cost_basis_is_derived: 409,
   dependency_failed: 502,
   cost_contract_missing: 503,
 };
@@ -850,4 +890,281 @@ export function classifyCostError(error: unknown): CostFailure {
  */
 export function containsInternalId(payload: unknown): boolean {
   return /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(JSON.stringify(payload) ?? '');
+}
+
+// --- S2.5 Batch 2: derived inventory cost basis -------------------------------
+//
+// ALLOCATION EVIDENCE AND DERIVED COST BASIS ARE DIFFERENT THINGS, AND THIS
+// SECTION EXISTS TO KEEP THEM APART.
+//
+// Everything above this line is EVIDENCE: what a source charged, and how an
+// owner attributed it. Everything below is DERIVED: what S2.4's
+// `recompute_inventory_cost_basis` concluded about individual inventory units
+// from that evidence, under a named, versioned algorithm.
+//
+// The application never computes a basis. It reads what the governed recompute
+// published and reports it, including — especially including — when the
+// governed answer is that the basis is UNRESOLVED.
+//
+// `inventory_cost_basis.total_cost_minor` is NULL exactly when
+// `basis_method = 'unresolved'`; the schema enforces the biconditional. So an
+// unresolved unit has no figure at all, and nothing here may supply one.
+
+/** `public.inventory_cost_basis_method`. */
+export type BasisMethod =
+  | 'fifo'
+  | 'source_observed_specific'
+  | 'deterministic_equal_attribution'
+  | 'unresolved';
+
+/** `public.inventory_cost_basis_state`. */
+export type BasisState = 'current' | 'superseded' | 'unresolved';
+
+/**
+ * What each method actually claims — and, for FIFO, what it does NOT claim.
+ *
+ * The S2.4 migration opens with the sentence "FIFO is an accounting convention
+ * only; it does not assert physical movement", and that caveat has to survive
+ * all the way to the screen. An owner who reads "FIFO" as "this is the unit
+ * that physically arrived first" will make decisions the data does not support.
+ */
+export const BASIS_METHOD_DESCRIPTION: Readonly<Record<BasisMethod, string>> = {
+  fifo:
+    'First-in, first-out layering. An ACCOUNTING CONVENTION for ordering cost layers within a '
+    + 'lot — it does not assert which physical unit arrived first, and it is not evidence of item '
+    + 'movement.',
+  source_observed_specific:
+    'The source reported a cost for this specific unit, and that reported figure was used directly.',
+  deterministic_equal_attribution:
+    'The line’s cost was attributed equally across its units by a deterministic rule, because the '
+    + 'source did not report a per-unit figure. It is a stated convention, not an observation.',
+  unresolved:
+    'The governed recompute could not establish a cost for this unit. There is no figure, and a '
+    + 'figure must not be inferred for it.',
+};
+
+/** Raw `public.inventory_cost_basis_current` row, as the route selects it. */
+export interface InventoryCostBasisRow {
+  readonly public_id: string;
+  readonly subject_kind: 'lot' | 'item';
+  readonly inventory_lot_public_id: string | null;
+  readonly inventory_item_public_id: string | null;
+  /** Join key only. Never copied into an output payload. */
+  readonly acquisition_line_item_id: string;
+  readonly layer_seq: number;
+  readonly source_unit_ordinal: number;
+  /** NULL exactly when `basis_method = 'unresolved'`. */
+  readonly total_cost_minor: number | null;
+  readonly currency: string;
+  readonly basis_method: BasisMethod;
+  readonly state: BasisState;
+  readonly algorithm_version: string;
+  readonly derived_at: string;
+}
+
+/** Raw `public.unresolved_inventory_cost_basis` row. */
+export interface UnresolvedBasisRow {
+  readonly acquisition_line_item_id: string;
+  readonly acquisition_line_public_id: string;
+  readonly expected_quantity: number;
+  readonly reconciled_quantity: number;
+  readonly pending_expected_quantity: number;
+  readonly overage_quantity: number;
+  readonly has_unresolved_cost_evidence: boolean;
+}
+
+/** One currency's derived basis for one acquisition line. */
+export interface BasisCurrencyTotal {
+  readonly currency: string;
+  /**
+   * The exact sum of the units whose basis IS established, in minor units.
+   *
+   * Null when no unit in this currency has an established basis. Null is not
+   * zero, and there is deliberately no `0` fallback anywhere on this path.
+   */
+  readonly knownTotalMinor: string | null;
+  readonly resolvedUnitCount: number;
+  readonly unresolvedUnitCount: number;
+  /** The governed methods present, so the claim can be read honestly. */
+  readonly methods: readonly BasisMethod[];
+}
+
+export interface BasisLineImpact {
+  readonly sourceSystemPublicId: string;
+  readonly acquisitionLinePublicId: string;
+  readonly title: string | null;
+  /** Governed subjects this line's basis units belong to, by public identity. */
+  readonly subjects: readonly {
+    readonly subjectKind: 'lot' | 'item';
+    readonly publicId: string;
+  }[];
+  /**
+   * One entry PER CURRENCY. Never combined.
+   *
+   * A single "total" across currencies would be a figure true in none of them,
+   * and it is exactly the number somebody would later paste into a spreadsheet.
+   */
+  readonly currencies: readonly BasisCurrencyTotal[];
+  /** Why the line is not fully resolved, when the governed view says so. */
+  readonly unresolved: {
+    readonly expectedQuantity: number;
+    readonly reconciledQuantity: number;
+    readonly pendingExpectedQuantity: number;
+    readonly overageQuantity: number;
+    readonly hasUnresolvedCostEvidence: boolean;
+  } | null;
+  readonly algorithmVersion: string | null;
+  readonly derivedAt: string | null;
+}
+
+export interface BasisImpact {
+  /**
+   * False when NO governed recompute has ever published a row for these lines.
+   *
+   * That is not the same as "the basis is zero" and not the same as "the basis
+   * is unresolved": it means the derivation has not been run, so there is
+   * nothing to report yet. Rendering it as an empty table of zeroes would be
+   * the fabrication this whole surface exists to prevent.
+   */
+  readonly derived: boolean;
+  readonly lines: readonly BasisLineImpact[];
+}
+
+/**
+ * Assemble the derived basis for a component's scope lines.
+ *
+ * Pure. It sums only within a currency, only over units the governed recompute
+ * marked `current`, and it never turns an absent figure into a zero.
+ */
+export function buildBasisImpact(input: {
+  readonly scopeLines: readonly ScopeLine[];
+  readonly lines: readonly AcquisitionLineRow[];
+  readonly basisRows: readonly InventoryCostBasisRow[];
+  readonly unresolvedRows: readonly UnresolvedBasisRow[];
+}): BasisImpact {
+  const idByPublicId = new Map(
+    input.lines.map((line) => [line.acquisition_line_public_id, line.acquisition_line_item_id]));
+  const unresolvedById = new Map(
+    input.unresolvedRows.map((row) => [row.acquisition_line_item_id, row]));
+
+  const lines: BasisLineImpact[] = input.scopeLines.map((scope) => {
+    const lineItemId = idByPublicId.get(scope.acquisitionLinePublicId);
+    const rows = lineItemId
+      ? input.basisRows.filter((row) => row.acquisition_line_item_id === lineItemId)
+      : [];
+
+    const subjects = new Map<string, { subjectKind: 'lot' | 'item'; publicId: string }>();
+    for (const row of rows) {
+      const publicId = row.inventory_item_public_id ?? row.inventory_lot_public_id;
+      if (publicId) subjects.set(publicId, { subjectKind: row.subject_kind, publicId });
+    }
+
+    const byCurrency = new Map<string, InventoryCostBasisRow[]>();
+    for (const row of rows) {
+      const bucket = byCurrency.get(row.currency);
+      if (bucket) bucket.push(row); else byCurrency.set(row.currency, [row]);
+    }
+
+    const currencies: BasisCurrencyTotal[] = [...byCurrency.entries()]
+      .map(([currency, group]) => {
+        // A unit counts toward the known total only when the governed row
+        // carries a figure AND that figure survives the JSON round trip
+        // exactly. Anything else is counted as unresolved rather than
+        // silently dropped from both sides of the ledger.
+        const resolved = group.filter(
+          (row) => row.total_cost_minor !== null
+            && Number.isSafeInteger(row.total_cost_minor)
+            && row.basis_method !== 'unresolved');
+        const knownTotal = resolved.reduce<bigint>(
+          (sum, row) => sum + BigInt(row.total_cost_minor as number), 0n);
+        return {
+          currency,
+          knownTotalMinor: resolved.length === 0 ? null : String(knownTotal),
+          resolvedUnitCount: resolved.length,
+          unresolvedUnitCount: group.length - resolved.length,
+          methods: [...new Set(group.map((row) => row.basis_method))].sort(),
+        };
+      })
+      .sort((a, b) => a.currency.localeCompare(b.currency));
+
+    const unresolved = lineItemId ? unresolvedById.get(lineItemId) ?? null : null;
+    // The newest derivation stamp across this line's rows. All rows from one
+    // recompute share it; a mix can only occur mid-supersession.
+    const derivedAt = rows.reduce<string | null>(
+      (latest, row) => (latest === null || row.derived_at > latest ? row.derived_at : latest), null);
+
+    return {
+      sourceSystemPublicId: scope.sourceSystemPublicId,
+      acquisitionLinePublicId: scope.acquisitionLinePublicId,
+      title: scope.title,
+      subjects: [...subjects.values()].sort((a, b) => a.publicId.localeCompare(b.publicId)),
+      currencies,
+      unresolved: unresolved
+        ? {
+            expectedQuantity: unresolved.expected_quantity,
+            reconciledQuantity: unresolved.reconciled_quantity,
+            pendingExpectedQuantity: unresolved.pending_expected_quantity,
+            overageQuantity: unresolved.overage_quantity,
+            hasUnresolvedCostEvidence: unresolved.has_unresolved_cost_evidence,
+          }
+        : null,
+      algorithmVersion: rows[0]?.algorithm_version ?? null,
+      derivedAt,
+    };
+  });
+
+  return { derived: input.basisRows.length > 0, lines };
+}
+
+// --- the governed recompute, reported as its own operation --------------------
+
+/**
+ * The outcome of `recompute_inventory_cost_basis`, carried BESIDE an allocation
+ * result rather than folded into it.
+ *
+ * THE TRUTH RULE THIS TYPE ENFORCES.
+ *
+ * Confirming, reversing and withdrawing all change what the derived basis
+ * should be, so each is followed by a recompute. But the recompute is a
+ * SEPARATE governed operation against a separate table, and it can fail on its
+ * own. If it does, the allocation change has still committed — the database
+ * says so — and telling the owner the allocation failed would be false in the
+ * most consequential direction available: they would try again, and a second
+ * confirm or withdraw is refused, leaving them convinced nothing worked.
+ *
+ * So a failed recompute is reported as exactly what it is: the allocation
+ * change is recorded, and the derived basis could not be refreshed yet. Retry
+ * is safe because S2.4 makes recompute deterministic, idempotent (it
+ * short-circuits on an unchanged content hash) and concurrency-safe (it holds
+ * an advisory lock for the whole publish).
+ */
+export type BasisRecomputeOutcome =
+  /** A new derivation was published. */
+  | {
+      readonly status: 'refreshed';
+      readonly algorithmVersion: string;
+      readonly contentHash: string;
+      readonly basisRows: number;
+    }
+  /**
+   * The governed inputs had not changed, so the existing derivation still
+   * stands. This is a SUCCESS, and a different one from `refreshed`.
+   */
+  | {
+      readonly status: 'unchanged';
+      readonly algorithmVersion: string;
+      readonly contentHash: string;
+      readonly basisRows: number;
+    }
+  /** The recompute itself failed. The allocation change is still committed. */
+  | { readonly status: 'failed'; readonly code: string; readonly retryable: true };
+
+/** Interpret the governed recompute's jsonb result. */
+export function readRecomputeResult(data: Record<string, unknown>): BasisRecomputeOutcome {
+  const algorithmVersion = String(data.algorithmVersion ?? '');
+  const contentHash = String(data.contentHash ?? '');
+  const basisRows = Number(data.basisRows ?? 0);
+  return data.recomputed === true
+    ? { status: 'refreshed', algorithmVersion, contentHash, basisRows }
+    : { status: 'unchanged', algorithmVersion, contentHash, basisRows };
 }
