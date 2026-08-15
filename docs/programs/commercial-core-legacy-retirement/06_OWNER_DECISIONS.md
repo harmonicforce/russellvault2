@@ -198,7 +198,7 @@ in the collection.
 
 ---
 
-### D-8 — What cost basis method?
+### D-8 — What cost basis method? — **RESOLVED 2026-08-12**
 
 **Question.** When a lot receives cost from several acquisitions at different
 prices, and units are sold over time, which cost applies to a sale?
@@ -218,21 +218,23 @@ only part of the lot is costed (defect C-6).
 2. **Weighted average** — one blended cost per lot, recomputed on each receipt.
 3. **Specific identification** — each unit carries its own acquisition cost.
 
-**Recommendation: FIFO for lot-managed stock, specific identification for
-serialized items.** Serialized units already have identity, so the specific cost
-is knowable and is the most accurate figure available. FIFO for lot-managed
-stock matches how the inventory physically moves and how a small resale business
-is normally reported. The `inventory_cost_basis` design in
-`03_TARGET_COMMERCIAL_ARCHITECTURE.md` § 2.2 already carries `layer_seq`, so
-this recommendation is what the schema is shaped for.
+**Owner decision.** Lot-managed inventory uses FIFO accounting layers. FIFO is
+an accounting convention and is not evidence about which physical unit moved.
+Serialized inventory uses actual per-unit specific cost only when the governed
+source evidence supports it; otherwise it uses deterministic equal per-unit
+attribution. Integer-minor-unit remainders go to the first units in stable
+governed order. The expected acquisition quantity is always the denominator:
+partial receipts receive only their proportional basis, while expected units not
+yet reconciled remain pending. Overreceipts remain explicitly unresolved rather
+than receiving zero or diluted cost. Contributions in different currencies stay
+separate unless future governed FX evidence exists.
 
 **Consequences.** Weighted average is simpler but blurs the margin on a
 individually-sourced item, which is exactly the figure this business needs.
 Specific identification for everything is impossible for lot-managed stock where
 units are interchangeable.
 
-**Blocks:** S2. **Latest safe point:** before S2.4 merges — it defines the
-schema.
+**Blocks:** resolved for S2.4. This decision does not authorize COGS or FX work.
 
 ---
 

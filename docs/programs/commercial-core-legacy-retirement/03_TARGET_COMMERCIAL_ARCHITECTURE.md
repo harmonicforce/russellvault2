@@ -278,16 +278,21 @@ inventory-level cost basis and no COGS anywhere in the governed model.**
 - **Purpose** — the per-unit cost of governed inventory. This is the single
   most important missing entity in the whole system: without it there is no
   COGS, no realized profit, and no capital-tied-up figure.
-- **Grain** — one row per inventory subject (item, or lot when lot-managed),
-  per cost layer.
+- **Grain** — one derived unit layer per inventory subject (item, or lot when
+  lot-managed), currency, and reconciled receipt-inventory link. Unit layers
+  retain indivisible-minor-unit remainder truth without an average.
 - **Identity** — `RV-ICB-*`.
 - **Important fields** — `subject_kind` (`item` | `lot`), `item_id`, `lot_id`,
   `layer_seq` (integer, for FIFO layering), `quantity`, `unit_cost_minor`,
   `currency`, `basis_method` (see decision **D-8**), `attributed_quantity`
   (consumed by COGS so far), `state` (`open`, `depleted`, `superseded`),
-  `derived_from_allocation_id`, `derived_from_receipt_line_id`.
-- **Relationships** — traces back to `acquisition_cost_allocations` and
-  `acquisition_receipt_lines`, so every cost figure has a provable origin.
+  the receipt-inventory link and source-unit ordinal. Provenance is normalized
+  into `inventory_cost_basis_contributions`, because a basis layer can contain
+  multiple direct and allocated components.
+- **Relationships** — each contribution independently traces to its cost
+  component, optional confirmed allocation, receipt line, and inventory link,
+  so direct costs do not fabricate allocation identities and composite basis
+  never collapses provenance to one nullable pair.
   Mirrors the one-subject `CHECK` pattern used by `listing_prep`.
 - **Mutability** — **derived-but-stored**, recomputed only by
   `recompute_inventory_cost_basis`; never edited by hand. Recomputation is
@@ -303,6 +308,13 @@ inventory-level cost basis and no COGS anywhere in the governed model.**
   profit reads from here rather than from a snapshot, confirming a cost
   allocation later automatically corrects the profit of a sale recorded
   earlier.
+
+The approved D-8 algorithm is FIFO for lot-managed stock and source-observed
+specific cost for serialized units only when source evidence contains a
+conserving per-unit split. Otherwise serialized totals use deterministic equal
+attribution. Expected acquisition quantity is the denominator; pending expected
+units and overage units remain unresolved. Currency layers never blend. FIFO is
+an accounting convention, not a statement of physical unit movement.
 
 ---
 

@@ -141,8 +141,8 @@ select hasnt_column('public','acquisition_receipt_lines','inventory_lot_id',
   'S2.1 creates no inventory linkage; S2.2 owns conversion');
 select hasnt_column('public','acquisition_receipt_lines','inventory_item_id',
   'S2.1 creates no inventory linkage; S2.2 owns conversion');
-select hasnt_table('public','inventory_cost_basis','S2.1 creates no cost-basis table');
-select hasnt_table('public','inventory_cost_basis_events','S2.1 creates no cost-basis event table');
+select has_table('public','inventory_cost_basis','later S2.4 adds the governed cost-basis table');
+select has_table('public','inventory_cost_basis_events','later S2.4 adds append-only cost-basis history');
 select hasnt_table('public','unresolved_cost_queue','S2.1 creates no unresolved-cost queue');
 -- The receipt table does not restate what acquisition_shipments already owns.
 select hasnt_column('public','acquisition_receipts','carrier','receipts do not duplicate carrier');
