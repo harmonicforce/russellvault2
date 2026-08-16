@@ -43,6 +43,8 @@ import ListingPrepDetail from '../../pages/ListingPrepDetail';
 import Acquisitions from '../../pages/Acquisitions';
 import Receiving from '../../pages/Receiving';
 import ReceiptWorkspace from '../../pages/ReceiptWorkspace';
+import Cost from '../../pages/Cost';
+import CostComponentWorkspace from '../../pages/CostComponentWorkspace';
 import AcquisitionDetail from '../../pages/AcquisitionDetail';
 
 export function AppRoutes({ provenanceEnabled }: { provenanceEnabled: boolean }) {
@@ -72,6 +74,8 @@ export function AppRoutes({ provenanceEnabled }: { provenanceEnabled: boolean })
       {provenanceEnabled && <Route path="/listing-prep/:prepId" element={<ListingPrepDetail />} />}
       {provenanceEnabled && <Route path="/receiving" element={<Receiving />} />}
       {provenanceEnabled && <Route path="/receiving/:receiptPublicId" element={<ReceiptWorkspace />} />}
+      {provenanceEnabled && <Route path="/cost" element={<Cost />} />}
+      {provenanceEnabled && <Route path="/cost/:componentPublicId" element={<CostComponentWorkspace />} />}
       {provenanceEnabled && <Route path="/acquisitions" element={<Acquisitions />} />}
       {provenanceEnabled && <Route path="/acquisitions/:sourceSystemPublicId/:linePublicId" element={<AcquisitionDetail />} />}
       {provenanceEnabled && <Route path="/acquisitions/:publicId" element={<div className="p-6" role="alert"><h1>Legacy acquisition link</h1><p>This link is not source-qualified. Return to the acquisition list to select the governed source record.</p></div>} />}

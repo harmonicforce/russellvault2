@@ -24,7 +24,7 @@
 // a destination that cannot be reached is a lie told by a menu.
 
 import {
-  Boxes, ClipboardCheck, ClipboardList, DollarSign, FileSearch, FileWarning, Layers,
+  Boxes, ClipboardCheck, ClipboardList, Coins, DollarSign, FileSearch, FileWarning, Layers,
   LayoutDashboard, Link2, ListChecks, MapPin, Package, PackageCheck, PackagePlus, ScanLine,
   ShieldCheck, ShoppingBag, Tag, Tags,
   type LucideIcon,
@@ -170,6 +170,15 @@ const ACQUIRE: NavGroup = {
   destinations: [
     { to: '/acquisitions', label: 'Acquisitions', icon: ShoppingBag, reads: READS_GOVERNED },
     { to: '/receiving', label: 'Receiving', icon: PackageCheck, reads: READS_GOVERNED },
+    // Cost allocation is advertised here because it operates on governed
+    // acquisition cost components, which belong to acquisition orders. The
+    // component workspace at `/cost/:componentPublicId` is deliberately NOT
+    // advertised: it is reached from a queue row.
+    //
+    // This is NOT `/cost-links`, which is the legacy SQLite surface listed
+    // under the legacy application. The two are unrelated and neither reads
+    // the other.
+    { to: '/cost', label: 'Cost Allocation', icon: Coins, reads: READS_GOVERNED },
     { to: '/quick-add', label: 'Add Inventory', icon: PackagePlus, reads: READS_GOVERNED },
   ],
 };

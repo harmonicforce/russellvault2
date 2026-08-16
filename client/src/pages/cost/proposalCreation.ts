@@ -1,0 +1,266 @@
+// Proposing a cost split is the governed cost operation that CANNOT be retried.
+//
+// WHY THIS MODULE EXISTS
+//
+// `propose_cost_allocation` has NO idempotency key and returns NO `replayed`
+// flag. It writes durable `candidate` rows. And the governed contract provides
+// no way to remove one:
+//
+//   * propose refuses while any candidate exists;
+//   * confirm refuses unless the candidates conserve the component amount;
+//   * reverse requires a CONFIRMED allocation, which a merely-proposed
+//     component does not have.
+//
+// So a lost response is genuinely dangerous, in a way that is different from —
+// and worse than — an ordinary lost write. The request may have committed. If
+// it did, candidates now exist and a second attempt will be REFUSED by the
+// database with `proposal_already_pending`. That refusal protects the data, but
+// it tells the operator nothing about WHOSE proposal is pending: it may be
+// theirs, arrived after all, or it may be a colleague's, made seconds earlier
+// with a different split entirely. Confirming the wrong one writes a cost basis
+// nobody chose.
+//
+// The recovery is therefore VERIFY-FIRST, never retry-first:
+//
+//   1. the intended split is retained locally, exactly as confirmed;
+//   2. proposing is LOCKED — there is no button to press again;
+//   3. the operator asks for an authoritative re-read of the component;
+//   4. the candidates that came back are compared against what was attempted;
+//   5. an EXACT match means the attempt committed: do not resend, and go and
+//      review what is now on record;
+//   6. candidates that do NOT match mean somebody else's proposal is pending —
+//      which is neither "yours landed" nor "nothing happened", and gets its own
+//      answer;
+//   7. no candidates at all, on a complete successful read, means the attempt
+//      did not commit: a NEW confirmed attempt is permitted;
+//   8. a failed verification leaves the outcome UNKNOWN: proposing stays
+//      locked, and the operator is never told "nothing was sent".
+//
+// This module is pure. It performs no I/O and holds no React state; the page
+// supplies the re-read and this decides what the answer means.
+
+import type {
+  AllocationMethod, AllocationRecord, CostComponentDetail,
+} from '../../lib/costApi';
+
+/** One line of the split an operator confirmed. */
+export interface ProposalLineIntent {
+  readonly sourceSystemPublicId: string;
+  readonly acquisitionLinePublicId: string;
+  readonly amountMinor: string;
+}
+
+/** The immutable split an operator confirmed, retained across the attempt. */
+export interface ProposalIntent {
+  readonly componentPublicId: string;
+  readonly method: AllocationMethod;
+  readonly lines: readonly ProposalLineIntent[];
+}
+
+export type ProposalPhase =
+  /** Nothing in flight. A confirmed attempt may be started. */
+  | { readonly phase: 'idle' }
+  /** The request is in flight. */
+  | { readonly phase: 'submitting'; readonly intent: ProposalIntent }
+  /**
+   * The response never arrived, or arrived as a failure that does not prove the
+   * request was refused. Proposing is LOCKED until verification.
+   */
+  | { readonly phase: 'unknown'; readonly intent: ProposalIntent }
+  /** An authoritative re-read is in progress. */
+  | { readonly phase: 'verifying'; readonly intent: ProposalIntent }
+  /**
+   * Verification PROVED the attempt committed. Resending is forbidden; the
+   * operator is directed to the proposal that is now on record.
+   */
+  | { readonly phase: 'committed'; readonly intent: ProposalIntent; readonly candidateCount: number }
+  /**
+   * Verification found a pending proposal that is NOT the one attempted. This
+   * is deliberately its own phase: it is neither proof the attempt landed nor
+   * proof it did not, and confirming what is there would confirm a split the
+   * operator never chose.
+   */
+  | { readonly phase: 'foreign'; readonly intent: ProposalIntent; readonly candidateCount: number }
+  /**
+   * Verification PROVED the attempt did not commit. A new confirmed attempt is
+   * permitted — and it is a NEW attempt, not a resend.
+   */
+  | { readonly phase: 'absent'; readonly intent: ProposalIntent }
+  /**
+   * The component moved past proposing entirely while the outcome was unknown:
+   * it is now allocated, or it was reversed. Either way there is nothing to
+   * resend, and the operator needs to look at what it became.
+   */
+  | { readonly phase: 'superseded'; readonly intent: ProposalIntent; readonly workflowState: string }
+  /**
+   * Verification itself failed. The outcome remains unknown and proposing stays
+   * locked. This is deliberately NOT the same as `absent`.
+   */
+  | { readonly phase: 'unverified'; readonly intent: ProposalIntent };
+
+/** May a NEW confirmed proposal be started right now? */
+export function proposalAllowed(state: ProposalPhase): boolean {
+  return state.phase === 'idle' || state.phase === 'absent';
+}
+
+/** Is the outcome of a previous attempt still genuinely unknown? */
+export function outcomeUnknown(state: ProposalPhase): boolean {
+  return state.phase === 'unknown' || state.phase === 'unverified';
+}
+
+/** The candidate rows of a component, which are the only ones a proposal wrote. */
+export function candidatesOf(component: CostComponentDetail): readonly AllocationRecord[] {
+  return component.allocations.filter((row) => row.state === 'candidate');
+}
+
+/**
+ * A stable, order-independent fingerprint of a split.
+ *
+ * The database returns candidate rows in whatever order it likes, so comparison
+ * cannot depend on sequence. Every field the operator confirmed is included —
+ * the source-qualified line identity AND the exact amount — because a candidate
+ * set carrying different amounts is a DIFFERENT split, very plausibly a
+ * colleague's, and treating it as proof that this operator's attempt committed
+ * would assert more than the evidence establishes.
+ *
+ * The method is deliberately NOT part of the fingerprint of the lines, and is
+ * compared separately, so a mismatch can be reported as what it is.
+ *
+ * `|` is the field separator because neither half of a source-qualified
+ * identity nor a canonical minor-unit string can contain one: governed public
+ * ids are uppercase alphanumerics and hyphens, and an amount is `-?[0-9]+`. A
+ * separator that could appear inside a field would let two different splits
+ * fingerprint identically. `;` separates the records for the same reason.
+ */
+function fingerprint(
+  lines: readonly { sourceSystemPublicId: string | null; acquisitionLinePublicId: string | null; amountMinor: string }[],
+): string {
+  return lines
+    .map((line) =>
+      `${line.sourceSystemPublicId ?? ''}|${line.acquisitionLinePublicId ?? ''}|${line.amountMinor}`)
+    .sort()
+    .join(';');
+}
+
+/**
+ * Do these pending candidates match the split that was attempted?
+ *
+ * Exact, on every field, with no tolerance. `confirm_cost_allocation` allows a
+ * one-minor-unit slack against the component total; that is a rule about
+ * CONSERVATION, not about identity, and borrowing it here would let a
+ * colleague's off-by-one split be mistaken for this operator's.
+ */
+export function matchesIntent(
+  candidates: readonly AllocationRecord[],
+  intent: ProposalIntent,
+): boolean {
+  if (candidates.length !== intent.lines.length) return false;
+  if (candidates.some((row) => row.method !== intent.method)) return false;
+  return fingerprint(candidates) === fingerprint(intent.lines);
+}
+
+/**
+ * Interpret an authoritative re-read.
+ *
+ * `component` must be the COMPLETE governed record for the component. A partial
+ * read could omit the very candidate that proves the attempt committed, and
+ * concluding "absent" from an incomplete read is exactly how a second proposal
+ * gets attempted against a component that already has one.
+ */
+export function verify(state: ProposalPhase, component: CostComponentDetail): ProposalPhase {
+  if (state.phase !== 'verifying') return state;
+
+  // The component moved past proposing entirely. Nothing about this outcome is
+  // a proposal question any more.
+  if (component.workflowState === 'allocated' || component.workflowState === 'component_reversed') {
+    return { phase: 'superseded', intent: state.intent, workflowState: component.workflowState };
+  }
+
+  const candidates = candidatesOf(component);
+  if (candidates.length === 0) return { phase: 'absent', intent: state.intent };
+  if (matchesIntent(candidates, state.intent)) {
+    return { phase: 'committed', intent: state.intent, candidateCount: candidates.length };
+  }
+  return { phase: 'foreign', intent: state.intent, candidateCount: candidates.length };
+}
+
+/** The re-read itself failed. The outcome is still unknown, and stays locked. */
+export function verificationFailed(state: ProposalPhase): ProposalPhase {
+  if (state.phase !== 'verifying') return state;
+  return { phase: 'unverified', intent: state.intent };
+}
+
+export function beginSubmit(intent: ProposalIntent): ProposalPhase {
+  return { phase: 'submitting', intent };
+}
+
+export function submitFailed(intent: ProposalIntent): ProposalPhase {
+  return { phase: 'unknown', intent };
+}
+
+export function beginVerify(state: ProposalPhase): ProposalPhase {
+  if (state.phase !== 'unknown' && state.phase !== 'unverified') return state;
+  return { phase: 'verifying', intent: state.intent };
+}
+
+/**
+ * The operator-facing sentence for each phase.
+ *
+ * None of these says "nothing was sent". That claim cannot be made about a
+ * request whose response never arrived, and making it is precisely the false
+ * guarantee this codebase has already had to remove once.
+ */
+export function proposalMessage(state: ProposalPhase): string {
+  switch (state.phase) {
+    case 'unknown':
+      return (
+        'The proposal request did not return a usable answer, so whether the split was recorded is '
+        + 'unknown. Proposing has no governed replay, and a pending proposal cannot be withdrawn, so '
+        + 'pressing again could leave this component with a split nobody chose. Check what is on record '
+        + 'before deciding.'
+      );
+    case 'verifying':
+      return 'Re-reading the governed cost component to establish what was actually recorded…';
+    case 'committed':
+      // The claim is exactly as strong as the check behind it: the pending
+      // candidates match, line for line and amount for amount, the split the
+      // operator confirmed. Anything weaker would assert more than the evidence.
+      return (
+        'The governed record now holds a pending proposal matching the split you confirmed — the same '
+        + 'lines, the same amounts and the same method — so your attempt did reach the database. It was '
+        + 'not recorded twice. Review the proposal below and confirm it rather than proposing again.'
+      );
+    case 'foreign':
+      return (
+        'The governed record holds a pending proposal, but it is NOT the split you confirmed — the lines, '
+        + 'amounts or method differ. That means someone else proposed a split for this component, or an '
+        + 'earlier attempt of yours did. Your attempt cannot be shown to have landed, and it cannot be '
+        + 'shown not to have. Do not confirm what is on record until you know whose it is: confirming it '
+        + 'would write a cost basis you did not choose.'
+      );
+    case 'absent':
+      return (
+        'The governed cost component was re-read in full and holds no pending proposal at all, so the '
+        + 'previous attempt did not reach the database. You can propose the split again.'
+      );
+    case 'superseded':
+      return state.workflowState === 'allocated'
+        ? (
+          'This component now has a CONFIRMED allocation, so it moved past proposing while the outcome of '
+          + 'your attempt was unknown. Whether the confirmed split is the one you proposed is not something '
+          + 'this screen can establish — review the confirmed allocation below before doing anything else.'
+        )
+        : (
+          'This cost component has been reversed, so there is nothing to propose against. Review the '
+          + 'component’s history below.'
+        );
+    case 'unverified':
+      return (
+        'The governed cost component could not be re-read, so whether the earlier attempt was recorded '
+        + 'remains unknown. Proposing is still locked, because a proposal cannot be withdrawn once it '
+        + 'exists.'
+      );
+    default:
+      return '';
+  }
+}

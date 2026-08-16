@@ -58,6 +58,11 @@ const GOVERNED_ONLY = [
   // acquisition detail is reached from an acquisition line.
   '/receiving',
   '/receiving/:receiptPublicId',
+  // S2.5 Batch 1. The component workspace is addressed by governed cost
+  // component public id — never an internal uuid — and is reached from a queue
+  // row, exactly as the receipt workspace is reached from a receiving row.
+  '/cost',
+  '/cost/:componentPublicId',
   '/import-review',
   '/acquisition-review',
   '/inventory-identity',
