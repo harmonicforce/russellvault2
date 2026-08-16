@@ -1,81 +1,81 @@
 # Last Implementation Handoff
 
-## S2.4.1 — Cost Basis Truth Hardening + Allocation Proposal Recovery
+## S3.1 — Historical Reconciliation Ledger Schema
 
 ### Lineage and authority
 
 - Repository/canonical branch: `harmonicforce/russellvault2`, `main`.
-- Branch: `codex/s2-4-1-cost-basis-truth-hardening`.
-- Exact base SHA: `deca424928a698db3cb456c53ca0a6cc950d05ed`.
-- Release authority: branch/PR only. No merge, push, hosted migration, deployment,
-  production restart, or production data action was authorized.
-- `docs/ai/CURRENT_STATE.md` is untouched.
+- Branch: `codex/s3-1-reconciliation-ledger-schema`.
+- Exact base SHA: `2a858591c12b0b2a1a13bd186eadfd2baaaafbe3`.
+- Release authority: branch/commit only. The work order forbids merge, push,
+  hosted migration, deployment, production reconciliation, and production data
+  actions, and reserves PR creation for the owner's Create PR button.
+- `client/**`, `server/**`, and `docs/ai/CURRENT_STATE.md` are untouched.
 
-### Implemented database changes
+### Implemented database contract
 
-Two forward-only additive migrations leave the merged S2.4 migration untouched:
+One forward-only additive migration,
+`20260815000300_reconciliation_ledger.sql`, adds:
 
-1. `20260815000100_cost_allocation_withdrawn_state.sql` adds the terminal
-   `withdrawn` allocation state in its own transaction-safe migration.
-2. `20260815000200_cost_basis_truth_hardening.sql`:
-   - adds owner/operator-only `withdraw_cost_allocation(uuid,text)`, requires a
-     nonblank reason, preserves candidate rows and reasoned audit history, permits
-     later corrected proposals, and serializes confirm/withdraw on the same
-     component row lock;
-   - makes allocation transition enforcement treat `withdrawn` as terminal and
-     records `cost_allocation_withdrawn` in the existing audit vocabulary;
-   - makes the derived-table guard fail closed when its GUC is unset using
-     `coalesce(current_setting(..., true), '')`;
-   - replaces cost-basis algorithm `1.0.0` with `1.1.0`, expanding unresolved
-     order/lot shared evidence to every active acquisition line in scope;
-   - emits null-money `unresolved` rows, while retaining normalized known
-     contributions, whenever applicable direct/shared evidence is unknown,
-     unresolved, candidate, or otherwise unattributable;
-   - sends negative net unit basis to the same explicit unresolved state rather
-     than publishing a current negative inventory value;
-   - removes trust in undeclared `source_detail.specific_unit_costs_minor` for
-     multi-unit serialized lines. Multi-unit attribution is deterministic equal;
-     quantity-one serialized item-price lines may retain source-specific method.
+- `reconciliation_runs`: one immutable execution of one comparison, addressed by
+  `RV-RECON-*`, scoped to one workspace and domain, with source SHA, target
+  scope, comparison key, lifecycle timestamps, object-shaped L1 result, tool and
+  actor provenance, and replay-safe request identity;
+- `reconciliation_findings`: one immutable L2 verdict for one comparison key in
+  the source/target union, uniquely constrained per run/key, addressed by
+  `RV-RECONF-*`, with typed verdict/materiality and an exact array of
+  `{field, source, target}` differences;
+- `reconciliation_finding_adjudications`: append-only `RV-RECONA-*` events. The
+  latest `(adjudicated_at,id)` event is current; absence means `open`. Later
+  events supersede without rewriting findings or prior review evidence;
+- governed owner/operator begin, finding-record, complete, and fail functions;
+  owner-only adjudication; idempotent replay with conflict detection;
+- `reconciliation_cutover_eligibility`, a read-only owner/operator/viewer gate.
+  It fails closed unless the run is completed and no current material/financial
+  finding is `open` or `deferred`. Cosmetic/none never block. Accepted,
+  corrected, and rejected do not block. Domain lookup uses the latest run.
+- composite same-workspace evidence FKs, restrictive deletes, immutable/append-
+  only triggers, NULL-safe governed mutation GUC enforcement, RLS on all three
+  tables, authenticated same-workspace SELECT only, no anon access, and governed
+  functions as the only authenticated mutation path.
 
-FIFO ordering, expected-quantity denominators, remainder distribution,
-overreceipt handling, and currency separation are unchanged.
+No source was connected, no legacy data was imported, no comparison was run,
+and no cutover was performed.
 
-### Tests and evidence
+### Tests and verification
 
-- `67_governed_inventory_cost_basis.sql`: 41/41 assertions. Added regressions
-  for unset GUC direct DML, candidate order-shared blocking with known subtotal,
-  history-preserving reasoned withdrawal and replacement, arbitrary multi-unit
-  source JSON, unknown direct evidence, lot-shared unresolved propagation,
-  negative net basis, and overlapping confirm-versus-withdraw with exactly one
-  winner.
-- `06_provenance_structure.sql`: migration ledger updated for 76 migrations.
-- Plain PostgreSQL reset passed.
-- Full plain PostgreSQL pgTAP passed: 67 files, 2592 assertions.
-- `npm run typecheck` passed.
-- `npm test` passed: server 686, client 1431, Node guards 23 (2140 total).
-- `npm run build:ci` passed with the existing Vite chunk-size warning.
-- `git diff --check` passed.
-- Initial typecheck/test/build attempts failed because client/server dependencies
-  were absent. `npm ci --prefix client` and `npm ci --prefix server` restored the
-  environment without tracked changes; the mandated commands then passed.
-- An initial pgTAP run exposed and corrected the expected migration-ledger count;
-  the final full run is green.
+- New `68_reconciliation_ledger.sql`: 47/47 assertions covering schema/FKs,
+  RLS, anon and cross-workspace denial, direct DML denial, all enum values,
+  exact JSON preservation/shape rejection, lifecycle, immutable evidence,
+  idempotency, unique IDs/run keys, append-only adjudication, and every requested
+  cutover-gate case.
+- `06_provenance_structure.sql` now proves the exact 77-file migration ledger.
+- `PGOPTIONS='-c jit=off' npm run db:reset`: passed.
+- `PGOPTIONS='-c jit=off' npm run db:test`: 68 files, 2639 assertions, all passed.
+- `npm run typecheck`: passed.
+- `npm test`: server 686, client 1431, Node guards 23; 2140 total passed.
+- `npm run build:ci`: passed with the existing Vite chunk-size warning.
+- `git diff --check`: passed.
+- Environment setup only: the local PostgreSQL 16 cluster was initially down
+  and lacked the local `root` superuser expected by the test scripts. Starting
+  the local cluster and creating that local-only role allowed the mandated
+  commands to run. No hosted database was contacted.
 
 ### Delivery status
 
-- Final SHA: recorded in the final response after commit.
-- PR: not created in this environment; the work order explicitly reserves PR
-  creation for the owner's Codex Create PR button and forbids `gh` push/create.
-- Exact-head hosted CI: not checked; branch was not pushed.
+- Final SHA: recorded after commit in the final response.
+- PR: not created; owner must use Codex's Create PR button as explicitly ordered.
+- Exact-head hosted CI: not checked because the branch was not pushed.
 - Live Supabase migration count/parity: not checked; not authorized.
 - Railway deployment and `/api/version`: not checked; not authorized.
-- Hosted acceptance: not applicable (no client/server/UI change) and not authorized.
+- Hosted acceptance: not applicable to this evidence-schema-only slice.
 - Production data touched: none.
-- Rollback before deployment: revert the feature commit. After any separately
-  authorized migration deployment, use another forward migration.
+- Rollback before deployment: revert the feature commit. If separately deployed,
+  preserve forward-only practice with a new migration rather than editing this one.
 
 ### Exact next owner decision
 
-Use Codex's Create PR button for the committed branch, obtain green exact-head CI,
-and then decide whether to merge. Do not apply either migration live until that
-separate release decision.
+Use Codex's Create PR button for this committed branch and obtain green exact-head
+CI. Then decide whether S3.1 may merge and whether the migration may later be
+applied. Do not begin S3.2 or any historical reconciliation/import until S3.1 is
+accepted and the still-open owner decisions for S3 execution are resolved.

@@ -35,18 +35,29 @@ Fields: `public_id` (`RV-RECON-*`), `domain`, `source_label`, `source_sha256`,
 (`running`, `completed`, `failed`), `l1_result` (jsonb), `run_by`,
 `tool_version`. Append-only.
 
-**`reconciliation_findings`** — one verdict per key.
+**`reconciliation_findings`** — one immutable verdict per key in the union of
+source and target keys. S3.1 implements this with a unique
+`(reconciliation_run_id, comparison_key_value)` constraint and a JSON array of
+field-difference objects (`field`, `source`, `target`).
 Fields: `reconciliation_run_id`, `comparison_key_value`, `verdict`
 (`matched_identical` | `matched_with_differences` | `source_only` |
 `target_only`), `field_differences` (jsonb: field, source value, target value),
 `materiality` (`none` | `cosmetic` | `material` | `financial`),
-`adjudication_state` (`open` | `accepted` | `corrected` | `rejected` |
-`deferred`), `adjudicated_by`, `adjudicated_at`, `adjudication_note`.
-Append-only; adjudication is a new row referencing the finding, never an
-in-place edit.
+plus immutable actor, process, evidence, and timestamp provenance.
 
-**Gate:** a domain may not cut over while any finding of materiality `material`
-or `financial` has `adjudication_state = 'open'`.
+**`reconciliation_finding_adjudications`** — one append-only review event
+referencing a finding. States are `open`, `accepted`, `corrected`, `rejected`,
+and `deferred`; non-open events require a note. The current state is the latest
+event by `(adjudicated_at, id)`, or implicit `open` when no event exists. A new
+event supersedes earlier review evidence without updating either the finding or
+the earlier event.
+
+**Gate:** `reconciliation_cutover_eligibility` fails closed unless the selected
+run is completed and has no current `material` or `financial` finding in
+`open` or `deferred`. `none` and `cosmetic` findings do not block. Accepted,
+corrected, or rejected findings do not block. Domain lookup deterministically
+uses its latest run. This function reports eligibility only; it performs no
+cutover.
 
 ---
 
