@@ -1,5 +1,149 @@
 # Last Implementation Handoff
 
+## S2.6 — Governed Unresolved Cost Queue (COMPLETE)
+
+The final S2 application slice. An owner-usable triage queue answering: **what
+cost truth still needs attention, why, and where do I go to resolve it.**
+
+- Repository: `harmonicforce/russellvault2`. Canonical branch: `main`.
+- Branch: `claude/s2-6-unresolved-cost-queue`.
+- Base SHA: `3efe5b9422aa6016aa1ed36047f6a90ffa2c6a7d` (S2.5 merged as PR #70).
+- Status: **implemented and validated locally.** Not merged, not deployed, not
+  hosted-accepted.
+
+### Scope discipline
+
+**Zero Supabase edits, zero migrations, zero pgTAP changes, zero function
+changes** — `git diff 3efe5b9 -- supabase/` is empty. No S3 or reconciliation
+file touched (Codex owns S3.1). `docs/ai/CURRENT_STATE.md` untouched. No COGS,
+sales, profit, marketplace, Railway or hosted-acceptance work.
+
+The entire queue is derived from governed surfaces already granted to
+`authenticated`: `acquisition_cost_components`, `acquisition_cost_allocations`,
+`acquisition_lots`, `acquisition_lot_lines`, `acquisition_orders`,
+`acquisition_line_overview`, `inventory_cost_basis_current`,
+`unresolved_inventory_cost_basis` and `inventory_cost_basis_events`.
+
+### The reason model — seven distinct, evidenced reasons
+
+There is deliberately **no "needs attention" bucket**. Ordered by workflow
+position, because that is the order an owner can act in.
+
+| Reason | Evidence |
+| --- | --- |
+| `amount_not_known` | component `amount_state='unknown'`, not reversed |
+| `shared_cost_unallocated` | lot/order-scoped, `attribution_state='unresolved'`, known amount, no candidates |
+| `proposal_awaiting_review` | ≥1 allocation in `state='candidate'` |
+| `basis_unresolved` | `inventory_cost_basis_current` rows with `state`/`basis_method` = `unresolved`, grouped per (line, currency) |
+| `overage_without_cost` | `unresolved_inventory_cost_basis.overage_quantity > 0` |
+| `negative_net_cost_evidence` | signed sum of direct + confirmed-allocated evidence per (line, currency) < 0 |
+| `basis_never_derived` | no run row in `inventory_cost_basis_events` |
+
+### The one state that could NOT be derived, reported rather than invented
+
+The work order asked for "basis not yet derived **or not refreshed**, if that
+state is actually evidenced". Those are two questions with two answers.
+
+**Not yet derived IS evidenced** — `inventory_cost_basis_events` records one row
+per run, so no run row means no recompute has happened. That is
+`basis_never_derived`.
+
+**Not refreshed is NOT evidenced.** Staleness means comparing the stored
+`input_content_hash` against a hash of *current* inputs. That hash is a sha256
+over a `jsonb_agg(...)::text` computed inside the function; reproducing it in
+TypeScript would mean reproducing PostgreSQL's exact jsonb serialisation,
+ordering and numeric formatting, and any divergence yields a confident, wrong
+"stale" or "current" verdict. The algorithm version has the same problem — it is
+a constant inside the function body, readable only by calling it, and a read
+endpoint must not invoke a mutation to answer a question.
+
+So the surface reports what the last derivation **was** (version, timestamp) and
+carries `staleness: 'not_evidenced'` permanently. Asserted by test, at the
+contract, route and screen.
+
+**THE MISSING DATABASE FACT, stated precisely so it can be added deliberately:**
+a governed read-only way to compare the current input hash with the stored one —
+e.g. a `public.inventory_cost_basis_freshness` view exposing
+`(workspace_id, algorithm_version, stored_hash, current_hash, is_current)`, or a
+`stable` function returning the current hash. Either would make staleness
+first-class and this contract would gain a `basis_stale` reason.
+
+### The exclusions, enforced in code
+
+`documented_free`; confirmed/attributable known cost; multiple currencies alone;
+**expected units not yet received** (the governed view publishes these — a cost
+queue full of parcels in transit is a queue nobody reads); reversed and
+withdrawn rows; and absence of inventory where none should exist.
+
+**Withdrawal is history, not a resolution.** After a withdrawal the candidates
+are gone, so `proposal_awaiting_review` stops firing and
+`shared_cost_unallocated` fires instead — the component still needs allocating
+and the queue says so. Proved at contract, route, jsdom and browser levels.
+
+### API contract
+
+One read endpoint, `GET /api/cost/unresolved`, `requireMember`, caller-JWT/RLS
+only, no service-role credential, no mutation on the path (asserted). Returns
+`coverage`, `complete`, `role`, the `reasons` vocabulary, `derivation`, and
+`rows`. Every read is bounded at 2000 and `complete:false` is reported when any
+contributing read reaches its ceiling. No internal UUID is returned — basis
+columns are listed explicitly because the governed view is `select b.*`.
+
+### Empty / partial / failure semantics
+
+`empty` — and therefore "no unresolved cost" — is reachable **only** from a
+complete authoritative read. A capped read renders `partial` with "this is NOT a
+statement that there are none"; a failed read renders `unavailable`. Each of the
+five contributing reads is proved individually to fail rather than return an
+empty queue. Filtering narrows a complete list: the unfiltered total stays on
+screen, every option carries its count, and a filter matching nothing says so
+instead of borrowing the empty state's words.
+
+The queue is a **separate governed read** from the component list, so one
+failing never blanks the other — proved in both directions.
+
+### Role behaviour
+
+Owner and operator read the queue and follow links into the existing S2.5
+workflow. A viewer reads it and is offered no mutation — the panel contains no
+mutation control at all, and no new mutation authority was invented. The queue
+is triage and navigation; allocation editing is not duplicated.
+
+### Validation, on this branch
+
+| Command | Result |
+| --- | --- |
+| `npm ci` (root/client/server) | all pass |
+| `npm run lint` | 0 errors; warnings only, matching existing presentation adapters |
+| `npm run typecheck` | clean |
+| `npm test` | server **919**, client **1623**, guards **23** |
+| `npm run build:ci` | clean |
+| `PGOPTIONS='-c jit=off' npm run db:test` | all files passed, **2592 assertions** |
+| Playwright, 5 chromium viewports | **913 passed**, 0 failed, 107 skipped |
+| `git diff --check` | clean |
+
+S2.6 added 58 server tests (919 vs 861), 22 client tests (1623 vs 1601) and 20
+browser tests (60 cost tests × 5 viewports). Ten `cost` visual baselines were
+regenerated because `/cost` gained the queue region; every other baseline
+matched byte-for-byte.
+
+### Explicitly NOT proved
+
+- **WebKit is unverified locally** — the binary is absent in this sandbox.
+  `webkit-ipad.spec.ts` iterates `CANONICAL_SURFACES`, which includes `/cost`,
+  so CI is the only place WebKit results come from.
+- Live Supabase parity, Railway deployment and hosted acceptance: **not
+  checked**. No production data touched.
+
+### Rollback
+
+Revert the branch's commit or close the PR. Nothing outside the branch changed.
+
+### Exact next owner decision
+
+Whether to merge S2.6 once CI is green, and whether to add the freshness fact
+described above so a `basis_stale` reason can exist. S3 was not started.
+
 ## S2.5 — Cost Allocation Owner Surface (Batches 1 and 2, COMPLETE)
 
 S2.5 turns the governed acquisition cost machinery into the complete

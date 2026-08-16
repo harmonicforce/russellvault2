@@ -35,6 +35,8 @@ import {
   type CostComponentSummary,
   type CostComponentView,
   type CostQueue,
+  type UnresolvedCostQueue,
+  type UnresolvedRow,
 } from '../lib/costApi';
 
 let role: 'owner' | 'operator' | 'viewer';
@@ -45,6 +47,8 @@ let view: CostComponentView | null;
 let viewError: CostError | null;
 let preview: AllocationPreview | null;
 let previewError: CostError | null;
+let unresolved: UnresolvedCostQueue | null;
+let unresolvedError: CostError | null;
 let calls: Array<{ fn: string; args: unknown[] }>;
 let outcomes: Record<string, Array<unknown | CostError>>;
 
@@ -65,6 +69,8 @@ vi.mock('../lib/costApi', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   createCostTransport: () => ({
     queue: () => (queueError ? Promise.reject(queueError) : Promise.resolve(queue)),
+    unresolved: () =>
+      (unresolvedError ? Promise.reject(unresolvedError) : Promise.resolve(unresolved)),
     component: (...a: unknown[]) => {
       calls.push({ fn: 'component', args: a });
       return viewError ? Promise.reject(viewError) : Promise.resolve(view);
@@ -297,6 +303,8 @@ beforeEach(() => {
   viewError = null;
   preview = makePreview();
   previewError = null;
+  unresolved = makeUnresolved([]);
+  unresolvedError = null;
   calls = [];
   outcomes = {};
 });
@@ -1246,5 +1254,274 @@ describe('the derived cost basis, shown beside the evidence', () => {
     renderWorkspace();
     await waitFor(() =>
       expect(basisPanel().getAllByText(/Derived by algorithm 1\.1\.0/i).length).toBeGreaterThan(0));
+  });
+});
+
+// === S2.6: the governed unresolved-cost queue ================================
+
+const REASONS = [
+  { reason: 'amount_not_known' as const, title: 'Amount never reported', description: 'The source did not report an amount for this cost component. That is not zero.', nextAction: 'Establish the amount from the source evidence.' },
+  { reason: 'shared_cost_unallocated' as const, title: 'Shared cost not yet split', description: 'This cost applies to a whole lot or order, but no split has been proposed.', nextAction: 'Propose a split, then confirm it.' },
+  { reason: 'proposal_awaiting_review' as const, title: 'Proposed split awaiting review', description: 'A split has been proposed and is pending.', nextAction: 'Confirm the split, or withdraw it.' },
+  { reason: 'basis_unresolved' as const, title: 'Inventory cost basis not established', description: 'The governed recompute could not establish a cost for these units.', nextAction: 'Resolve the cost evidence this line depends on.' },
+  { reason: 'overage_without_cost' as const, title: 'More units received than the source priced', description: 'More units were reconciled than the acquisition expected.', nextAction: 'Record the receiving discrepancy.' },
+  { reason: 'negative_net_cost_evidence' as const, title: 'Cost evidence nets below zero', description: 'The applicable cost evidence sums to less than zero.', nextAction: 'Check the discount and price evidence.' },
+  { reason: 'basis_never_derived' as const, title: 'No cost basis has ever been derived', description: 'No governed recompute has ever run in this workspace.', nextAction: 'Confirm or reverse an allocation.' },
+];
+
+function makeUnresolvedRow(over: Partial<UnresolvedRow> = {}): UnresolvedRow {
+  return {
+    key: 'amount_not_known|RV-ACOST-TAXUNK',
+    reason: 'amount_not_known',
+    subject: 'cost_component',
+    componentPublicId: 'RV-ACOST-TAXUNK',
+    componentType: 'tax',
+    amount: { state: 'unknown', currency: 'USD' },
+    currency: 'USD',
+    orderPublicId: 'RV-ACQ-AAA111',
+    lotPublicId: null,
+    acquisitionLinePublicId: null,
+    sourceSystemPublicId: null,
+    attributionState: 'unresolved',
+    candidateCount: 0,
+    basis: null,
+    quantities: null,
+    netMinor: null,
+    ...over,
+  };
+}
+
+function makeUnresolved(
+  rows: UnresolvedRow[], over: Partial<UnresolvedCostQueue> = {},
+): UnresolvedCostQueue {
+  return {
+    coverage: 'governed_native_committed',
+    historicalLegacyImported: false,
+    complete: true,
+    role,
+    reasons: REASONS,
+    derivation: {
+      everRun: true, algorithmVersion: '1.1.0',
+      derivedAt: '2026-08-15T10:00:00.000Z', staleness: 'not_evidenced',
+    },
+    rows,
+    ...over,
+  };
+}
+
+const panel = () => within(screen.getByRole('region', { name: 'Unresolved cost' }));
+
+describe('the unresolved-cost queue', () => {
+  beforeEach(() => { unresolved = makeUnresolved([makeUnresolvedRow()]); unresolvedError = null; });
+
+  it('lives on /cost rather than behind its own navigation entry', async () => {
+    renderLanding();
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Unresolved cost' })).toBeTruthy());
+    // The component record is still on the same page. Awaited separately: the
+    // two reads are independent, so they settle independently.
+    await waitFor(() => expect(table().getByText('RV-ACOST-SHIP01')).toBeTruthy());
+  });
+
+  // THE TRUTH RULE, AT THE SCREEN.
+  it('shows an unknown amount as words, never as zero', async () => {
+    renderLanding();
+    await waitFor(() => expect(panel().getByText('Amount never reported')).toBeTruthy());
+    const entry = document.querySelector('[data-unresolved-reason="amount_not_known"]');
+    expect(entry?.textContent).toMatch(/Not reported/);
+    expect(entry?.textContent).not.toMatch(/0\.00/);
+  });
+
+  it.each([
+    ['shared_cost_unallocated', 'Shared cost not yet split'],
+    ['proposal_awaiting_review', 'Proposed split awaiting review'],
+    ['basis_unresolved', 'Inventory cost basis not established'],
+    ['overage_without_cost', 'More units received than the source priced'],
+    ['negative_net_cost_evidence', 'Cost evidence nets below zero'],
+  ])('renders the %s reason with its own distinct words', async (reason, title) => {
+    unresolved = makeUnresolved([makeUnresolvedRow({
+      key: `${reason}|x`, reason: reason as UnresolvedRow['reason'],
+    })]);
+    renderLanding();
+    await waitFor(() => expect(panel().getByText(title)).toBeTruthy());
+    // Never a catch-all: the ENTRY names the specific problem. (The header
+    // count legitimately says "entries need attention"; that is a count, not a
+    // reason, so the assertion is scoped to the entry itself.)
+    const entry = document.querySelector(`[data-unresolved-reason="${reason}"]`);
+    expect(entry?.textContent ?? '').not.toMatch(/needs attention/i);
+  });
+
+  it('states the overage quantities and the exact negative net', async () => {
+    unresolved = makeUnresolved([
+      makeUnresolvedRow({
+        key: 'overage', reason: 'overage_without_cost', componentPublicId: null,
+        componentType: null, amount: null, currency: null,
+        acquisitionLinePublicId: 'RV-AL-BBB222',
+        quantities: { expected: 1, reconciled: 3, overage: 2 },
+      }),
+      makeUnresolvedRow({
+        key: 'negative', reason: 'negative_net_cost_evidence', componentPublicId: null,
+        componentType: null, amount: null, currency: 'USD',
+        acquisitionLinePublicId: 'RV-AL-AAA111', netMinor: '-600',
+      }),
+    ]);
+    renderLanding();
+    await waitFor(() => expect(panel().getByText(/over by/i)).toBeTruthy());
+    expect(document.querySelector('[data-unresolved-reason="overage_without_cost"]')?.textContent)
+      .toMatch(/Expected\s*1.*reconciled\s*3.*over by\s*2/s);
+    expect(document.querySelector('[data-unresolved-reason="negative_net_cost_evidence"]')?.textContent)
+      .toMatch(/-6\.00 USD/);
+  });
+
+  // TRIAGE AND NAVIGATION, NOT AN EDITOR.
+  it('links into the existing component workspace and edits nothing itself', async () => {
+    renderLanding();
+    const link = await screen.findByRole('link', { name: /Open RV-ACOST-TAXUNK/i });
+    expect(link.getAttribute('href')).toBe('/cost/RV-ACOST-TAXUNK');
+    // No allocation controls are duplicated here.
+    expect(panel().queryByRole('button', { name: /Propose a split|Confirm|Withdraw|Reverse/i }))
+      .toBeNull();
+  });
+
+  it('offers no link where no single component owns the problem', async () => {
+    unresolved = makeUnresolved([makeUnresolvedRow({
+      key: 'never', reason: 'basis_never_derived', subject: 'workspace',
+      componentPublicId: null, componentType: null, amount: null, currency: null,
+      orderPublicId: null, attributionState: null, candidateCount: null,
+    })]);
+    renderLanding();
+    await waitFor(() => expect(panel().getByText('No cost basis has ever been derived')).toBeTruthy());
+    expect(panel().queryByRole('link')).toBeNull();
+  });
+
+  // --- empty / partial / failure -------------------------------------------
+
+  // "Nothing needs attention" is allowed ONLY after a complete read.
+  it('renders a truthful empty state for a complete, empty answer', async () => {
+    unresolved = makeUnresolved([]);
+    renderLanding();
+    await waitFor(() => expect(panel().getByText('No unresolved cost')).toBeTruthy());
+    expect(panel().getByText(/an answer, not a failure to look/i)).toBeTruthy();
+  });
+
+  it('is visibly PARTIAL, never empty, when a read was cut short', async () => {
+    unresolved = makeUnresolved([makeUnresolvedRow()], { complete: false });
+    renderLanding();
+    await waitFor(() => expect(panel().getByText(/Coverage is partial/i)).toBeTruthy());
+    expect(panel().queryByText('No unresolved cost')).toBeNull();
+    expect(panel().getByText(/NOT a statement that there are none/i)).toBeTruthy();
+  });
+
+  // A FAILED READ IS NEVER AN EMPTY QUEUE.
+  it('renders a failed read as unavailable, never as an empty queue', async () => {
+    unresolvedError = new CostError('dependency_failed', 502);
+    renderLanding();
+    await waitFor(() =>
+      expect(document.querySelector('[data-unresolved-cost]')?.getAttribute('data-unresolved-cost'))
+        .toBe('unavailable'));
+    expect(panel().queryByText('No unresolved cost')).toBeNull();
+  });
+
+  // The two reads are independent: one failing must not blank the other.
+  it('keeps the component record readable when the triage read fails', async () => {
+    unresolvedError = new CostError('dependency_failed', 502);
+    renderLanding();
+    await waitFor(() => expect(table().getByText('RV-ACOST-SHIP01')).toBeTruthy());
+  });
+
+  it('keeps the queue readable when the component read fails', async () => {
+    queueError = new CostError('dependency_failed', 502);
+    renderLanding();
+    await waitFor(() => expect(panel().getByText('Amount never reported')).toBeTruthy());
+  });
+
+  // --- filtering ------------------------------------------------------------
+
+  it('filters by reason without hiding that other entries exist', async () => {
+    unresolved = makeUnresolved([
+      makeUnresolvedRow(),
+      makeUnresolvedRow({ key: 'shared', reason: 'shared_cost_unallocated', componentPublicId: 'RV-ACOST-SHIP01' }),
+    ]);
+    const total = () => document.querySelector('[data-unresolved-total]')?.textContent ?? '';
+    renderLanding();
+    // `<Count>` renders the number in its own element, so the sentence is split
+    // across nodes and must be read from the element rather than matched whole.
+    await waitFor(() => expect(total()).toMatch(/2\s*entries need attention/));
+
+    fireEvent.change(panel().getByLabelText('Reason'), { target: { value: 'shared_cost_unallocated' } });
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-unresolved-reason]')).toHaveLength(1));
+    // The unfiltered total is STILL stated, so filtering cannot conceal that
+    // other entries exist.
+    expect(total()).toMatch(/2\s*entries need attention/);
+    expect(total()).toMatch(/showing\s*1/);
+  });
+
+  it('says a filter matched nothing, without borrowing the empty state', async () => {
+    unresolved = makeUnresolved([makeUnresolvedRow({ currency: 'USD' })]);
+    renderLanding();
+    await waitFor(() => expect(panel().getByLabelText('Currency')).toBeTruthy());
+    fireEvent.change(panel().getByLabelText('Reason'), { target: { value: 'basis_unresolved' } });
+    await waitFor(() => expect(panel().getByText('No entries match this filter')).toBeTruthy());
+    expect(panel().queryByText('No unresolved cost')).toBeNull();
+  });
+
+  // CURRENCIES STAY SEPARATE.
+  it('keeps currencies separate and never combines them', async () => {
+    unresolved = makeUnresolved([
+      makeUnresolvedRow({ key: 'usd', currency: 'USD' }),
+      makeUnresolvedRow({ key: 'eur', currency: 'EUR', componentPublicId: 'RV-ACOST-EUR001' }),
+    ]);
+    renderLanding();
+    await waitFor(() => expect(panel().getByText(/never added together/i)).toBeTruthy());
+    fireEvent.change(panel().getByLabelText('Currency'), { target: { value: 'EUR' } });
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-unresolved-reason]')).toHaveLength(1));
+  });
+
+  // --- derivation -----------------------------------------------------------
+
+  it('states what the last derivation was and refuses to claim it is current', async () => {
+    renderLanding();
+    await waitFor(() =>
+      expect(document.querySelector('[data-derivation-note]')?.textContent)
+        .toMatch(/last derived by algorithm 1\.1\.0/i));
+    expect(document.querySelector('[data-derivation-note]')?.textContent)
+      .toMatch(/not something the governed record exposes/i);
+    // It must never assert freshness either way.
+    expect(document.querySelector('[data-derivation-note]')?.textContent)
+      .not.toMatch(/up to date|out of date|stale/i);
+  });
+
+  it('says plainly when no derivation has ever run', async () => {
+    unresolved = makeUnresolved([], {
+      derivation: { everRun: false, algorithmVersion: null, derivedAt: null, staleness: 'not_evidenced' },
+    });
+    renderLanding();
+    await waitFor(() =>
+      expect(document.querySelector('[data-derivation-note]')?.textContent)
+        .toMatch(/has ever run/i));
+  });
+
+  // --- roles and safety -----------------------------------------------------
+
+  it('lets a viewer read the queue and offers them no mutation', async () => {
+    role = 'viewer';
+    unresolved = makeUnresolved([makeUnresolvedRow()]);
+    renderLanding();
+    await waitFor(() => expect(panel().getByText('Amount never reported')).toBeTruthy());
+    expect(panel().queryByRole('button')).toBeNull();
+    // A viewer still gets the navigation link — reading is not withheld.
+    expect(screen.getByRole('link', { name: /Open RV-ACOST-TAXUNK/i })).toBeTruthy();
+  });
+
+  it('renders no internal identifier', async () => {
+    unresolved = makeUnresolved([
+      makeUnresolvedRow(),
+      makeUnresolvedRow({ key: 'b', reason: 'basis_unresolved', componentPublicId: null,
+        acquisitionLinePublicId: 'RV-AL-AAA111', basis: { unresolvedUnitCount: 2, methods: ['unresolved'] } }),
+    ]);
+    renderLanding();
+    await waitFor(() => expect(panel().getByText('Amount never reported')).toBeTruthy());
+    expect(document.body.textContent ?? '').not.toMatch(UUID);
   });
 });

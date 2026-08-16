@@ -58,6 +58,7 @@ import {
   buildBasisImpact,
   buildComponentDetail,
   buildCostQueue,
+  buildUnresolvedQueue,
   classifyCostError,
   computeSplit,
   conserves,
@@ -65,6 +66,7 @@ import {
   knownDirectCostByLine,
   parseMinor,
   readRecomputeResult,
+  REASON_DESCRIPTORS,
   scopeLineIdsOf,
   splittableTotal,
   amountOf,
@@ -270,6 +272,60 @@ async function readUnresolvedBasis(
       .limit(MAX_ASSEMBLY_ROWS));
 }
 
+/**
+ * Every published basis row in the workspace, for the unresolved queue.
+ *
+ * Explicit columns for the same reason as the component-scoped read: the
+ * governed view is `select b.*`, so `*` would carry seven internal identifiers
+ * into a payload. `acquisition_line_item_id` is a join key the assembly never
+ * copies out.
+ */
+async function readAllBasisRows(client: Supa, workspaceId: string) {
+  return readRows<InventoryCostBasisRow>(() =>
+    client
+      .from('inventory_cost_basis_current')
+      .select(
+        'public_id,subject_kind,inventory_lot_public_id,inventory_item_public_id,'
+        + 'acquisition_line_item_id,layer_seq,source_unit_ordinal,total_cost_minor,currency,'
+        + 'basis_method,state,algorithm_version,derived_at')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+/** Every line the governed view reports as not fully resolved. */
+async function readAllUnresolvedBasis(client: Supa, workspaceId: string) {
+  return readRows<UnresolvedBasisRow>(() =>
+    client
+      .from('unresolved_inventory_cost_basis')
+      .select(
+        'acquisition_line_item_id,acquisition_line_public_id,expected_quantity,'
+        + 'reconciled_quantity,pending_expected_quantity,overage_quantity,'
+        + 'has_unresolved_cost_evidence')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+/**
+ * Has a governed recompute ever run in this workspace?
+ *
+ * `inventory_cost_basis_events` records one row with a null
+ * `inventory_cost_basis_id` per RUN, so a single such row settles the question.
+ * Only one is read, because the question is existence and nothing else — this
+ * surface deliberately does NOT try to decide whether the last run is still
+ * current. See `DERIVATION_STALENESS_IS_NOT_EVIDENCED` in the contract for the
+ * exact database fact that would be needed to answer that, and why guessing at
+ * it was refused.
+ */
+async function readDerivationRuns(client: Supa, workspaceId: string) {
+  return readRows<{ recompute_id: string }>(() =>
+    client
+      .from('inventory_cost_basis_events')
+      .select('recompute_id')
+      .eq('workspace_id', workspaceId)
+      .is('inventory_cost_basis_id', null)
+      .limit(1));
+}
+
 async function readOrders(client: Supa, workspaceId: string) {
   return readRows<AcquisitionOrderRow>(() =>
     client.from('acquisition_orders')
@@ -329,6 +385,79 @@ router.get('/queue', requireMember, asyncRoute(async (req, res) => {
       method, description: ALLOCATION_METHOD_DESCRIPTION[method],
     })),
     rows: buildCostQueue({ components, allocations, lots, orders, lines }),
+  });
+}));
+
+/**
+ * The governed unresolved-cost queue — S2.6.
+ *
+ * ONE READ ENDPOINT, and the minimum one. It answers "what cost truth still
+ * needs attention, why, and where do I go to resolve it" entirely from surfaces
+ * the caller may already read under their own JWT. It adds no SQL, invokes no
+ * function, and mutates nothing.
+ *
+ * IT IS TRIAGE AND NAVIGATION, NOT AN EDITOR. Every actionable row carries the
+ * governed component public identity so the browser can link into the existing
+ * S2.5 component workspace; allocation editing is not duplicated here.
+ *
+ * READ AS A MEMBER, act as S2.5 already allows. A viewer can see the queue —
+ * knowing what is unresolved is not a privileged act — and gains no mutation
+ * authority from it, because this endpoint offers none and the S2.5 routes each
+ * enforce their own role gate.
+ */
+router.get('/unresolved', requireMember, asyncRoute(async (req, res) => {
+  const { workspaceId, client, role } = caller(req);
+
+  const [components, lots, orders, lines, unresolvedRows] = await Promise.all([
+    readComponents(client, workspaceId),
+    readLots(client, workspaceId),
+    readOrders(client, workspaceId),
+    readLines(client, workspaceId),
+    readAllUnresolvedBasis(client, workspaceId),
+  ]);
+
+  const [allocations, lotLines, basisRows, derivationRuns] = await Promise.all([
+    readAllocations(client, workspaceId, components.map((component) => component.id)),
+    readLotLines(client, workspaceId),
+    readAllBasisRows(client, workspaceId),
+    readDerivationRuns(client, workspaceId),
+  ]);
+
+  /*
+   * Truthful completeness, and it is load-bearing here more than anywhere.
+   *
+   * A cost queue that silently drops rows because a read hit its ceiling reads
+   * exactly like a workspace with less to do. "Nothing needs attention" is a
+   * claim this surface may only make after a COMPLETE authoritative read, so
+   * every read that feeds a reason is checked, and the UI renders `partial`
+   * rather than `empty` when any of them was cut short.
+   */
+  const complete =
+    components.length < MAX_ASSEMBLY_ROWS
+    && allocations.length < MAX_ASSEMBLY_ROWS
+    && lots.length < MAX_ASSEMBLY_ROWS
+    && lotLines.length < MAX_ASSEMBLY_ROWS
+    && orders.length < MAX_ASSEMBLY_ROWS
+    && lines.length < MAX_ASSEMBLY_ROWS
+    && basisRows.length < MAX_ASSEMBLY_ROWS
+    && unresolvedRows.length < MAX_ASSEMBLY_ROWS;
+
+  const queue = buildUnresolvedQueue({
+    components, allocations, lots, lotLines, orders, lines, basisRows, unresolvedRows,
+    // A single run event is enough to establish that a derivation has happened.
+    derivationEverRun: derivationRuns.length > 0,
+  });
+
+  res.json({
+    coverage: 'governed_native_committed',
+    historicalLegacyImported: false,
+    complete,
+    role,
+    // The reason vocabulary travels with the data, so the screen states each
+    // problem in the same words the server used to detect it.
+    reasons: REASON_DESCRIPTORS,
+    derivation: queue.derivation,
+    rows: queue.rows,
   });
 }));
 

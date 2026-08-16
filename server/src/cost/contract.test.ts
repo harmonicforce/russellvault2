@@ -23,6 +23,7 @@ import {
   amountOf,
   buildComponentDetail,
   buildCostQueue,
+  buildUnresolvedQueue,
   classifyCostError,
   computeSplit,
   conserves,
@@ -32,6 +33,9 @@ import {
   largestRemainder,
   parseMinor,
   proposalAllowed,
+  REASON_DESCRIPTORS,
+  isUnresolvedReason,
+  UNRESOLVED_REASONS,
   scopeLineIdsOf,
   splittableTotal,
   workflowStateOf,
@@ -41,7 +45,9 @@ import {
   type AcquisitionOrderRow,
   type CostAllocationRow,
   type CostComponentRow,
+  type InventoryCostBasisRow,
   type ScopeLine,
+  type UnresolvedBasisRow,
 } from './contract.js';
 
 /**
@@ -591,5 +597,271 @@ describe('governed refusals keep their meaning', () => {
         expect(a.phrase.includes(b.phrase), `${b.phrase} shadows ${a.phrase}`).toBe(false);
       }
     }
+  });
+});
+
+// === S2.6: the unresolved-cost reason model ==================================
+//
+// Tested as pure logic, because the interesting part is the RULE — which facts
+// count as a problem and, just as much, which do not.
+
+const S26_ORDER = ORDER_ID;
+const S26_LINE_A = LINE_A;
+const S26_LINE_B = LINE_B;
+
+function s26Lots(): AcquisitionLotRow[] {
+  return [
+    { id: LOT_ID, public_id: 'RV-ALOT-AAA111', order_id: S26_ORDER },
+    { id: OTHER_LOT_ID, public_id: 'RV-ALOT-BBB222', order_id: S26_ORDER },
+  ];
+}
+
+function s26Lines(): AcquisitionLineRow[] {
+  return LINES;
+}
+
+function s26Orders(): AcquisitionOrderRow[] {
+  return ORDERS;
+}
+
+function basisRow(over: Partial<InventoryCostBasisRow> = {}): InventoryCostBasisRow {
+  return {
+    public_id: 'RV-ICB-AAAAAAAAAAAA',
+    subject_kind: 'lot',
+    inventory_lot_public_id: 'RV-ILOT-000001',
+    inventory_item_public_id: null,
+    acquisition_line_item_id: S26_LINE_A,
+    layer_seq: 1,
+    source_unit_ordinal: 1,
+    total_cost_minor: 3300,
+    currency: 'USD',
+    basis_method: 'fifo',
+    state: 'current',
+    algorithm_version: '1.1.0',
+    derived_at: '2026-08-15T10:00:00.000Z',
+    ...over,
+  };
+}
+
+function unresolvedRow(over: Partial<UnresolvedBasisRow> = {}): UnresolvedBasisRow {
+  return {
+    acquisition_line_item_id: S26_LINE_A,
+    acquisition_line_public_id: 'RV-AL-AAA111',
+    expected_quantity: 3,
+    reconciled_quantity: 3,
+    pending_expected_quantity: 0,
+    overage_quantity: 0,
+    has_unresolved_cost_evidence: false,
+    ...over,
+  };
+}
+
+function queue(over: Partial<Parameters<typeof buildUnresolvedQueue>[0]> = {}) {
+  return buildUnresolvedQueue({
+    components: [],
+    allocations: [],
+    lots: s26Lots(),
+    lotLines: LOT_LINES,
+    orders: s26Orders(),
+    lines: s26Lines(),
+    basisRows: [],
+    unresolvedRows: [],
+    derivationEverRun: true,
+    ...over,
+  });
+}
+
+const reasons = (result: ReturnType<typeof buildUnresolvedQueue>) =>
+  result.rows.map((row) => row.reason);
+
+describe('the unresolved queue names distinct, evidenced reasons', () => {
+  it('reports an unknown amount with no figure at all', () => {
+    const result = queue({
+      components: [component({ amount_state: 'unknown', amount_minor: null })],
+    });
+    expect(reasons(result)).toEqual(['amount_not_known']);
+    expect(result.rows[0].amount).toEqual({ state: 'unknown', currency: 'USD' });
+    expect(JSON.stringify(result.rows[0].amount)).not.toMatch(/minor/);
+  });
+
+  it('reports a shared cost with a known amount and no proposal', () => {
+    const result = queue({ components: [component()] });
+    expect(reasons(result)).toEqual(['shared_cost_unallocated']);
+    expect(result.rows[0].orderPublicId).toBe('RV-ACQ-AAA111');
+  });
+
+  it('reports a pending proposal instead of "unallocated"', () => {
+    const result = queue({
+      components: [component()],
+      allocations: [ALLOCATIONS[0], ALLOCATIONS[1]],
+    });
+    expect(reasons(result)).toEqual(['proposal_awaiting_review']);
+    expect(result.rows[0].candidateCount).toBe(2);
+  });
+
+  it('reports an unresolved basis per line and currency, never merged', () => {
+    const result = queue({
+      basisRows: [
+        basisRow({ state: 'unresolved', basis_method: 'unresolved', total_cost_minor: null, currency: 'USD' }),
+        basisRow({ state: 'unresolved', basis_method: 'unresolved', total_cost_minor: null, currency: 'EUR', source_unit_ordinal: 2 }),
+        basisRow({ acquisition_line_item_id: S26_LINE_B, state: 'unresolved', basis_method: 'unresolved', total_cost_minor: null, currency: 'USD' }),
+      ],
+    });
+    expect(reasons(result)).toEqual(['basis_unresolved', 'basis_unresolved', 'basis_unresolved']);
+    const currencies = result.rows.map((row) => `${row.acquisitionLinePublicId}/${row.currency}`);
+    expect(new Set(currencies).size).toBe(3);
+  });
+
+  it('reports an overage with the governed quantities', () => {
+    const result = queue({
+      unresolvedRows: [unresolvedRow({ expected_quantity: 3, reconciled_quantity: 5, overage_quantity: 2 })],
+    });
+    expect(reasons(result)).toEqual(['overage_without_cost']);
+    expect(result.rows[0].quantities).toEqual({ expected: 3, reconciled: 5, overage: 2 });
+  });
+
+  it('reports a net below zero with the exact signed figure', () => {
+    const result = queue({
+      components: [
+        component({ id: 'p', public_id: 'RV-ACOST-PRICE', component_type: 'item_price', attribution_state: 'direct', line_item_id: S26_LINE_A, order_id: null, amount_minor: 900 }),
+        component({ id: 'd', public_id: 'RV-ACOST-DISC', component_type: 'discount', attribution_state: 'direct', line_item_id: S26_LINE_A, order_id: null, amount_minor: 1500 }),
+      ],
+    });
+    expect(reasons(result)).toContain('negative_net_cost_evidence');
+    const row = result.rows.find((entry) => entry.reason === 'negative_net_cost_evidence')!;
+    expect(row.netMinor).toBe('-600');
+    expect(row.currency).toBe('USD');
+  });
+
+  it('counts a confirmed allocation toward the net, and a candidate not at all', () => {
+    const shared = component({ id: 'shared', public_id: 'RV-ACOST-SHARED', attribution_state: 'allocated', component_type: 'discount', amount_minor: 2000 });
+    const base = component({ id: 'p', public_id: 'RV-ACOST-PRICE', component_type: 'item_price', attribution_state: 'direct', line_item_id: S26_LINE_A, order_id: null, amount_minor: 900 });
+
+    // As a CANDIDATE the discount does not count, so the net stays positive.
+    expect(reasons(queue({
+      components: [base, shared],
+      allocations: [{ ...ALLOCATIONS[0], cost_component_id: 'shared', line_item_id: S26_LINE_A, amount_minor: 2000, state: 'candidate' }],
+    }))).not.toContain('negative_net_cost_evidence');
+
+    // CONFIRMED, it does.
+    expect(reasons(queue({
+      components: [base, shared],
+      allocations: [{ ...ALLOCATIONS[0], cost_component_id: 'shared', line_item_id: S26_LINE_A, amount_minor: 2000, state: 'confirmed' }],
+    }))).toContain('negative_net_cost_evidence');
+  });
+
+  it('reports that no derivation has ever run', () => {
+    expect(reasons(queue({ derivationEverRun: false }))).toEqual(['basis_never_derived']);
+    expect(queue({ derivationEverRun: false }).rows[0].subject).toBe('workspace');
+  });
+
+  it('never claims the derivation is stale, because nothing evidences it', () => {
+    const result = queue({ basisRows: [basisRow()] });
+    expect(result.derivation.staleness).toBe('not_evidenced');
+    expect(result.derivation.algorithmVersion).toBe('1.1.0');
+    expect(result.derivation.derivedAt).toBe('2026-08-15T10:00:00.000Z');
+    expect(JSON.stringify(result.derivation)).not.toMatch(/stale":\s*true|isCurrent/);
+  });
+});
+
+describe('the unresolved queue excludes what is not a cost problem', () => {
+  it.each([
+    ['a documented-free amount', component({ amount_state: 'documented_free', amount_minor: 0 })],
+    ['a reversed component', component({ reversed_at: '2026-08-11T00:00:00.000Z' })],
+    ['a direct, known, attributed cost', component({ attribution_state: 'direct', line_item_id: LINE_A, order_id: null })],
+    ['an allocated component with no pending proposal', component({ attribution_state: 'allocated' })],
+  ])('excludes %s', (_label, row) => {
+    expect(queue({ components: [row as CostComponentRow] }).rows).toEqual([]);
+  });
+
+  it('excludes a line whose only outstanding fact is units not yet received', () => {
+    const result = queue({
+      unresolvedRows: [unresolvedRow({
+        expected_quantity: 5, reconciled_quantity: 2, pending_expected_quantity: 3, overage_quantity: 0,
+      })],
+    });
+    expect(result.rows).toEqual([]);
+  });
+
+  // Different currencies are a presentation fact, not an unresolved one.
+  it('excludes a line merely because its basis spans two currencies', () => {
+    const result = queue({
+      basisRows: [
+        basisRow({ currency: 'USD' }),
+        basisRow({ currency: 'EUR', source_unit_ordinal: 2 }),
+      ],
+    });
+    expect(result.rows).toEqual([]);
+  });
+
+  it('excludes a resolved basis row', () => {
+    expect(queue({ basisRows: [basisRow({ state: 'current', basis_method: 'fifo' })] }).rows).toEqual([]);
+  });
+
+  // A workspace with nothing outstanding produces nothing. That is the answer
+  // the empty state is allowed to render, and only after a complete read.
+  it('produces no rows at all for a fully resolved workspace', () => {
+    expect(queue().rows).toEqual([]);
+  });
+});
+
+describe('withdrawal is history, and the queue shows current truth', () => {
+  it('replaces "awaiting review" with "still needs allocating" after a withdrawal', () => {
+    const pending = queue({
+      components: [component()],
+      allocations: [{ ...ALLOCATIONS[0], cost_component_id: COMPONENT_ID }],
+    });
+    expect(reasons(pending)).toEqual(['proposal_awaiting_review']);
+
+    const withdrawn = queue({
+      components: [component()],
+      allocations: [{ ...ALLOCATIONS[0], cost_component_id: COMPONENT_ID, state: 'withdrawn' }],
+    });
+    // The problem did NOT disappear with the withdrawal.
+    expect(reasons(withdrawn)).toEqual(['shared_cost_unallocated']);
+  });
+
+  it('never emits a withdrawn or reversed row as its own queue entry', () => {
+    const result = queue({
+      components: [component({ attribution_state: 'allocated' })],
+      allocations: [
+        { ...ALLOCATIONS[0], cost_component_id: COMPONENT_ID, state: 'withdrawn' },
+        { ...ALLOCATIONS[1], cost_component_id: COMPONENT_ID, state: 'reversed' },
+      ],
+    });
+    expect(result.rows).toEqual([]);
+  });
+});
+
+describe('the unresolved queue is safe to render', () => {
+  it('emits no internal identifier', () => {
+    const result = queue({
+      components: [component({ amount_state: 'unknown', amount_minor: null }), component({ id: 'x', public_id: 'RV-ACOST-BBB' })],
+      allocations: [ALLOCATIONS[0]],
+      basisRows: [basisRow({ state: 'unresolved', basis_method: 'unresolved', total_cost_minor: null })],
+      unresolvedRows: [unresolvedRow({ overage_quantity: 2, reconciled_quantity: 5 })],
+    });
+    expect(containsInternalId(result)).toBe(false);
+  });
+
+  it('gives every row a stable key built from public identities', () => {
+    const result = queue({
+      components: [component({ amount_state: 'unknown', amount_minor: null })],
+      basisRows: [basisRow({ state: 'unresolved', basis_method: 'unresolved', total_cost_minor: null })],
+    });
+    const keys = result.rows.map((row) => row.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const key of keys) expect(key).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/i);
+  });
+
+  it('describes every reason it can emit', () => {
+    const described = new Set(REASON_DESCRIPTORS.map((entry) => entry.reason));
+    for (const reason of UNRESOLVED_REASONS) expect(described.has(reason)).toBe(true);
+    expect(REASON_DESCRIPTORS).toHaveLength(UNRESOLVED_REASONS.length);
+  });
+
+  it('offers no catch-all bucket', () => {
+    expect(JSON.stringify(REASON_DESCRIPTORS)).not.toMatch(/needs attention|other|misc/i);
+    expect(isUnresolvedReason('needs_attention')).toBe(false);
   });
 });

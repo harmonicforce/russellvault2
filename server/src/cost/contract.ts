@@ -1168,3 +1168,566 @@ export function readRecomputeResult(data: Record<string, unknown>): BasisRecompu
     ? { status: 'refreshed', algorithmVersion, contentHash, basisRows }
     : { status: 'unchanged', algorithmVersion, contentHash, basisRows };
 }
+
+// --- S2.6: the governed unresolved-cost queue ---------------------------------
+//
+// WHAT THIS SECTION IS
+//
+// A triage model. It answers "what cost truth still needs attention, why, and
+// where do I go to resolve it" — and it answers it ONLY from facts the governed
+// contract already publishes. It computes no cost, writes nothing, and adds no
+// SQL.
+//
+// EVERY REASON IS A DISTINCT, EVIDENCED FACT.
+//
+// There is deliberately no "needs attention" bucket. Six different problems
+// need six different actions, and collapsing them would turn a work list into a
+// pile. Each reason below names the exact governed rows it is derived from, and
+// a reason that cannot be evidenced is NOT invented — see
+// `DERIVATION_STALENESS_IS_NOT_EVIDENCED` at the end of this section for the one
+// state this batch found it could not honestly derive.
+//
+// THE EXCLUSIONS ARE AS LOAD-BEARING AS THE INCLUSIONS.
+//
+// A queue that cries wolf is worse than no queue, because an owner learns to
+// scroll past it. None of the following is a cost problem by itself, and each
+// is excluded here explicitly rather than by accident:
+//
+//   * `documented_free` — an evidenced zero is a COMPLETE cost, not a missing
+//     one;
+//   * a confirmed, attributable, known cost — the workflow finished;
+//   * costs in different currencies — they cannot be combined, but that is a
+//     presentation fact, not an unresolved one;
+//   * expected units not yet received — the goods have not arrived; nothing
+//     about the cost is wrong;
+//   * reversed and withdrawn rows — history, and history is not a task;
+//   * no inventory where none should exist yet.
+
+/**
+ * Why one row needs attention.
+ *
+ * Ordered by how early in the workflow the problem sits, because that is the
+ * order an owner can actually act in: an unknown amount blocks allocation,
+ * which blocks confirmation, which blocks derivation.
+ */
+export type UnresolvedReason =
+  /** A cost component whose amount the source never reported. */
+  | 'amount_not_known'
+  /** A shared (lot/order) cost with a known amount and no proposal yet. */
+  | 'shared_cost_unallocated'
+  /** A proposal is pending. Somebody has to confirm or withdraw it. */
+  | 'proposal_awaiting_review'
+  /** The governed recompute could not establish a basis for these units. */
+  | 'basis_unresolved'
+  /** More units arrived than the acquisition expected, with no cost for them. */
+  | 'overage_without_cost'
+  /** The applicable cost evidence for a line and currency sums below zero. */
+  | 'negative_net_cost_evidence'
+  /** No governed recompute has ever run in this workspace. */
+  | 'basis_never_derived';
+
+export const UNRESOLVED_REASONS: readonly UnresolvedReason[] = [
+  'amount_not_known',
+  'shared_cost_unallocated',
+  'proposal_awaiting_review',
+  'basis_unresolved',
+  'overage_without_cost',
+  'negative_net_cost_evidence',
+  'basis_never_derived',
+];
+
+export function isUnresolvedReason(value: unknown): value is UnresolvedReason {
+  return typeof value === 'string' && (UNRESOLVED_REASONS as readonly string[]).includes(value);
+}
+
+/**
+ * What each reason asserts, and what the owner does about it.
+ *
+ * These sentences travel to the browser so the screen states the problem in the
+ * same words the server used to detect it, rather than in a caption written
+ * separately and free to drift away from the rule behind it.
+ */
+export interface ReasonDescriptor {
+  readonly reason: UnresolvedReason;
+  readonly title: string;
+  readonly description: string;
+  readonly nextAction: string;
+}
+
+export const REASON_DESCRIPTORS: readonly ReasonDescriptor[] = [
+  {
+    reason: 'amount_not_known',
+    title: 'Amount never reported',
+    description:
+      'The source did not report an amount for this cost component. That is not zero, and nothing '
+      + 'downstream may treat it as zero — it blocks both allocation and any cost basis derived from '
+      + 'this line.',
+    nextAction: 'Establish the amount from the source evidence.',
+  },
+  {
+    reason: 'shared_cost_unallocated',
+    title: 'Shared cost not yet split',
+    description:
+      'This cost has a known amount and applies to a whole lot or order, but no split has been '
+      + 'proposed. Until one is confirmed it is a cost basis for no line at all.',
+    nextAction: 'Propose a split, then confirm it.',
+  },
+  {
+    reason: 'proposal_awaiting_review',
+    title: 'Proposed split awaiting review',
+    description:
+      'A split has been proposed and is pending. Proposed amounts are durable but they are NOT a cost '
+      + 'basis; only confirmation makes them one.',
+    nextAction: 'Confirm the split, or withdraw it and propose a corrected one.',
+  },
+  {
+    reason: 'basis_unresolved',
+    title: 'Inventory cost basis not established',
+    description:
+      'The governed recompute ran and concluded it could not establish a cost for these inventory '
+      + 'units. There is no figure for them, and one must not be inferred.',
+    nextAction: 'Resolve the cost evidence this line depends on, then let the basis refresh.',
+  },
+  {
+    reason: 'overage_without_cost',
+    title: 'More units received than the source priced',
+    description:
+      'More units were received and reconciled than the acquisition expected. The source reported no '
+      + 'cost for the extra units, so they have no basis and cannot be given one by division.',
+    nextAction: 'Record the receiving discrepancy, or establish cost evidence for the extra units.',
+  },
+  {
+    reason: 'negative_net_cost_evidence',
+    title: 'Cost evidence nets below zero',
+    description:
+      'The applicable cost evidence for this acquisition line and currency — direct costs plus '
+      + 'confirmed allocations, with discounts subtracted — sums to less than zero. A negative cost '
+      + 'basis is not a cost, and the governed recompute refuses to publish one.',
+    nextAction: 'Check the discount and price evidence on this line.',
+  },
+  {
+    reason: 'basis_never_derived',
+    title: 'No cost basis has ever been derived',
+    description:
+      'No governed recompute has ever run in this workspace, so no inventory cost basis exists yet. '
+      + 'That is different from a basis of zero and different from a basis that is unresolved.',
+    nextAction: 'Confirm or reverse an allocation, which runs the governed recompute.',
+  },
+];
+
+/** What the row is about, so a reader is never guessing at its grain. */
+export type UnresolvedSubject = 'cost_component' | 'acquisition_line' | 'workspace';
+
+export interface UnresolvedQuantities {
+  readonly expected: number;
+  readonly reconciled: number;
+  readonly overage: number;
+}
+
+export interface UnresolvedRow {
+  /** Stable and built from governed public identities only. */
+  readonly key: string;
+  readonly reason: UnresolvedReason;
+  readonly subject: UnresolvedSubject;
+  readonly componentPublicId: string | null;
+  readonly componentType: CostComponentType | null;
+  /**
+   * The governed amount, where the row is about one.
+   *
+   * Null where the row is not about a component's own amount at all — which is
+   * a different thing from an amount that is unknown, and both are different
+   * from zero.
+   */
+  readonly amount: Amount | null;
+  /**
+   * The currency this row is scoped to, where it has one.
+   *
+   * Rows are never merged across currencies and no total spans them.
+   */
+  readonly currency: string | null;
+  readonly orderPublicId: string | null;
+  readonly lotPublicId: string | null;
+  readonly acquisitionLinePublicId: string | null;
+  readonly sourceSystemPublicId: string | null;
+  readonly attributionState: CostAttributionState | null;
+  readonly candidateCount: number | null;
+  readonly basis: {
+    readonly unresolvedUnitCount: number;
+    readonly methods: readonly BasisMethod[];
+  } | null;
+  readonly quantities: UnresolvedQuantities | null;
+  /** The exact signed net, where the reason is a negative net. */
+  readonly netMinor: string | null;
+}
+
+export interface UnresolvedQueue {
+  /**
+   * What is known about the governed derivation itself.
+   *
+   * `staleness: 'not_evidenced'` is a deliberate, permanent admission rather
+   * than a placeholder — see `DERIVATION_STALENESS_IS_NOT_EVIDENCED`.
+   */
+  readonly derivation: {
+    readonly everRun: boolean;
+    readonly algorithmVersion: string | null;
+    readonly derivedAt: string | null;
+    readonly staleness: 'not_evidenced';
+  };
+  readonly rows: readonly UnresolvedRow[];
+}
+
+/**
+ * THE ONE STATE THIS BATCH COULD NOT HONESTLY DERIVE.
+ *
+ * The work order asks for "basis not yet derived or not refreshed, **if that
+ * state is actually evidenced**". Those are two different questions and they
+ * have two different answers.
+ *
+ * NOT YET DERIVED is evidenced. `inventory_cost_basis_events` records one row
+ * per recompute run; no run event means no recompute has ever happened. That is
+ * the `basis_never_derived` reason above.
+ *
+ * NOT REFRESHED — a derivation that ran but no longer reflects current inputs —
+ * is NOT evidenced by anything this surface can read. The recompute stores
+ * `input_content_hash`, a sha256 over a `jsonb_agg(...)::text` of the governed
+ * inputs computed INSIDE the function. Deciding staleness means computing that
+ * same hash over current inputs and comparing. Reproducing it in TypeScript
+ * would mean reproducing PostgreSQL's exact jsonb text serialisation, ordering
+ * and numeric formatting; any divergence produces a confident, wrong "stale"
+ * or "current" verdict, which is precisely the class of fabricated fact this
+ * codebase exists to refuse.
+ *
+ * The algorithm version has the same problem: the current version is a constant
+ * inside the function body (`v_version constant text := '1.1.0'`), readable
+ * only by calling the function, and a read endpoint must not invoke a mutation
+ * to answer a question.
+ *
+ * So this surface reports what the last derivation WAS — its version and
+ * timestamp — and explicitly does not claim whether it is current.
+ *
+ * THE MISSING DATABASE FACT, stated precisely so it can be added deliberately:
+ * a governed, read-only way to compare the CURRENT input content hash against
+ * the stored one — for example a `public.inventory_cost_basis_freshness` view
+ * exposing `(workspace_id, algorithm_version, stored_hash, current_hash,
+ * is_current)`, or a `stable` function returning the current hash. Either would
+ * make staleness a first-class evidenced fact, and this contract would then
+ * carry a `basis_stale` reason.
+ */
+export const DERIVATION_STALENESS_IS_NOT_EVIDENCED = 'not_evidenced' as const;
+
+/**
+ * The signed contribution of one cost component, in the recompute's own terms.
+ *
+ * A discount reduces cost. The governed recompute encodes that as
+ * `case when component_type='discount' then -1 else 1 end`, and this mirrors
+ * that single rule — nothing else about the algorithm is reproduced here.
+ */
+function signedAmount(component: CostComponentRow, amountMinor: number): bigint {
+  return component.component_type === 'discount' ? -BigInt(amountMinor) : BigInt(amountMinor);
+}
+
+/**
+ * The applicable cost evidence for each (acquisition line, currency), summed.
+ *
+ * "Applicable" means exactly what `recompute_inventory_cost_basis` treats as
+ * applicable: direct components whose amount is `known` or `documented_free`
+ * and which are not reversed, plus CONFIRMED allocations of components that are
+ * `allocated`, known-or-free and not reversed. Candidates are excluded, because
+ * a candidate is not a cost basis.
+ *
+ * This exists for one purpose: detecting a net below zero. It is NOT a cost
+ * basis and is never presented as one — the per-unit basis is the database's,
+ * and this is a line-level property of the EVIDENCE.
+ */
+export function netCostEvidenceByLine(input: {
+  readonly components: readonly CostComponentRow[];
+  readonly allocations: readonly CostAllocationRow[];
+}): ReadonlyMap<string, bigint> {
+  const byId = new Map(input.components.map((component) => [component.id, component]));
+  const totals = new Map<string, bigint>();
+
+  const add = (lineItemId: string, currency: string, value: bigint) => {
+    const key = `${lineItemId}|${currency}`;
+    totals.set(key, (totals.get(key) ?? 0n) + value);
+  };
+
+  for (const component of input.components) {
+    if (component.reversed_at !== null) continue;
+    if (component.amount_state !== 'known' && component.amount_state !== 'documented_free') continue;
+    if (component.amount_minor === null || !Number.isSafeInteger(component.amount_minor)) continue;
+    if (component.attribution_state !== 'direct' || component.line_item_id === null) continue;
+    add(component.line_item_id, component.currency, signedAmount(component, component.amount_minor));
+  }
+
+  for (const allocation of input.allocations) {
+    if (allocation.state !== 'confirmed' || allocation.reversed_at !== null) continue;
+    if (!Number.isSafeInteger(allocation.amount_minor)) continue;
+    const component = byId.get(allocation.cost_component_id);
+    if (!component || component.reversed_at !== null) continue;
+    if (component.attribution_state !== 'allocated') continue;
+    if (component.amount_state !== 'known' && component.amount_state !== 'documented_free') continue;
+    add(allocation.line_item_id, component.currency, signedAmount(component, allocation.amount_minor));
+  }
+
+  return totals;
+}
+
+/**
+ * Build the unresolved-cost queue.
+ *
+ * Pure. Every row is derived from rows the caller already read under their own
+ * JWT, and every exclusion listed at the top of this section is enforced here
+ * rather than left to the UI.
+ */
+export function buildUnresolvedQueue(input: {
+  readonly components: readonly CostComponentRow[];
+  readonly allocations: readonly CostAllocationRow[];
+  readonly lots: readonly AcquisitionLotRow[];
+  readonly lotLines: readonly AcquisitionLotLineRow[];
+  readonly orders: readonly AcquisitionOrderRow[];
+  readonly lines: readonly AcquisitionLineRow[];
+  readonly basisRows: readonly InventoryCostBasisRow[];
+  readonly unresolvedRows: readonly UnresolvedBasisRow[];
+  /** Whether any governed recompute has ever run in this workspace. */
+  readonly derivationEverRun: boolean;
+}): UnresolvedQueue {
+  const lotPublicIdById = new Map(input.lots.map((lot) => [lot.id, lot.public_id]));
+  const orderIdByLotId = new Map(input.lots.map((lot) => [lot.id, lot.order_id]));
+  const orderPublicIdById = new Map(input.orders.map((order) => [order.id, order.public_id]));
+  const lineById = new Map(input.lines.map((line) => [line.acquisition_line_item_id, line]));
+
+  const candidatesByComponent = new Map<string, number>();
+  for (const allocation of input.allocations) {
+    if (allocation.state !== 'candidate') continue;
+    candidatesByComponent.set(
+      allocation.cost_component_id, (candidatesByComponent.get(allocation.cost_component_id) ?? 0) + 1);
+  }
+
+  const rows: UnresolvedRow[] = [];
+
+  const componentScope = (component: CostComponentRow) => {
+    // The same resolution the component detail uses, not a second copy of it.
+    const orderId = orderIdOf(component, orderIdByLotId, lineById);
+    const line = component.line_item_id !== null ? lineById.get(component.line_item_id) ?? null : null;
+    return {
+      orderPublicId: orderId !== null ? orderPublicIdById.get(orderId) ?? null : null,
+      lotPublicId: component.lot_id !== null ? lotPublicIdById.get(component.lot_id) ?? null : null,
+      acquisitionLinePublicId: line?.acquisition_line_public_id ?? null,
+      sourceSystemPublicId: line?.source_system_public_id ?? null,
+    };
+  };
+
+  // --- component-scoped reasons ---------------------------------------------
+
+  for (const component of input.components) {
+    // HISTORY IS NOT A TASK. A reversed component was superseded by a governed
+    // correction; the successor carries whatever is still outstanding.
+    if (component.reversed_at !== null) continue;
+
+    const scope = componentScope(component);
+    const amount = amountOf(component);
+    const candidateCount = candidatesByComponent.get(component.id) ?? 0;
+
+    const base = {
+      componentPublicId: component.public_id,
+      componentType: component.component_type,
+      amount,
+      currency: component.currency,
+      attributionState: component.attribution_state,
+      candidateCount,
+      basis: null,
+      quantities: null,
+      netMinor: null,
+      subject: 'cost_component' as const,
+      ...scope,
+    };
+
+    // An amount the source never reported. Checked FIRST because it blocks
+    // everything downstream, and reporting it as "not yet split" would name a
+    // step the owner cannot take.
+    if (component.amount_state === 'unknown' || component.amount_minor === null) {
+      rows.push({ ...base, key: `amount_not_known|${component.public_id}`, reason: 'amount_not_known' });
+      continue;
+    }
+
+    // EXCLUDED: `documented_free`. An evidenced zero is a complete cost.
+    if (component.amount_state === 'documented_free') continue;
+
+    // A pending proposal. Reported for shared AND (defensively) any component
+    // carrying candidates, because a candidate always needs a decision.
+    if (candidateCount > 0) {
+      rows.push({
+        ...base,
+        key: `proposal_awaiting_review|${component.public_id}`,
+        reason: 'proposal_awaiting_review',
+      });
+      continue;
+    }
+
+    // A shared cost with a known amount and nothing proposed.
+    //
+    // THE WITHDRAWAL CASE FALLS OUT HERE, and that is deliberate. After a
+    // withdrawal the candidates are gone, so `proposal_awaiting_review` stops
+    // firing and this fires instead — the component still needs allocating, and
+    // the queue says so. The withdrawn rows remain visible as history on the
+    // component workspace; they are never presented as a resolution.
+    if (component.attribution_state === 'unresolved' && component.line_item_id === null) {
+      rows.push({
+        ...base,
+        key: `shared_cost_unallocated|${component.public_id}`,
+        reason: 'shared_cost_unallocated',
+      });
+      continue;
+    }
+
+    // EXCLUDED: `direct` and `allocated` components with a known amount and no
+    // pending proposal. The workflow finished.
+  }
+
+  // --- line-scoped reasons ---------------------------------------------------
+
+  const lineScope = (lineItemId: string) => {
+    const line = lineById.get(lineItemId);
+    const orderId = line?.acquisition_order_id ?? null;
+    return {
+      orderPublicId: orderId !== null ? orderPublicIdById.get(orderId) ?? null : null,
+      lotPublicId: null,
+      acquisitionLinePublicId: line?.acquisition_line_public_id ?? null,
+      sourceSystemPublicId: line?.source_system_public_id ?? null,
+    };
+  };
+
+  // Unresolved basis, grouped per (line, currency) so no currency is merged
+  // with another and each group carries its own unit count.
+  const unresolvedBasis = new Map<string, { count: number; methods: Set<BasisMethod> }>();
+  for (const row of input.basisRows) {
+    if (row.state !== 'unresolved' && row.basis_method !== 'unresolved') continue;
+    const key = `${row.acquisition_line_item_id}|${row.currency}`;
+    const bucket = unresolvedBasis.get(key) ?? { count: 0, methods: new Set<BasisMethod>() };
+    bucket.count += 1;
+    bucket.methods.add(row.basis_method);
+    unresolvedBasis.set(key, bucket);
+  }
+
+  for (const [key, bucket] of [...unresolvedBasis.entries()].sort()) {
+    const [lineItemId, currency] = key.split('|');
+    rows.push({
+      key: `basis_unresolved|${lineById.get(lineItemId)?.acquisition_line_public_id ?? lineItemId}|${currency}`,
+      reason: 'basis_unresolved',
+      subject: 'acquisition_line',
+      componentPublicId: null,
+      componentType: null,
+      amount: null,
+      currency,
+      attributionState: null,
+      candidateCount: null,
+      basis: { unresolvedUnitCount: bucket.count, methods: [...bucket.methods].sort() },
+      quantities: null,
+      netMinor: null,
+      ...lineScope(lineItemId),
+    });
+  }
+
+  // Overage. Read straight from the governed view.
+  //
+  // EXCLUDED, deliberately: `pending_expected_quantity`. That view also
+  // publishes lines whose only outstanding fact is that expected units have not
+  // arrived, which is a RECEIVING state and not a cost problem. Surfacing it
+  // here would fill a cost queue with deliveries that are simply in transit.
+  for (const row of input.unresolvedRows) {
+    if (row.overage_quantity <= 0) continue;
+    rows.push({
+      key: `overage_without_cost|${row.acquisition_line_public_id}`,
+      reason: 'overage_without_cost',
+      subject: 'acquisition_line',
+      componentPublicId: null,
+      componentType: null,
+      amount: null,
+      currency: null,
+      attributionState: null,
+      candidateCount: null,
+      basis: null,
+      quantities: {
+        expected: row.expected_quantity,
+        reconciled: row.reconciled_quantity,
+        overage: row.overage_quantity,
+      },
+      netMinor: null,
+      ...lineScope(row.acquisition_line_item_id),
+    });
+  }
+
+  // A net below zero, per (line, currency).
+  for (const [key, net] of [...netCostEvidenceByLine(input).entries()].sort()) {
+    if (net >= 0n) continue;
+    const [lineItemId, currency] = key.split('|');
+    rows.push({
+      key: `negative_net_cost_evidence|${lineById.get(lineItemId)?.acquisition_line_public_id ?? lineItemId}|${currency}`,
+      reason: 'negative_net_cost_evidence',
+      subject: 'acquisition_line',
+      componentPublicId: null,
+      componentType: null,
+      amount: null,
+      currency,
+      attributionState: null,
+      candidateCount: null,
+      basis: null,
+      quantities: null,
+      netMinor: net.toString(),
+      ...lineScope(lineItemId),
+    });
+  }
+
+  // --- workspace-scoped reason ----------------------------------------------
+
+  if (!input.derivationEverRun) {
+    rows.push({
+      key: 'basis_never_derived|workspace',
+      reason: 'basis_never_derived',
+      subject: 'workspace',
+      componentPublicId: null,
+      componentType: null,
+      amount: null,
+      currency: null,
+      orderPublicId: null,
+      lotPublicId: null,
+      acquisitionLinePublicId: null,
+      sourceSystemPublicId: null,
+      attributionState: null,
+      candidateCount: null,
+      basis: null,
+      quantities: null,
+      netMinor: null,
+    });
+  }
+
+  const order = new Map(UNRESOLVED_REASONS.map((reason, index) => [reason, index]));
+  return {
+    derivation: {
+      everRun: input.derivationEverRun,
+      algorithmVersion: latestDerivation(input.basisRows).algorithmVersion,
+      derivedAt: latestDerivation(input.basisRows).derivedAt,
+      staleness: DERIVATION_STALENESS_IS_NOT_EVIDENCED,
+    },
+    // Sorted by workflow position, then by key, so the order is total and two
+    // reads of the same data cannot disagree about what "the third row" is.
+    rows: rows.sort((a, b) =>
+      (order.get(a.reason) ?? 0) - (order.get(b.reason) ?? 0) || a.key.localeCompare(b.key)),
+  };
+}
+
+/** What the most recent published derivation was — never whether it is current. */
+function latestDerivation(rows: readonly InventoryCostBasisRow[]): {
+  algorithmVersion: string | null;
+  derivedAt: string | null;
+} {
+  let derivedAt: string | null = null;
+  let algorithmVersion: string | null = null;
+  for (const row of rows) {
+    if (derivedAt === null || row.derived_at > derivedAt) {
+      derivedAt = row.derived_at;
+      algorithmVersion = row.algorithm_version;
+    }
+  }
+  return { algorithmVersion, derivedAt };
+}

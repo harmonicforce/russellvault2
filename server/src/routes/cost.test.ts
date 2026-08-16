@@ -149,6 +149,24 @@ const HASH = 'a'.repeat(64);
 let recomputeUnchanged = false;
 /** No governed recompute has ever published a row for these lines. */
 let basisEmpty = false;
+/** No governed recompute has ever RUN in this workspace. */
+let derivationNeverRan = false;
+/** Make one table's read fail, the way a real dependency failure would. */
+let readFailureTable: string | null = null;
+/** Make one table return exactly the ceiling, so the answer is a subset. */
+let ceilingTable: string | null = null;
+
+/**
+ * One run event per recompute.
+ *
+ * `inventory_cost_basis_id` is null on the per-RUN row, which is exactly what
+ * the existence read filters on — so this fixture carries a per-basis-row event
+ * too, to prove the filter is doing real work rather than matching anything.
+ */
+const DERIVATION_RUN_ROWS = [
+  { recompute_id: RECOMPUTE_ID, inventory_cost_basis_id: null },
+  { recompute_id: RECOMPUTE_ID, inventory_cost_basis_id: 'ffff6666-6666-6666-6666-666666666666' },
+];
 
 /**
  * Derived S2.4 cost-basis rows for the two in-scope lines.
@@ -218,6 +236,7 @@ function makeFakeClient(token: string) {
     table: string,
     filters: Record<string, string>,
     inFilters: Record<string, readonly string[]>,
+    nullFilters: readonly string[] = [],
   ): unknown[] {
     if (table === 'workspace_members') {
       const role = identity?.memberships[filters.workspace_id];
@@ -235,6 +254,9 @@ function makeFakeClient(token: string) {
         for (const [column, values] of Object.entries(inFilters)) {
           if (!values.includes(String(row[column] ?? ''))) return false;
         }
+        for (const column of nullFilters) {
+          if (row[column] != null) return false;
+        }
         return true;
       });
 
@@ -250,6 +272,9 @@ function makeFakeClient(token: string) {
     if (table === 'unresolved_inventory_cost_basis') {
       return basisEmpty ? [] : narrow(UNRESOLVED_BASIS_ROWS);
     }
+    if (table === 'inventory_cost_basis_events') {
+      return derivationNeverRan ? [] : narrow(DERIVATION_RUN_ROWS);
+    }
     return [];
   }
 
@@ -263,11 +288,26 @@ function makeFakeClient(token: string) {
     from(table: string) {
       const filters: Record<string, string> = {};
       const inFilters: Record<string, readonly string[]> = {};
-      const result = () => ({ data: rowsFor(table, filters, inFilters), error: null, count: 0 });
+      // `.is(col, null)` — used by the derivation-run existence read. Modelled
+      // as a real null filter rather than a no-op, so a test cannot pass
+      // because the fake ignored a predicate the server relies on.
+      const nullFilters: string[] = [];
+      const result = () => {
+        if (readFailureTable === table) {
+          return { data: null, error: { message: 'connection terminated unexpectedly' }, count: 0 };
+        }
+        if (ceilingTable === table) {
+          // Exactly MAX_ASSEMBLY_ROWS rows, which is how a bounded read reports
+          // "there may be more" without saying so itself.
+          return { data: Array.from({ length: 2000 }, () => ({})), error: null, count: 0 };
+        }
+        return { data: rowsFor(table, filters, inFilters, nullFilters), error: null, count: 0 };
+      };
       const q: Record<string, unknown> = {
         select: () => q,
         eq: (col: string, val: string) => { filters[col] = val; return q; },
         in: (col: string, vals: readonly string[]) => { inFilters[col] = vals; return q; },
+        is: (col: string, val: unknown) => { if (val === null) nullFilters.push(col); return q; },
         or: () => q,
         order: () => q,
         range: async () => result(),
@@ -341,6 +381,9 @@ beforeEach(() => {
   rpcCalls = [];
   recomputeUnchanged = false;
   basisEmpty = false;
+  derivationNeverRan = false;
+  readFailureTable = null;
+  ceilingTable = null;
 });
 
 async function get(path: string, token?: string) {
@@ -1165,5 +1208,335 @@ describe('the derived basis reported beside the evidence', () => {
     // Only the two lines in THIS component's governed scope.
     expect(body.basisImpact.lines).toHaveLength(2);
     expect(JSON.stringify(body)).not.toContain('RV-AL-OUTSID');
+  });
+});
+
+// === S2.6: the governed unresolved-cost queue =================================
+
+describe('the unresolved-cost queue', () => {
+  const read = (token = 'owner-token') => get(ws('/api/cost/unresolved'), token);
+  const reasonsOf = (body: { rows: { reason: string }[] }) =>
+    body.rows.map((row) => row.reason);
+  const rowFor = (body: { rows: Record<string, unknown>[] }, reason: string, id?: string) =>
+    body.rows.find((row) => row.reason === reason
+      && (id === undefined || row.componentPublicId === id || row.acquisitionLinePublicId === id));
+
+  it('states coverage, completeness and the caller role', async () => {
+    const { status, body } = await read();
+    expect(status).toBe(200);
+    expect(body.coverage).toBe('governed_native_committed');
+    expect(body.historicalLegacyImported).toBe(false);
+    expect(body.complete).toBe(true);
+    expect(body.role).toBe('owner');
+  });
+
+  it('never leaks an internal identifier', async () => {
+    expect(containsInternalId((await read()).body)).toBe(false);
+  });
+
+  // --- the reasons that must appear ----------------------------------------
+
+  it('reports an unknown amount, and never renders it as zero', async () => {
+    const { body } = await read();
+    const row = rowFor(body, 'amount_not_known', 'RV-ACOST-TAXUNK') as Record<string, unknown>;
+    expect(row).toBeTruthy();
+    expect(row.amount).toEqual({ state: 'unknown', currency: 'USD' });
+    // The union has no `minor` for an unknown amount, so nothing can render one.
+    expect(JSON.stringify(row.amount)).not.toMatch(/minor/);
+    expect(row.componentType).toBe('tax');
+  });
+
+  it('reports a shared cost that still needs allocating', async () => {
+    const { body } = await read();
+    const shared = rowFor(body, 'shared_cost_unallocated', 'RV-ACOST-SHIP01') as Record<string, unknown>;
+    expect(shared).toBeTruthy();
+    expect(shared.attributionState).toBe('unresolved');
+    expect(shared.amount).toEqual({ state: 'known', minor: '1000', currency: 'USD' });
+    expect(shared.orderPublicId).toBe('RV-ACQ-AAA111');
+    // The lot-scoped one too, with its lot named.
+    const lot = rowFor(body, 'shared_cost_unallocated', 'RV-ACOST-LOTFEE') as Record<string, unknown>;
+    expect(lot.lotPublicId).toBe('RV-ALOT-AAA111');
+  });
+
+  it('reports a pending proposal as awaiting review, not as unallocated', async () => {
+    const { body } = await read();
+    const row = rowFor(body, 'proposal_awaiting_review', 'RV-ACOST-PROPOS') as Record<string, unknown>;
+    expect(row).toBeTruthy();
+    expect(row.candidateCount).toBe(2);
+    // A component with a pending proposal is NOT also reported as needing one.
+    expect(rowFor(body, 'shared_cost_unallocated', 'RV-ACOST-PROPOS')).toBeUndefined();
+  });
+
+  it('reports an unresolved inventory basis per line and currency', async () => {
+    const { body } = await read();
+    const row = rowFor(body, 'basis_unresolved', 'RV-AL-BBB222') as Record<string, unknown>;
+    expect(row).toBeTruthy();
+    expect(row.currency).toBe('USD');
+    expect(row.basis).toEqual({ unresolvedUnitCount: 1, methods: ['unresolved'] });
+    // The EUR unit on the same line is resolved, so it is not reported.
+    expect(body.rows.filter((r: Record<string, unknown>) =>
+      r.reason === 'basis_unresolved' && r.currency === 'EUR')).toHaveLength(0);
+  });
+
+  it('reports an overage with the governed quantities', async () => {
+    const { body } = await read();
+    const row = rowFor(body, 'overage_without_cost', 'RV-AL-BBB222') as Record<string, unknown>;
+    expect(row).toBeTruthy();
+    expect(row.quantities).toEqual({ expected: 1, reconciled: 2, overage: 1 });
+  });
+
+  it('reports the workspace derivation state, and does not claim staleness', async () => {
+    const { body } = await read();
+    expect(body.derivation).toEqual({
+      everRun: true,
+      algorithmVersion: '1.1.0',
+      derivedAt: '2026-08-15T10:00:00.000Z',
+      // The one state this surface refuses to guess at.
+      staleness: 'not_evidenced',
+    });
+    expect(reasonsOf(body)).not.toContain('basis_never_derived');
+  });
+
+  it('reports that no derivation has ever run, when none has', async () => {
+    derivationNeverRan = true;
+    const { body } = await read();
+    expect(body.derivation.everRun).toBe(false);
+    const row = rowFor(body, 'basis_never_derived') as Record<string, unknown>;
+    expect(row).toBeTruthy();
+    expect(row.subject).toBe('workspace');
+  });
+
+  // --- the exclusions, which matter as much as the inclusions ---------------
+
+  it('never reports a documented-free amount as unresolved', async () => {
+    COMPONENT_ROWS.push({
+      id: 'dddd7777-7777-7777-7777-777777777777', public_id: 'RV-ACOST-FREE01',
+      component_type: 'shipping', amount_state: 'documented_free', amount_minor: 0,
+      currency: 'USD', attribution_state: 'unresolved', evidence_note: 'Seller shipped free',
+      line_item_id: null, lot_id: null, order_id: ORDER_ID, reversed_at: null,
+      reverses_id: null, created_at: '2026-08-10T05:00:00.000Z',
+    } as never);
+    try {
+      const { body } = await read();
+      expect(JSON.stringify(body)).not.toContain('RV-ACOST-FREE01');
+    } finally {
+      COMPONENT_ROWS.pop();
+    }
+  });
+
+  it('never reports a confirmed, attributable, known cost', async () => {
+    // RV-ACOST-PRICEA is direct, known and needs nothing.
+    const { body } = await read();
+    expect(body.rows.some((row: Record<string, unknown>) =>
+      row.componentPublicId === 'RV-ACOST-PRICEA')).toBe(false);
+  });
+
+  it('never reports a reversed component', async () => {
+    COMPONENT_ROWS.push({
+      id: 'eeee8888-8888-8888-8888-888888888888', public_id: 'RV-ACOST-REVRSD',
+      component_type: 'shipping', amount_state: 'unknown', amount_minor: null,
+      currency: 'USD', attribution_state: 'unresolved', evidence_note: null,
+      line_item_id: null, lot_id: null, order_id: ORDER_ID,
+      reversed_at: '2026-08-11T00:00:00.000Z', reverses_id: null,
+      created_at: '2026-08-10T04:00:00.000Z',
+    } as never);
+    try {
+      const { body } = await read();
+      expect(JSON.stringify(body)).not.toContain('RV-ACOST-REVRSD');
+    } finally {
+      COMPONENT_ROWS.pop();
+    }
+  });
+
+  // THE EXPECTED-BUT-NOT-RECEIVED EXCLUSION.
+  //
+  // `unresolved_inventory_cost_basis` publishes lines whose only outstanding
+  // fact is that expected units have not arrived. That is a receiving state,
+  // not a cost problem, and a cost queue full of parcels in transit is a queue
+  // nobody reads.
+  it('never reports a line whose only issue is units not yet received', async () => {
+    UNRESOLVED_BASIS_ROWS.push({
+      acquisition_line_item_id: LINE_A, acquisition_line_public_id: 'RV-AL-AAA111',
+      expected_quantity: 3, reconciled_quantity: 1, pending_expected_quantity: 2,
+      overage_quantity: 0, has_unresolved_cost_evidence: false,
+    } as never);
+    try {
+      const { body } = await read();
+      expect(body.rows.some((row: Record<string, unknown>) =>
+        row.reason === 'overage_without_cost' && row.acquisitionLinePublicId === 'RV-AL-AAA111'))
+        .toBe(false);
+    } finally {
+      UNRESOLVED_BASIS_ROWS.pop();
+    }
+  });
+
+  // --- withdrawal is history, and the CURRENT truth is what shows -----------
+
+  it('shows the component still needs allocating once its proposal is withdrawn', async () => {
+    const saved = ALLOCATION_ROWS.map((row) => ({ ...row }));
+    for (const row of ALLOCATION_ROWS) row.state = 'withdrawn';
+    try {
+      const { body } = await read();
+      // The pending-review reason is gone …
+      expect(rowFor(body, 'proposal_awaiting_review', 'RV-ACOST-PROPOS')).toBeUndefined();
+      // … and the CURRENT truth took its place, rather than the problem
+      // appearing to have disappeared with the withdrawal.
+      const now = rowFor(body, 'shared_cost_unallocated', 'RV-ACOST-PROPOS') as Record<string, unknown>;
+      expect(now).toBeTruthy();
+      expect(now.attributionState).toBe('unresolved');
+      // And the withdrawn rows themselves are not queue entries.
+      expect(reasonsOf(body)).not.toContain('withdrawn');
+    } finally {
+      ALLOCATION_ROWS.splice(0, ALLOCATION_ROWS.length, ...saved);
+    }
+  });
+
+  it('drops a component from the queue once its allocation is confirmed', async () => {
+    const saved = ALLOCATION_ROWS.map((row) => ({ ...row }));
+    const savedComponent = { ...COMPONENT_ROWS[4] };
+    for (const row of ALLOCATION_ROWS) row.state = 'confirmed';
+    (COMPONENT_ROWS[4] as Record<string, unknown>).attribution_state = 'allocated';
+    try {
+      const { body } = await read();
+      expect(body.rows.some((row: Record<string, unknown>) =>
+        row.componentPublicId === 'RV-ACOST-PROPOS')).toBe(false);
+    } finally {
+      ALLOCATION_ROWS.splice(0, ALLOCATION_ROWS.length, ...saved);
+      Object.assign(COMPONENT_ROWS[4], savedComponent);
+    }
+  });
+
+  // --- negative net ---------------------------------------------------------
+
+  it('reports cost evidence that nets below zero, with the exact signed figure', async () => {
+    COMPONENT_ROWS.push({
+      id: 'ffff9999-9999-9999-9999-999999999999', public_id: 'RV-ACOST-DISCNT',
+      component_type: 'discount', amount_state: 'known', amount_minor: 1500,
+      currency: 'USD', attribution_state: 'direct', evidence_note: null,
+      line_item_id: LINE_A, lot_id: null, order_id: null, reversed_at: null,
+      reverses_id: null, created_at: '2026-08-10T03:00:00.000Z',
+    } as never);
+    try {
+      const { body } = await read();
+      const row = rowFor(body, 'negative_net_cost_evidence', 'RV-AL-AAA111') as Record<string, unknown>;
+      expect(row).toBeTruthy();
+      // 900 item price − 1500 discount = −600, exactly, as a string.
+      expect(row.netMinor).toBe('-600');
+      expect(row.currency).toBe('USD');
+    } finally {
+      COMPONENT_ROWS.pop();
+    }
+  });
+
+  it('does not report a net that is merely small but positive', async () => {
+    const { body } = await read();
+    expect(reasonsOf(body)).not.toContain('negative_net_cost_evidence');
+  });
+
+  // --- currency separation --------------------------------------------------
+
+  it('keeps currencies separate and offers no combined total', async () => {
+    const { body } = await read();
+    const currencies = new Set(body.rows
+      .map((row: Record<string, unknown>) => row.currency)
+      .filter((currency: unknown) => currency !== null));
+    expect(currencies.size).toBeGreaterThan(0);
+    expect(JSON.stringify(body)).not.toMatch(/combinedTotal|grandTotal|totalAcrossCurrencies/);
+  });
+
+  // --- ordering and vocabulary ---------------------------------------------
+
+  it('orders rows by workflow position so the list is total and stable', async () => {
+    const { body } = await read();
+    const order = [
+      'amount_not_known', 'shared_cost_unallocated', 'proposal_awaiting_review',
+      'basis_unresolved', 'overage_without_cost', 'negative_net_cost_evidence',
+      'basis_never_derived',
+    ];
+    const seen = reasonsOf(body).map((reason: string) => order.indexOf(reason));
+    expect(seen).toEqual([...seen].sort((a, b) => a - b));
+    // And two reads agree.
+    expect(reasonsOf((await read()).body)).toEqual(reasonsOf(body));
+  });
+
+  it('describes every reason it can emit, with a next action', async () => {
+    const { body } = await read();
+    const described = new Set(body.reasons.map((entry: { reason: string }) => entry.reason));
+    for (const reason of reasonsOf(body)) expect(described.has(reason)).toBe(true);
+    for (const entry of body.reasons) {
+      expect(entry.title).toMatch(/\S/);
+      expect(entry.description).toMatch(/\S/);
+      expect(entry.nextAction).toMatch(/\S/);
+    }
+    // No catch-all bucket.
+    expect(JSON.stringify(body.reasons)).not.toMatch(/needs attention/i);
+  });
+
+  // --- gates ----------------------------------------------------------------
+
+  it('lets a viewer read the queue', async () => {
+    const { status, body } = await read('viewer-token');
+    expect(status).toBe(200);
+    expect(body.role).toBe('viewer');
+  });
+
+  it('exposes no mutation on this path', async () => {
+    for (const token of ['owner-token', 'operator-token', 'viewer-token']) {
+      expect((await post(ws('/api/cost/unresolved'), token, { workspaceId: WS_A })).status).toBe(404);
+    }
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ['an unauthenticated caller', undefined, 401],
+    ['a non-member', 'stranger-token', 403],
+    ['a member of a different workspace', 'other-ws-token', 403],
+  ])('refuses %s', async (_label, token, expected) => {
+    expect((await get(ws('/api/cost/unresolved'), token as string | undefined)).status).toBe(expected);
+  });
+
+  it('404s the whole surface when the governed deployment is not configured', async () => {
+    const saved = process.env.SHADOW_IMPORT;
+    delete process.env.SHADOW_IMPORT;
+    try {
+      expect((await read()).status).toBe(404);
+    } finally {
+      process.env.SHADOW_IMPORT = saved;
+    }
+  });
+
+  // A FAILED READ IS NEVER AN EMPTY QUEUE.
+  //
+  // The queue answers "is there anything to do". An empty 200 in response to a
+  // failed read is the single most dangerous answer this surface could give,
+  // because it is indistinguishable from a workspace with nothing outstanding.
+  it.each([
+    'acquisition_cost_components',
+    'acquisition_cost_allocations',
+    'inventory_cost_basis_current',
+    'unresolved_inventory_cost_basis',
+    'inventory_cost_basis_events',
+  ])('fails rather than returning an empty queue when %s cannot be read', async (table) => {
+    readFailureTable = table;
+    const { status, body } = await get(ws('/api/cost/unresolved'), 'owner-token');
+    expect(status).toBeGreaterThanOrEqual(500);
+    expect(body).toEqual({ error: 'dependency_failed' });
+    expect(body.rows).toBeUndefined();
+  });
+
+  // A SUBSET IS NEVER SILENT.
+  it.each([
+    'acquisition_cost_components',
+    'inventory_cost_basis_current',
+    'unresolved_inventory_cost_basis',
+  ])('reports complete:false when the %s read hits its ceiling', async (table) => {
+    ceilingTable = table;
+    const { status, body } = await get(ws('/api/cost/unresolved'), 'owner-token');
+    expect(status).toBe(200);
+    expect(body.complete).toBe(false);
+  });
+
+  it('reports complete:true only when every contributing read came back short', async () => {
+    expect((await read()).body.complete).toBe(true);
   });
 });

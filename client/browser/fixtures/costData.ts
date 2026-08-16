@@ -86,6 +86,60 @@ const BASIS_METHODS = [
   },
 ];
 
+/** The reason vocabulary, matching the server's `REASON_DESCRIPTORS`. */
+const UNRESOLVED_REASON_DESCRIPTORS = [
+  {
+    reason: 'amount_not_known',
+    title: 'Amount never reported',
+    description:
+      'The source did not report an amount for this cost component. That is not zero, and nothing '
+      + 'downstream may treat it as zero.',
+    nextAction: 'Establish the amount from the source evidence.',
+  },
+  {
+    reason: 'shared_cost_unallocated',
+    title: 'Shared cost not yet split',
+    description:
+      'This cost has a known amount and applies to a whole lot or order, but no split has been '
+      + 'proposed.',
+    nextAction: 'Propose a split, then confirm it.',
+  },
+  {
+    reason: 'proposal_awaiting_review',
+    title: 'Proposed split awaiting review',
+    description: 'A split has been proposed and is pending. Proposed amounts are NOT a cost basis.',
+    nextAction: 'Confirm the split, or withdraw it and propose a corrected one.',
+  },
+  {
+    reason: 'basis_unresolved',
+    title: 'Inventory cost basis not established',
+    description:
+      'The governed recompute ran and concluded it could not establish a cost for these inventory '
+      + 'units.',
+    nextAction: 'Resolve the cost evidence this line depends on, then let the basis refresh.',
+  },
+  {
+    reason: 'overage_without_cost',
+    title: 'More units received than the source priced',
+    description:
+      'More units were received and reconciled than the acquisition expected, and the source '
+      + 'reported no cost for the extra units.',
+    nextAction: 'Record the receiving discrepancy, or establish cost evidence for the extra units.',
+  },
+  {
+    reason: 'negative_net_cost_evidence',
+    title: 'Cost evidence nets below zero',
+    description: 'The applicable cost evidence for this line and currency sums to less than zero.',
+    nextAction: 'Check the discount and price evidence on this line.',
+  },
+  {
+    reason: 'basis_never_derived',
+    title: 'No cost basis has ever been derived',
+    description: 'No governed recompute has ever run in this workspace.',
+    nextAction: 'Confirm or reverse an allocation, which runs the governed recompute.',
+  },
+];
+
 const METHODS = [
   {
     method: 'manual_equal',
@@ -424,6 +478,108 @@ export class CostWorld {
           derivedAt: '2026-08-15T10:00:00.000Z',
         },
       ],
+    };
+  }
+
+  /**
+   * The governed unresolved-cost queue, derived from THIS world's live state.
+   *
+   * Derived rather than hardcoded on purpose: proposing, confirming and
+   * withdrawing change what is outstanding, so the browser suite can prove the
+   * queue reflects the workflow instead of proving that a static payload
+   * renders. In particular, withdrawing a proposal moves its component from
+   * "awaiting review" back to "not yet split" — the queue must show the CURRENT
+   * problem, not treat the withdrawal as a resolution.
+   */
+  unresolved(role: 'owner' | 'operator' | 'viewer', complete: boolean, derivationEverRun = true) {
+    const rows: Record<string, unknown>[] = [];
+
+    // The tax component: an amount the source never reported.
+    rows.push({
+      key: `amount_not_known|${UNKNOWN_COMPONENT}`,
+      reason: 'amount_not_known', subject: 'cost_component',
+      componentPublicId: UNKNOWN_COMPONENT, componentType: 'tax',
+      amount: { state: 'unknown', currency: this.currency },
+      currency: this.currency, orderPublicId: COST_ORDER, lotPublicId: null,
+      acquisitionLinePublicId: null, sourceSystemPublicId: null,
+      attributionState: 'unresolved', candidateCount: 0,
+      basis: null, quantities: null, netMinor: null,
+    });
+
+    // The shipping component, whose reason depends on the live world.
+    if (this.attribution !== 'allocated') {
+      const pending = this.allocations.filter((row) => row.state === 'candidate').length;
+      rows.push(pending > 0
+        ? {
+            key: `proposal_awaiting_review|${SHIPPING_COMPONENT}`,
+            reason: 'proposal_awaiting_review', subject: 'cost_component',
+            componentPublicId: SHIPPING_COMPONENT, componentType: 'shipping',
+            amount: { state: 'known', minor: this.totalMinor, currency: this.currency },
+            currency: this.currency, orderPublicId: COST_ORDER, lotPublicId: null,
+            acquisitionLinePublicId: null, sourceSystemPublicId: null,
+            attributionState: 'unresolved', candidateCount: pending,
+            basis: null, quantities: null, netMinor: null,
+          }
+        : {
+            key: `shared_cost_unallocated|${SHIPPING_COMPONENT}`,
+            reason: 'shared_cost_unallocated', subject: 'cost_component',
+            componentPublicId: SHIPPING_COMPONENT, componentType: 'shipping',
+            amount: { state: 'known', minor: this.totalMinor, currency: this.currency },
+            currency: this.currency, orderPublicId: COST_ORDER, lotPublicId: null,
+            acquisitionLinePublicId: null, sourceSystemPublicId: null,
+            attributionState: 'unresolved', candidateCount: 0,
+            basis: null, quantities: null, netMinor: null,
+          });
+    }
+
+    // A line-scoped unresolved basis, in a SECOND currency, so the browser can
+    // prove currencies are listed separately and never combined.
+    rows.push({
+      key: 'basis_unresolved|RV-AL-000002|EUR',
+      reason: 'basis_unresolved', subject: 'acquisition_line',
+      componentPublicId: null, componentType: null, amount: null, currency: 'EUR',
+      orderPublicId: COST_ORDER, lotPublicId: null,
+      acquisitionLinePublicId: 'RV-AL-000002', sourceSystemPublicId: COST_SOURCE_SYSTEM,
+      attributionState: null, candidateCount: null,
+      basis: { unresolvedUnitCount: 1, methods: ['unresolved'] },
+      quantities: null, netMinor: null,
+    });
+
+    // An overage the source never priced.
+    rows.push({
+      key: 'overage_without_cost|RV-AL-000002',
+      reason: 'overage_without_cost', subject: 'acquisition_line',
+      componentPublicId: null, componentType: null, amount: null, currency: null,
+      orderPublicId: COST_ORDER, lotPublicId: null,
+      acquisitionLinePublicId: 'RV-AL-000002', sourceSystemPublicId: COST_SOURCE_SYSTEM,
+      attributionState: null, candidateCount: null, basis: null,
+      quantities: { expected: 1, reconciled: 2, overage: 1 }, netMinor: null,
+    });
+
+    if (!derivationEverRun) {
+      rows.push({
+        key: 'basis_never_derived|workspace',
+        reason: 'basis_never_derived', subject: 'workspace',
+        componentPublicId: null, componentType: null, amount: null, currency: null,
+        orderPublicId: null, lotPublicId: null, acquisitionLinePublicId: null,
+        sourceSystemPublicId: null, attributionState: null, candidateCount: null,
+        basis: null, quantities: null, netMinor: null,
+      });
+    }
+
+    return {
+      coverage: 'governed_native_committed',
+      historicalLegacyImported: false,
+      complete,
+      role,
+      reasons: UNRESOLVED_REASON_DESCRIPTORS,
+      derivation: {
+        everRun: derivationEverRun,
+        algorithmVersion: derivationEverRun ? '1.1.0' : null,
+        derivedAt: derivationEverRun ? '2026-08-15T10:00:00.000Z' : null,
+        staleness: 'not_evidenced',
+      },
+      rows,
     };
   }
 

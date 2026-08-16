@@ -117,6 +117,12 @@ export interface Scenario {
   costRecomputeFails: boolean;
   /** No governed recompute has ever published a basis for these lines. */
   costBasisNotDerived: boolean;
+  /** The unresolved-cost queue read fails. Must never render as empty. */
+  costUnresolvedFails: boolean;
+  /** The unresolved-cost answer is a subset, so the page must say so. */
+  costUnresolvedPartial: boolean;
+  /** The governed record holds nothing outstanding — a complete, empty answer. */
+  costUnresolvedEmpty: boolean;
 }
 
 const DEFAULT_SCENARIO: Scenario = {
@@ -145,6 +151,9 @@ const DEFAULT_SCENARIO: Scenario = {
   costConfirmWinsTheRace: false,
   costRecomputeFails: false,
   costBasisNotDerived: false,
+  costUnresolvedFails: false,
+  costUnresolvedPartial: false,
+  costUnresolvedEmpty: false,
 };
 
 /**
@@ -491,6 +500,17 @@ async function routeApi(route: Route, scenario: Scenario) {
       if (scenario.costQueueFails) return json(route, { error: 'dependency_failed' }, 502);
       const payload = world.queue(role, !scenario.costQueuePartial);
       if (scenario.costQueueEmpty) return json(route, { ...payload, rows: [] });
+      return json(route, payload);
+    }
+
+    if (path === '/api/cost/unresolved') {
+      // A FAILED read, answered as a failure. The page must never render this
+      // as "nothing needs attention" — that is the answer an owner acts on by
+      // going home, and it is the most dangerous thing this surface could say.
+      if (scenario.costUnresolvedFails) return json(route, { error: 'dependency_failed' }, 502);
+      const payload = world.unresolved(
+        role, !scenario.costUnresolvedPartial, !scenario.costBasisNotDerived);
+      if (scenario.costUnresolvedEmpty) return json(route, { ...payload, rows: [] });
       return json(route, payload);
     }
 
