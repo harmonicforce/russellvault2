@@ -8,6 +8,10 @@ cost truth still needs attention, why, and where do I go to resolve it.**
 - Repository: `harmonicforce/russellvault2`. Canonical branch: `main`.
 - Branch: `claude/s2-6-unresolved-cost-queue`.
 - Base SHA: `3efe5b9422aa6016aa1ed36047f6a90ffa2c6a7d` (S2.5 merged as PR #70).
+- Current `main` merged in at `a8c9517` (S3.1, PR #73) to clear a merge conflict.
+  The only conflict was this file: both slices added a section at the top, and
+  both are kept — S3.1's section below is Codex's, verbatim. `git diff
+  origin/main HEAD -- supabase/ docs/ai/CURRENT_STATE.md` is empty.
 - PR: **#72 (draft, unmerged)**.
 - Status: **implemented, truth-repaired and validated locally.** Not merged, not
   deployed, not hosted-accepted.
@@ -197,7 +201,7 @@ is triage and navigation; allocation editing is not duplicated.
 | `npm run typecheck` | clean |
 | `npm test` | server **953**, client **1626**, guards **23** |
 | `npm run build:ci` | clean |
-| `PGOPTIONS='-c jit=off' npm run db:test` | all files passed, **2592 assertions** |
+| `PGOPTIONS='-c jit=off' npm run db:test` | all files passed, **2648 assertions** (68 files, including S3.1's, after merging main) |
 | Playwright, 5 chromium viewports | **928 passed**, 0 failed, 107 skipped |
 | `git diff --check` | clean |
 
