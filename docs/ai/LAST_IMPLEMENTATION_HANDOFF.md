@@ -1,5 +1,41 @@
 # Last Implementation Handoff
 
+## S3.1 — Reconciliation Ledger Final Integrity Repair
+
+- Repository/canonical branch: `harmonicforce/russellvault2`, `main`.
+- Existing branch/PR: `codex/implement-reconciliation-ledger-schema`, draft PR #71.
+- Integrated main SHA: `3efe5b9422aa6016aa1ed36047f6a90ffa2c6a7d` (PR #70 / S2.5 preserved via merge commit `54dfc80`).
+- Release authority: branch and draft PR only. No merge, hosted migration, deployment, or production data action was authorized.
+- Final SHA: recorded in the final response after commit.
+
+### Integrity repairs
+
+The still-unmerged `20260815000300_reconciliation_ledger.sql` migration was corrected in place. All three evidence tables now reject privileged `TRUNCATE` as well as their already-governed update/delete operations. Finding rows enforce verdict/difference consistency at the table contract: identical matches require an empty difference array, differing matches require at least one difference, and source-only/target-only retain legitimate empty arrays.
+
+Begin-run and adjudication idempotency fingerprints now hash canonical JSON arrays containing the same trimmed/null-normalized values written to storage. Delimiter-containing fields cannot collide through concatenation, while semantically identical normalized retries replay. Cutover eligibility now always returns one explicit `eligible=false`, `reason=run_not_found` row for a missing requested run or domain. No client, server, SQLite, S3.2, historical-data, or deployment work was performed.
+
+### Validation
+
+- `PGOPTIONS='-c jit=off' npm run db:reset`: passed after starting the local PostgreSQL service.
+- `PGOPTIONS='-c jit=off' npm run db:test`: 68 files, **2648 assertions**, all passed; test 68 passed **56 assertions**.
+- `npm run typecheck`: passed.
+- `npm test`: server **861**, client **1601**, Node guards **23** (**2485 total**), all passed.
+- `npm run build:ci`: passed with the existing Vite chunk-size warning.
+- `git diff --check`: recorded after the handoff update and before commit.
+- The first reset attempt could not connect because local PostgreSQL was stopped. One later full-suite reset was disrupted by an orphaned prior test process touching the same shadow database; after terminating it, the clean final full suite passed.
+
+### Delivery and operational status
+
+- PR #71 exact-head CI: to be checked after push; exact run/job conclusions belong in the final report.
+- Live Supabase migration count/parity: not checked; hosted migration was not authorized.
+- Railway and `/api/version`: not checked; deployment was not authorized.
+- Hosted acceptance: not applicable to this database-only repair and not authorized.
+- Production data touched: none.
+- `docs/ai/CURRENT_STATE.md`: untouched.
+- Rollback: revert the repair commit and merge commit while PR #71 remains unmerged.
+- Exact next owner decision: merge S3.1 only after required exact-head CI is green; do not begin S3.2 from this work order.
+
+
 ## S2.5 — Cost Allocation Owner Surface (Batches 1 and 2, COMPLETE)
 
 S2.5 turns the governed acquisition cost machinery into the complete
