@@ -115,8 +115,17 @@ export interface Scenario {
   costConfirmWinsTheRace: boolean;
   /** The governed basis recompute fails. The mutation still committed. */
   costRecomputeFails: boolean;
-  /** No governed recompute has ever published a basis for these lines. */
+  /**
+   * No governed recompute has published a basis for these lines.
+   *
+   * The recompute may still have RUN — see `costRecomputeNeverRan`. Keeping the
+   * two apart is the point: a workspace that derived something once answers
+   * "has anything ever been derived" with yes forever, which is precisely how a
+   * line that became basis-eligible later used to vanish from the queue.
+   */
   costBasisNotDerived: boolean;
+  /** No governed recompute has ever RUN at all, so there is no run event. */
+  costRecomputeNeverRan: boolean;
   /** The unresolved-cost queue read fails. Must never render as empty. */
   costUnresolvedFails: boolean;
   /** The unresolved-cost answer is a subset, so the page must say so. */
@@ -151,6 +160,7 @@ const DEFAULT_SCENARIO: Scenario = {
   costConfirmWinsTheRace: false,
   costRecomputeFails: false,
   costBasisNotDerived: false,
+  costRecomputeNeverRan: false,
   costUnresolvedFails: false,
   costUnresolvedPartial: false,
   costUnresolvedEmpty: false,
@@ -509,7 +519,10 @@ async function routeApi(route: Route, scenario: Scenario) {
       // going home, and it is the most dangerous thing this surface could say.
       if (scenario.costUnresolvedFails) return json(route, { error: 'dependency_failed' }, 502);
       const payload = world.unresolved(
-        role, !scenario.costUnresolvedPartial, !scenario.costBasisNotDerived);
+        role,
+        !scenario.costUnresolvedPartial,
+        !scenario.costBasisNotDerived,
+        !scenario.costRecomputeNeverRan);
       if (scenario.costUnresolvedEmpty) return json(route, { ...payload, rows: [] });
       return json(route, payload);
     }

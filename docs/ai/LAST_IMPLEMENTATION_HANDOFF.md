@@ -1,6 +1,6 @@
 # Last Implementation Handoff
 
-## S2.6 — Governed Unresolved Cost Queue (COMPLETE)
+## S2.6 — Governed Unresolved Cost Queue (COMPLETE, including the final truth repair)
 
 The final S2 application slice. An owner-usable triage queue answering: **what
 cost truth still needs attention, why, and where do I go to resolve it.**
@@ -8,8 +8,72 @@ cost truth still needs attention, why, and where do I go to resolve it.**
 - Repository: `harmonicforce/russellvault2`. Canonical branch: `main`.
 - Branch: `claude/s2-6-unresolved-cost-queue`.
 - Base SHA: `3efe5b9422aa6016aa1ed36047f6a90ffa2c6a7d` (S2.5 merged as PR #70).
-- Status: **implemented and validated locally.** Not merged, not deployed, not
-  hosted-accepted.
+- PR: **#72 (draft, unmerged)**.
+- Status: **implemented, truth-repaired and validated locally.** Not merged, not
+  deployed, not hosted-accepted.
+
+### The final truth repair
+
+Three defects in the first implementation were found in review and fixed on the
+same branch and PR. Each was a case of the surface stating something it could
+not support.
+
+**1. Missing basis was workspace-scoped, and produced a false clean queue.**
+`basis_never_derived` asked one question — *has any recompute ever run in this
+workspace* — which a workspace answers yes to forever after its first run. So
+this sequence went unreported: a recompute runs; a line later gains reconciled,
+linked inventory and applicable cost evidence; no recompute runs again; that
+line holds no basis row; and the queue said nothing needed attention. An owner
+would have been told their cost truth was complete while a whole line of it did
+not exist.
+
+The reason is now asked per **(line, currency)** — the grain the derivation
+itself publishes at — and all three conditions must hold:
+
+1. reconciled, inventory-linked units exist for the line
+   (`acquisition_receipts.status='reconciled'` → `acquisition_receipt_lines` →
+   `acquisition_receipt_line_inventory_links`, summing `quantity_linked`, which
+   is exactly the function's `_icb_units`);
+2. the line is basis-eligible in that currency — the union of `_icb_costs` and
+   `_icb_blockers` the function joins its `currencies` set from, mirrored in
+   `basisEligibleCurrenciesByLine`;
+3. `inventory_cost_basis_current` holds **no** row for that pair.
+
+Exclusions are enforced, not incidental: unreceived inventory, non-reconciled
+receipts, received-but-unlinked quantity, and lines with no applicable cost
+evidence in any currency are all silent. A pair that already HAS rows is left
+alone however old they are — that is the staleness question, and staleness is
+still not evidenced. And because this is the one reason asserting an ABSENCE, it
+is **suppressed entirely when any contributing read hit its ceiling**: a
+truncated read is indistinguishable from a workspace that never derived those
+lines, so the response's own `complete: false` carries the truth instead.
+
+**2. Last-derivation metadata was scavenged off basis rows.** It is now read
+from the run-level event — `inventory_cost_basis_events` where
+`inventory_cost_basis_id is null`, ordered by `created_at` then `recompute_id`
+descending, limit 1. A recompute over a workspace with nothing derivable
+publishes no basis rows, and scavenging then reported an OLDER run's version and
+time, or nothing at all, while labelling it the last derivation. The run event
+has no such gap. `basis_stale` was **not** added.
+
+**3. Copy that promised things the application cannot do.** Fixed:
+
+- the header no longer states the size of the reason vocabulary in prose — it
+  derives it from the vocabulary the server sent, and a guard test scans all five
+  S2.6 source files for a hand-written count;
+- the overage reason no longer implies recording another cost component gives
+  those units a basis. S2.4 leaves every unit beyond the expected source quantity
+  unresolved by design, so the copy now says so explicitly and points at the
+  receiving discrepancy, which is a surface that exists;
+- no reason tells an owner to confirm or reverse an unrelated allocation to
+  trigger a recompute. That would be asking them to falsify a governed review
+  decision to move a number;
+- `amount_not_known` no longer says "establish the amount". Component amounts
+  arrive through import and nothing in this application edits one
+  (`reverse_cost_component` remains deliberately unexposed), so it says that.
+
+Where no direct repair surface exists, the next action says so. A bare row with
+an honest "there is nowhere to do this yet" is better than a fabricated button.
 
 ### Scope discipline
 
@@ -22,7 +86,9 @@ The entire queue is derived from governed surfaces already granted to
 `authenticated`: `acquisition_cost_components`, `acquisition_cost_allocations`,
 `acquisition_lots`, `acquisition_lot_lines`, `acquisition_orders`,
 `acquisition_line_overview`, `inventory_cost_basis_current`,
-`unresolved_inventory_cost_basis` and `inventory_cost_basis_events`.
+`unresolved_inventory_cost_basis`, `inventory_cost_basis_events`,
+`acquisition_receipts`, `acquisition_receipt_lines` and
+`acquisition_receipt_line_inventory_links`.
 
 ### The reason model — seven distinct, evidenced reasons
 
@@ -37,36 +103,44 @@ position, because that is the order an owner can act in.
 | `basis_unresolved` | `inventory_cost_basis_current` rows with `state`/`basis_method` = `unresolved`, grouped per (line, currency) |
 | `overage_without_cost` | `unresolved_inventory_cost_basis.overage_quantity > 0` |
 | `negative_net_cost_evidence` | signed sum of direct + confirmed-allocated evidence per (line, currency) < 0 |
-| `basis_never_derived` | no run row in `inventory_cost_basis_events` |
+| `basis_never_derived` | line has reconciled linked units and is basis-eligible in this currency, and `inventory_cost_basis_current` holds no row for that (line, currency) |
 
 ### The one state that could NOT be derived, reported rather than invented
 
-The work order asked for "basis not yet derived **or not refreshed**, if that
-state is actually evidenced". Those are two questions with two answers.
+"Basis not yet derived" and "basis no longer refreshed" sound like one question.
+They are two, and only one is evidenced.
 
-**Not yet derived IS evidenced** — `inventory_cost_basis_events` records one row
-per run, so no run row means no recompute has happened. That is
-`basis_never_derived`.
+**Not yet derived IS evidenced**, per line and currency. Whether
+`inventory_cost_basis_current` holds a row for a basis-eligible pair is a fact,
+not an inference. That is `basis_never_derived`.
 
-**Not refreshed is NOT evidenced.** Staleness means comparing the stored
-`input_content_hash` against a hash of *current* inputs. That hash is a sha256
-over a `jsonb_agg(...)::text` computed inside the function; reproducing it in
-TypeScript would mean reproducing PostgreSQL's exact jsonb serialisation,
-ordering and numeric formatting, and any divergence yields a confident, wrong
-"stale" or "current" verdict. The algorithm version has the same problem — it is
-a constant inside the function body, readable only by calling it, and a read
-endpoint must not invoke a mutation to answer a question.
+**Not refreshed is NOT evidenced — and the missing half is specific.** The
+*historical* side of the comparison already exists and is durable: every run
+stores `input_content_hash` on both `inventory_cost_basis` and
+`inventory_cost_basis_events`, so what the inputs hashed to **when the derivation
+ran** is on record. What is missing is the other half — the hash of the inputs
+**as they stand now**. That value exists only inside
+`recompute_inventory_cost_basis`, computed mid-transaction as a sha256 over a
+`jsonb_agg(...)::text` of the governed inputs, and it is never published.
+Reproducing it in TypeScript would mean reproducing PostgreSQL's exact jsonb
+serialisation, key ordering and numeric formatting, and any divergence yields a
+confident, wrong verdict. Calling the function to find out is worse: a read
+endpoint would be performing a governed mutation to answer a question.
 
-So the surface reports what the last derivation **was** (version, timestamp) and
-carries `staleness: 'not_evidenced'` permanently. Asserted by test, at the
-contract, route and screen.
+So the surface reports what the last **run** was — algorithm version and
+timestamp, both from the run-level event — and carries
+`staleness: 'not_evidenced'` permanently. Asserted by test, at the contract,
+route and screen.
 
 **THE MISSING DATABASE FACT, stated precisely so it can be added deliberately:**
-a governed read-only way to compare the current input hash with the stored one —
-e.g. a `public.inventory_cost_basis_freshness` view exposing
-`(workspace_id, algorithm_version, stored_hash, current_hash, is_current)`, or a
-`stable` function returning the current hash. Either would make staleness
-first-class and this contract would gain a `basis_stale` reason.
+a governed, read-only publication of the **current** input content hash, so it
+can be compared against the stored one — e.g. a `stable` security-definer
+function returning the current hash for a workspace, or a
+`public.inventory_cost_basis_freshness` view exposing
+`(workspace_id, algorithm_version, stored_hash, current_hash, is_current)`. The
+stored hash is already there; only the current-input side is absent. Once it
+exists, staleness becomes first-class and this contract can carry a
+`basis_stale` reason.
 
 ### The exclusions, enforced in code
 
@@ -87,15 +161,20 @@ only, no service-role credential, no mutation on the path (asserted). Returns
 `coverage`, `complete`, `role`, the `reasons` vocabulary, `derivation`, and
 `rows`. Every read is bounded at 2000 and `complete:false` is reported when any
 contributing read reaches its ceiling. No internal UUID is returned — basis
-columns are listed explicitly because the governed view is `select b.*`.
+columns are listed explicitly because the governed view is `select b.*`, and the
+three receiving reads select join keys and `quantity_linked` only.
+
+The run-event read is deliberately **excluded** from the completeness check: it
+is `limit(1)` by design, asking for the newest run, so its length proves nothing
+about whether rows were dropped.
 
 ### Empty / partial / failure semantics
 
 `empty` — and therefore "no unresolved cost" — is reachable **only** from a
 complete authoritative read. A capped read renders `partial` with "this is NOT a
 statement that there are none"; a failed read renders `unavailable`. Each of the
-five contributing reads is proved individually to fail rather than return an
-empty queue. Filtering narrows a complete list: the unfiltered total stays on
+eight contributing reads is proved individually to fail rather than return an
+empty queue, and each is proved to force `complete: false` at its ceiling. Filtering narrows a complete list: the unfiltered total stays on
 screen, every option carries its count, and a filter matching nothing says so
 instead of borrowing the empty state's words.
 
@@ -116,16 +195,34 @@ is triage and navigation; allocation editing is not duplicated.
 | `npm ci` (root/client/server) | all pass |
 | `npm run lint` | 0 errors; warnings only, matching existing presentation adapters |
 | `npm run typecheck` | clean |
-| `npm test` | server **919**, client **1623**, guards **23** |
+| `npm test` | server **953**, client **1626**, guards **23** |
 | `npm run build:ci` | clean |
 | `PGOPTIONS='-c jit=off' npm run db:test` | all files passed, **2592 assertions** |
-| Playwright, 5 chromium viewports | **913 passed**, 0 failed, 107 skipped |
+| Playwright, 5 chromium viewports | **928 passed**, 0 failed, 107 skipped |
 | `git diff --check` | clean |
 
-S2.6 added 58 server tests (919 vs 861), 22 client tests (1623 vs 1601) and 20
-browser tests (60 cost tests × 5 viewports). Ten `cost` visual baselines were
-regenerated because `/cost` gained the queue region; every other baseline
-matched byte-for-byte.
+Against `main`, S2.6 adds 92 server tests (953 vs 861), 25 client tests (1626 vs
+1601) and 30 browser tests. The truth repair alone added 34 server, 3 client and
+15 browser tests. Ten `cost` visual baselines were regenerated when `/cost`
+gained the queue region and eight again when its header copy changed; every other
+baseline matched byte-for-byte throughout.
+
+Regressions the repair specifically pins:
+
+- an old workspace recompute does not hide a newly basis-eligible line with no
+  current basis row (contract, route and browser);
+- unreceived, non-reconciled, unlinked and evidence-free lines are never queued;
+- a recompute event that published zero basis rows still reports its real
+  version and time, and does not fall back to an older run's;
+- the reason count cannot drift back into prose — a guard scans all five S2.6
+  source files, and the panel is rendered against two differently-sized
+  vocabularies;
+- overage copy states that more cost evidence will not give those units a basis;
+- no next action names a repair surface this application lacks, and none tells an
+  owner to touch an allocation to trigger a recompute;
+- a failed contributing read stays `unavailable` while a capped read stays
+  `partial`, asserted side by side so the two cannot collapse into each other or
+  into the empty state.
 
 ### Explicitly NOT proved
 
@@ -134,6 +231,9 @@ matched byte-for-byte.
   so CI is the only place WebKit results come from.
 - Live Supabase parity, Railway deployment and hosted acceptance: **not
   checked**. No production data touched.
+- **Basis freshness of an EXISTING row.** The queue proves a basis row is absent;
+  it never claims an existing one is out of date. See the missing database fact
+  above.
 
 ### Rollback
 
@@ -154,8 +254,72 @@ derived basis it produced.**
 - Repository: `harmonicforce/russellvault2`. Canonical branch: `main`.
 - Branch: `claude/s2-5-cost-allocation-ui`.
 - Base SHA: `2a858591c12b0b2a1a13bd186eadfd2baaaafbe3` (current `main`).
-- Status: **implemented and validated locally.** Not merged, not deployed, not
-  hosted-accepted.
+- PR: **#72 (draft, unmerged)**.
+- Status: **implemented, truth-repaired and validated locally.** Not merged, not
+  deployed, not hosted-accepted.
+
+### The final truth repair
+
+Three defects in the first implementation were found in review and fixed on the
+same branch and PR. Each was a case of the surface stating something it could
+not support.
+
+**1. Missing basis was workspace-scoped, and produced a false clean queue.**
+`basis_never_derived` asked one question — *has any recompute ever run in this
+workspace* — which a workspace answers yes to forever after its first run. So
+this sequence went unreported: a recompute runs; a line later gains reconciled,
+linked inventory and applicable cost evidence; no recompute runs again; that
+line holds no basis row; and the queue said nothing needed attention. An owner
+would have been told their cost truth was complete while a whole line of it did
+not exist.
+
+The reason is now asked per **(line, currency)** — the grain the derivation
+itself publishes at — and all three conditions must hold:
+
+1. reconciled, inventory-linked units exist for the line
+   (`acquisition_receipts.status='reconciled'` → `acquisition_receipt_lines` →
+   `acquisition_receipt_line_inventory_links`, summing `quantity_linked`, which
+   is exactly the function's `_icb_units`);
+2. the line is basis-eligible in that currency — the union of `_icb_costs` and
+   `_icb_blockers` the function joins its `currencies` set from, mirrored in
+   `basisEligibleCurrenciesByLine`;
+3. `inventory_cost_basis_current` holds **no** row for that pair.
+
+Exclusions are enforced, not incidental: unreceived inventory, non-reconciled
+receipts, received-but-unlinked quantity, and lines with no applicable cost
+evidence in any currency are all silent. A pair that already HAS rows is left
+alone however old they are — that is the staleness question, and staleness is
+still not evidenced. And because this is the one reason asserting an ABSENCE, it
+is **suppressed entirely when any contributing read hit its ceiling**: a
+truncated read is indistinguishable from a workspace that never derived those
+lines, so the response's own `complete: false` carries the truth instead.
+
+**2. Last-derivation metadata was scavenged off basis rows.** It is now read
+from the run-level event — `inventory_cost_basis_events` where
+`inventory_cost_basis_id is null`, ordered by `created_at` then `recompute_id`
+descending, limit 1. A recompute over a workspace with nothing derivable
+publishes no basis rows, and scavenging then reported an OLDER run's version and
+time, or nothing at all, while labelling it the last derivation. The run event
+has no such gap. `basis_stale` was **not** added.
+
+**3. Copy that promised things the application cannot do.** Fixed:
+
+- the header no longer states the size of the reason vocabulary in prose — it
+  derives it from the vocabulary the server sent, and a guard test scans all five
+  S2.6 source files for a hand-written count;
+- the overage reason no longer implies recording another cost component gives
+  those units a basis. S2.4 leaves every unit beyond the expected source quantity
+  unresolved by design, so the copy now says so explicitly and points at the
+  receiving discrepancy, which is a surface that exists;
+- no reason tells an owner to confirm or reverse an unrelated allocation to
+  trigger a recompute. That would be asking them to falsify a governed review
+  decision to move a number;
+- `amount_not_known` no longer says "establish the amount". Component amounts
+  arrive through import and nothing in this application edits one
+  (`reverse_cost_component` remains deliberately unexposed), so it says that.
+
+Where no direct repair surface exists, the next action says so. A bare row with
+an honest "there is nowhere to do this yet" is better than a fabricated button.
 
 ### Integration with S2.4 / S2.4.1
 

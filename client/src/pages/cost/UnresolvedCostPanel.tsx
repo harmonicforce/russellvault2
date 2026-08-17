@@ -102,11 +102,20 @@ export function UnresolvedCostPanel({
         <h2 className="font-display text-sm font-semibold uppercase tracking-wide text-ink">
           Unresolved cost
         </h2>
+        {/*
+          The size of the reason vocabulary is DERIVED from the vocabulary the
+          server sent, never written out here. A sentence that counts a list by
+          hand is correct until the list changes, and this one changed: the
+          count moved the moment `basis_never_derived` stopped being a single
+          workspace-wide row. When no read has produced a vocabulary yet, the
+          sentence simply omits the number rather than guessing at it.
+        */}
         <p className="mt-1 max-w-prose text-xs text-ink-secondary">
           What cost truth still needs attention, why, and where to resolve it. Each entry names one
-          specific problem — there is no general “needs attention” bucket, because six different
-          problems need six different actions. This is triage: the work itself happens on the cost
-          component.
+          specific problem — there is no general “needs attention” bucket, because different problems
+          need different actions
+          {meta && <> and the governed record tells <Count value={meta.reasons.length} /> of them apart</>}
+          . This is triage: the work itself happens on the cost component.
         </p>
       </div>
 
@@ -223,16 +232,21 @@ export function UnresolvedCostPanel({
         )}
 
         {/*
-          What the last derivation was — never whether it is still current.
-          Nothing readable evidences staleness, so nothing here claims it.
+          What the last RUN was — never whether what it produced is still
+          current. These facts come from the run-level derivation event, not
+          from the basis rows, so a recompute that had nothing to derive still
+          reports the version and time it genuinely ran at instead of borrowing
+          an older run's. Nothing readable evidences staleness, so nothing here
+          claims it.
         */}
         {meta && (
           <p className="text-xs text-ink-secondary" data-derivation-note>
             {meta.derivation.everRun
-              ? `Cost basis last derived by algorithm ${meta.derivation.algorithmVersion ?? 'unknown'} at `
-                + `${instant(meta.derivation.derivedAt)}. Whether that derivation still reflects `
-                + 'current evidence is not something the governed record exposes, so it is not claimed here.'
-              : 'No governed cost-basis derivation has ever run in this workspace.'}
+              ? `The governed cost-basis recompute last ran under algorithm `
+                + `${meta.derivation.algorithmVersion ?? 'unknown'} at ${instant(meta.derivation.derivedAt)}. `
+                + 'Whether the basis it produced still reflects current evidence is not something the '
+                + 'governed record exposes, so it is not claimed here.'
+              : 'The governed cost-basis recompute has never run in this workspace.'}
           </p>
         )}
       </div>
@@ -318,9 +332,14 @@ function UnresolvedEntry({
         {/*
           The link into the EXISTING workflow. Only for rows that name a
           component, because that is the only place this queue can honestly send
-          someone — a line-scoped or workspace-scoped problem has no single
-          component workspace to open, and inventing a destination would be
-          worse than saying where the problem is and letting the owner navigate.
+          someone — a line-scoped problem spans however many components touch
+          that line and has no single workspace to open.
+
+          A row with no link is not a row with nothing to say: its `nextAction`
+          above states what to do, INCLUDING when the honest answer is that this
+          application has no surface for it. Inventing a destination to avoid a
+          bare row would be the worse failure, because the owner would arrive
+          somewhere that cannot fix their problem.
         */}
         {row.componentPublicId && (
           <Link

@@ -308,8 +308,13 @@ export type BasisRecomputeOutcome =
  * Why one row needs attention.
  *
  * A CLOSED set of distinct, evidenced problems. There is deliberately no
- * "needs attention" bucket: six different problems need six different actions,
- * and collapsing them turns a work list into a pile.
+ * "needs attention" bucket: each names a different problem needing a different
+ * action, and collapsing them turns a work list into a pile.
+ *
+ * THE SIZE OF THIS SET IS NEVER WRITTEN DOWN IN PROSE, here or on screen. The
+ * server sends its own vocabulary with every response (`reasons`), so anything
+ * that needs the count derives it from that. A sentence that counted the list by
+ * hand was correct right up until the list changed — which it did.
  */
 export type UnresolvedReason =
   | 'amount_not_known'
@@ -318,6 +323,7 @@ export type UnresolvedReason =
   | 'basis_unresolved'
   | 'overage_without_cost'
   | 'negative_net_cost_evidence'
+  /** Line-scoped: this line and currency are basis-eligible and hold no row. */
   | 'basis_never_derived';
 
 export interface ReasonDescriptor {
@@ -327,7 +333,7 @@ export interface ReasonDescriptor {
   readonly nextAction: string;
 }
 
-export type UnresolvedSubject = 'cost_component' | 'acquisition_line' | 'workspace';
+export type UnresolvedSubject = 'cost_component' | 'acquisition_line';
 
 export interface UnresolvedRow {
   readonly key: string;

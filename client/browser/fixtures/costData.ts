@@ -94,7 +94,9 @@ const UNRESOLVED_REASON_DESCRIPTORS = [
     description:
       'The source did not report an amount for this cost component. That is not zero, and nothing '
       + 'downstream may treat it as zero.',
-    nextAction: 'Establish the amount from the source evidence.',
+    nextAction:
+      'This application has no surface for editing a component amount — amounts reach the governed '
+      + 'record from the source import. Correct it at the source and re-import.',
   },
   {
     reason: 'shared_cost_unallocated',
@@ -116,27 +118,39 @@ const UNRESOLVED_REASON_DESCRIPTORS = [
     description:
       'The governed recompute ran and concluded it could not establish a cost for these inventory '
       + 'units.',
-    nextAction: 'Resolve the cost evidence this line depends on, then let the basis refresh.',
+    nextAction:
+      'Resolve the blocking evidence for this line — it is listed in this queue as its own entry. '
+      + 'The basis is re-derived as part of a governed allocation decision; nothing here requests a '
+      + 'derivation on its own.',
   },
   {
     reason: 'overage_without_cost',
     title: 'More units received than the source priced',
     description:
-      'More units were received and reconciled than the acquisition expected, and the source '
-      + 'reported no cost for the extra units.',
-    nextAction: 'Record the receiving discrepancy, or establish cost evidence for the extra units.',
+      'More units were received and reconciled than the acquisition expected. The governed algorithm '
+      + 'leaves every unit beyond the expected source quantity unresolved by design.',
+    nextAction:
+      'Record the receiving discrepancy against the receipt. Recording another cost component will '
+      + 'not give these units a basis.',
   },
   {
     reason: 'negative_net_cost_evidence',
     title: 'Cost evidence nets below zero',
     description: 'The applicable cost evidence for this line and currency sums to less than zero.',
-    nextAction: 'Check the discount and price evidence on this line.',
+    nextAction:
+      'Review the discount and price evidence on this line. A confirmed allocation can be reversed '
+      + 'here; a component amount cannot be edited in this application.',
   },
   {
     reason: 'basis_never_derived',
-    title: 'No cost basis has ever been derived',
-    description: 'No governed recompute has ever run in this workspace.',
-    nextAction: 'Confirm or reverse an allocation, which runs the governed recompute.',
+    title: 'No cost basis derived for these units',
+    description:
+      'This acquisition line has reconciled inventory linked to it and applicable cost evidence in '
+      + 'this currency, and the governed record holds no cost basis for it.',
+    nextAction:
+      'Nothing in this application requests a derivation for one line. The governed recompute runs '
+      + 'only as part of confirming, reversing or withdrawing a cost allocation, and no allocation '
+      + 'should be touched for the sake of triggering it.',
   },
 ];
 
@@ -491,7 +505,12 @@ export class CostWorld {
    * "awaiting review" back to "not yet split" — the queue must show the CURRENT
    * problem, not treat the withdrawal as a resolution.
    */
-  unresolved(role: 'owner' | 'operator' | 'viewer', complete: boolean, derivationEverRun = true) {
+  unresolved(
+    role: 'owner' | 'operator' | 'viewer',
+    complete: boolean,
+    basisDerived = true,
+    recomputeEverRan = true,
+  ) {
     const rows: Record<string, unknown>[] = [];
 
     // The tax component: an amount the source never reported.
@@ -534,16 +553,18 @@ export class CostWorld {
 
     // A line-scoped unresolved basis, in a SECOND currency, so the browser can
     // prove currencies are listed separately and never combined.
-    rows.push({
-      key: 'basis_unresolved|RV-AL-000002|EUR',
-      reason: 'basis_unresolved', subject: 'acquisition_line',
-      componentPublicId: null, componentType: null, amount: null, currency: 'EUR',
-      orderPublicId: COST_ORDER, lotPublicId: null,
-      acquisitionLinePublicId: 'RV-AL-000002', sourceSystemPublicId: COST_SOURCE_SYSTEM,
-      attributionState: null, candidateCount: null,
-      basis: { unresolvedUnitCount: 1, methods: ['unresolved'] },
-      quantities: null, netMinor: null,
-    });
+    if (basisDerived) {
+      rows.push({
+        key: 'basis_unresolved|RV-AL-000002|EUR',
+        reason: 'basis_unresolved', subject: 'acquisition_line',
+        componentPublicId: null, componentType: null, amount: null, currency: 'EUR',
+        orderPublicId: COST_ORDER, lotPublicId: null,
+        acquisitionLinePublicId: 'RV-AL-000002', sourceSystemPublicId: COST_SOURCE_SYSTEM,
+        attributionState: null, candidateCount: null,
+        basis: { unresolvedUnitCount: 1, methods: ['unresolved'] },
+        quantities: null, netMinor: null,
+      });
+    }
 
     // An overage the source never priced.
     rows.push({
@@ -556,15 +577,28 @@ export class CostWorld {
       quantities: { expected: 1, reconciled: 2, overage: 1 }, netMinor: null,
     });
 
-    if (!derivationEverRun) {
-      rows.push({
-        key: 'basis_never_derived|workspace',
-        reason: 'basis_never_derived', subject: 'workspace',
-        componentPublicId: null, componentType: null, amount: null, currency: null,
-        orderPublicId: null, lotPublicId: null, acquisitionLinePublicId: null,
-        sourceSystemPublicId: null, attributionState: null, candidateCount: null,
-        basis: null, quantities: null, netMinor: null,
-      });
+    /*
+     * THE FALSE CLEAN QUEUE, AS A BROWSER SCENARIO.
+     *
+     * Note what stays TRUE below when the basis is missing: `everRun`. That is
+     * the whole scenario — a recompute demonstrably ran, so a workspace-wide
+     * "has anything ever been derived" check answers yes, while these two lines
+     * still hold no basis row at all. The rows are line- and currency-scoped
+     * because that is the grain the derivation publishes at.
+     */
+    if (!basisDerived) {
+      for (const linePublicId of ['RV-AL-000001', 'RV-AL-000002']) {
+        rows.push({
+          key: `basis_never_derived|${linePublicId}|${this.currency}`,
+          reason: 'basis_never_derived', subject: 'acquisition_line',
+          componentPublicId: null, componentType: null, amount: null,
+          currency: this.currency,
+          orderPublicId: COST_ORDER, lotPublicId: null,
+          acquisitionLinePublicId: linePublicId, sourceSystemPublicId: COST_SOURCE_SYSTEM,
+          attributionState: null, candidateCount: null,
+          basis: null, quantities: null, netMinor: null,
+        });
+      }
     }
 
     return {
@@ -573,10 +607,13 @@ export class CostWorld {
       complete,
       role,
       reasons: UNRESOLVED_REASON_DESCRIPTORS,
+      // Read from the run-level event on the server, so a run that published no
+      // basis rows still reports the version and time it actually ran at —
+      // which is exactly the `basisDerived: false, recomputeEverRan: true` case.
       derivation: {
-        everRun: derivationEverRun,
-        algorithmVersion: derivationEverRun ? '1.1.0' : null,
-        derivedAt: derivationEverRun ? '2026-08-15T10:00:00.000Z' : null,
+        everRun: recomputeEverRan,
+        algorithmVersion: recomputeEverRan ? '1.1.0' : null,
+        derivedAt: recomputeEverRan ? '2026-08-15T10:00:00.000Z' : null,
         staleness: 'not_evidenced',
       },
       rows,

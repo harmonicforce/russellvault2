@@ -156,17 +156,67 @@ let readFailureTable: string | null = null;
 /** Make one table return exactly the ceiling, so the answer is a subset. */
 let ceilingTable: string | null = null;
 
+const OLDER_RECOMPUTE_ID = 'eeee4444-4444-4444-4444-444444444444';
+
 /**
- * One run event per recompute.
+ * Governed derivation events.
  *
  * `inventory_cost_basis_id` is null on the per-RUN row, which is exactly what
- * the existence read filters on — so this fixture carries a per-basis-row event
- * too, to prove the filter is doing real work rather than matching anything.
+ * the read filters on — so this fixture carries a per-basis-row event too, and
+ * gives it the NEWEST `created_at` of all. If the server ever stopped applying
+ * the null filter it would report a per-row event as the last run, and these
+ * tests would catch it rather than agreeing with it.
+ *
+ * Two run events, oldest first in fixture order, so "the latest run" cannot pass
+ * by accidentally taking the first row.
  */
 const DERIVATION_RUN_ROWS = [
-  { recompute_id: RECOMPUTE_ID, inventory_cost_basis_id: null },
-  { recompute_id: RECOMPUTE_ID, inventory_cost_basis_id: 'ffff6666-6666-6666-6666-666666666666' },
+  {
+    recompute_id: OLDER_RECOMPUTE_ID, inventory_cost_basis_id: null,
+    algorithm_version: '1.0.0', created_at: '2026-08-01T00:00:00.000Z',
+  },
+  {
+    recompute_id: RECOMPUTE_ID, inventory_cost_basis_id: null,
+    algorithm_version: '1.1.0', created_at: '2026-08-15T10:00:00.000Z',
+  },
+  {
+    recompute_id: RECOMPUTE_ID, inventory_cost_basis_id: 'ffff6666-6666-6666-6666-666666666666',
+    algorithm_version: '1.1.0', created_at: '2026-08-16T23:00:00.000Z',
+  },
 ];
+
+/**
+ * Reconciled receiving that reached inventory, for both in-scope lines.
+ *
+ * Basis eligibility is decided from these three tables, so the default fixture
+ * makes both lines genuinely eligible — which is what lets the exclusion tests
+ * below prove something by REMOVING one level at a time.
+ */
+const RECEIPT_ROWS = [
+  { id: 'aaaa9999-9999-9999-9999-999999999999', status: 'reconciled' },
+  { id: 'bbbb9999-9999-9999-9999-999999999999', status: 'open' },
+];
+
+const RECEIPT_LINE_ROWS = [
+  {
+    id: 'cccc9999-9999-9999-9999-999999999991',
+    acquisition_receipt_id: 'aaaa9999-9999-9999-9999-999999999999',
+    acquisition_line_item_id: LINE_A,
+  },
+  {
+    id: 'cccc9999-9999-9999-9999-999999999992',
+    acquisition_receipt_id: 'aaaa9999-9999-9999-9999-999999999999',
+    acquisition_line_item_id: LINE_B,
+  },
+];
+
+const INVENTORY_LINK_ROWS = [
+  { acquisition_receipt_line_id: 'cccc9999-9999-9999-9999-999999999991', quantity_linked: 2 },
+  { acquisition_receipt_line_id: 'cccc9999-9999-9999-9999-999999999992', quantity_linked: 2 },
+];
+
+/** Drop all receiving, so no line has basis-eligible inventory. */
+let receivingEmpty = false;
 
 /**
  * Derived S2.4 cost-basis rows for the two in-scope lines.
@@ -275,6 +325,13 @@ function makeFakeClient(token: string) {
     if (table === 'inventory_cost_basis_events') {
       return derivationNeverRan ? [] : narrow(DERIVATION_RUN_ROWS);
     }
+    if (table === 'acquisition_receipts') return receivingEmpty ? [] : narrow(RECEIPT_ROWS);
+    if (table === 'acquisition_receipt_lines') {
+      return receivingEmpty ? [] : narrow(RECEIPT_LINE_ROWS);
+    }
+    if (table === 'acquisition_receipt_line_inventory_links') {
+      return receivingEmpty ? [] : narrow(INVENTORY_LINK_ROWS);
+    }
     return [];
   }
 
@@ -292,7 +349,12 @@ function makeFakeClient(token: string) {
       // as a real null filter rather than a no-op, so a test cannot pass
       // because the fake ignored a predicate the server relies on.
       const nullFilters: string[] = [];
-      const result = () => {
+      // `.order()` and `.limit()` are MODELLED, not swallowed. The unresolved
+      // queue reads "the latest run event" as an ordered `limit(1)`, so a fake
+      // that ignored either would let the server return an arbitrary run event
+      // and still pass — which is the exact defect these tests exist to prevent.
+      const sorts: Array<{ column: string; ascending: boolean }> = [];
+      const result = (max?: number) => {
         if (readFailureTable === table) {
           return { data: null, error: { message: 'connection terminated unexpectedly' }, count: 0 };
         }
@@ -301,7 +363,21 @@ function makeFakeClient(token: string) {
           // "there may be more" without saying so itself.
           return { data: Array.from({ length: 2000 }, () => ({})), error: null, count: 0 };
         }
-        return { data: rowsFor(table, filters, inFilters, nullFilters), error: null, count: 0 };
+        const rows = [...rowsFor(table, filters, inFilters, nullFilters)] as Record<string, unknown>[];
+        rows.sort((a, b) => {
+          for (const { column, ascending } of sorts) {
+            const left = String(a[column] ?? '');
+            const right = String(b[column] ?? '');
+            if (left === right) continue;
+            return (left < right ? -1 : 1) * (ascending ? 1 : -1);
+          }
+          return 0;
+        });
+        return {
+          data: max === undefined ? rows : rows.slice(0, max),
+          error: null,
+          count: 0,
+        };
       };
       const q: Record<string, unknown> = {
         select: () => q,
@@ -309,9 +385,12 @@ function makeFakeClient(token: string) {
         in: (col: string, vals: readonly string[]) => { inFilters[col] = vals; return q; },
         is: (col: string, val: unknown) => { if (val === null) nullFilters.push(col); return q; },
         or: () => q,
-        order: () => q,
+        order: (col: string, opts?: { ascending?: boolean }) => {
+          sorts.push({ column: col, ascending: opts?.ascending !== false });
+          return q;
+        },
         range: async () => result(),
-        limit: async () => result(),
+        limit: async (max?: number) => result(max),
         then: (resolve: (v: unknown) => unknown) => Promise.resolve(resolve(result())),
       };
       return q;
@@ -382,6 +461,7 @@ beforeEach(() => {
   recomputeUnchanged = false;
   basisEmpty = false;
   derivationNeverRan = false;
+  receivingEmpty = false;
   readFailureTable = null;
   ceilingTable = null;
 });
@@ -1285,7 +1365,17 @@ describe('the unresolved-cost queue', () => {
     expect(row.quantities).toEqual({ expected: 1, reconciled: 2, overage: 1 });
   });
 
-  it('reports the workspace derivation state, and does not claim staleness', async () => {
+  /*
+   * THE LAST RUN COMES FROM THE RUN EVENT.
+   *
+   * The fixture is built so that scavenging the metadata off the basis rows
+   * would be indistinguishable from reading it properly — every basis row also
+   * carries `1.1.0` and `2026-08-15T10:00:00.000Z`. What separates the two is
+   * the fixture's OTHER events: an older run at `1.0.0`, and a per-basis-row
+   * event stamped later than any run. Only a read that orders by time AND
+   * filters `inventory_cost_basis_id is null` lands on the right one.
+   */
+  it('reports the latest RUN event, not the newest basis row or event', async () => {
     const { body } = await read();
     expect(body.derivation).toEqual({
       everRun: true,
@@ -1294,16 +1384,77 @@ describe('the unresolved-cost queue', () => {
       // The one state this surface refuses to guess at.
       staleness: 'not_evidenced',
     });
-    expect(reasonsOf(body)).not.toContain('basis_never_derived');
+    // Not the per-basis-row event, which is stamped a day later.
+    expect(body.derivation.derivedAt).not.toBe('2026-08-16T23:00:00.000Z');
+    // And not the older run.
+    expect(body.derivation.algorithmVersion).not.toBe('1.0.0');
   });
 
-  it('reports that no derivation has ever run, when none has', async () => {
+  // A RECOMPUTE THAT DERIVED NOTHING STILL RAN. Its version and time are facts,
+  // and reading them off basis rows would report an older run's — or nothing.
+  it('reports a real version and time for a recompute that published no rows', async () => {
+    basisEmpty = true;
+    const { body } = await read();
+    expect(body.derivation.everRun).toBe(true);
+    expect(body.derivation.algorithmVersion).toBe('1.1.0');
+    expect(body.derivation.derivedAt).toBe('2026-08-15T10:00:00.000Z');
+  });
+
+  it('reports that no derivation has ever run, without inventing a queue row', async () => {
     derivationNeverRan = true;
     const { body } = await read();
     expect(body.derivation.everRun).toBe(false);
-    const row = rowFor(body, 'basis_never_derived') as Record<string, unknown>;
-    expect(row).toBeTruthy();
-    expect(row.subject).toBe('workspace');
+    expect(body.derivation.algorithmVersion).toBeNull();
+    expect(body.derivation.derivedAt).toBeNull();
+    // "Never derived" is metadata about the derivation, not a workspace-wide
+    // unresolved cost, and no row claims otherwise.
+    expect(body.rows.some((row: Record<string, unknown>) => row.subject === 'workspace')).toBe(false);
+  });
+
+  /*
+   * THE FALSE CLEAN QUEUE, END TO END.
+   *
+   * The default fixture is fully derived: every basis-eligible (line, currency)
+   * pair holds a row, and a recompute demonstrably ran. Dropping the basis rows
+   * while KEEPING the run event reproduces the exact sequence the old
+   * workspace-wide check missed — derivation has happened, so the workspace-level
+   * question answers "yes", and the lines are still uncovered.
+   */
+  it('reports nothing missing while every eligible pair is derived', async () => {
+    const { body } = await read();
+    expect(reasonsOf(body)).not.toContain('basis_never_derived');
+  });
+
+  it('reports basis-eligible lines an old recompute never covered', async () => {
+    basisEmpty = true;
+    const { body } = await read();
+
+    const missing = body.rows.filter((row: Record<string, unknown>) =>
+      row.reason === 'basis_never_derived');
+    expect(missing.map((row: Record<string, unknown>) => row.acquisitionLinePublicId).sort())
+      .toEqual(['RV-AL-AAA111', 'RV-AL-BBB222']);
+    expect(missing.every((row: Record<string, unknown>) =>
+      row.subject === 'acquisition_line' && row.currency === 'USD')).toBe(true);
+    // The workspace HAS derived before. That is no longer the question asked.
+    expect(body.derivation.everRun).toBe(true);
+    expect(containsInternalId(body)).toBe(false);
+  });
+
+  it('reports no missing basis for lines with no basis-eligible inventory', async () => {
+    basisEmpty = true;
+    receivingEmpty = true;
+    const { body } = await read();
+    expect(reasonsOf(body)).not.toContain('basis_never_derived');
+  });
+
+  // A CAPPED READ CANNOT PROVE AN ABSENCE. The basis read being short looks
+  // exactly like a workspace that never derived those lines, so the claim is
+  // withheld and `complete: false` carries the truth instead.
+  it('withholds the missing-basis claim when a contributing read was capped', async () => {
+    ceilingTable = 'inventory_cost_basis_current';
+    const { body } = await read();
+    expect(body.complete).toBe(false);
+    expect(reasonsOf(body)).not.toContain('basis_never_derived');
   });
 
   // --- the exclusions, which matter as much as the inclusions ---------------
@@ -1516,6 +1667,9 @@ describe('the unresolved-cost queue', () => {
     'inventory_cost_basis_current',
     'unresolved_inventory_cost_basis',
     'inventory_cost_basis_events',
+    'acquisition_receipts',
+    'acquisition_receipt_lines',
+    'acquisition_receipt_line_inventory_links',
   ])('fails rather than returning an empty queue when %s cannot be read', async (table) => {
     readFailureTable = table;
     const { status, body } = await get(ws('/api/cost/unresolved'), 'owner-token');
@@ -1529,11 +1683,23 @@ describe('the unresolved-cost queue', () => {
     'acquisition_cost_components',
     'inventory_cost_basis_current',
     'unresolved_inventory_cost_basis',
+    'acquisition_receipts',
+    'acquisition_receipt_lines',
+    'acquisition_receipt_line_inventory_links',
   ])('reports complete:false when the %s read hits its ceiling', async (table) => {
     ceilingTable = table;
     const { status, body } = await get(ws('/api/cost/unresolved'), 'owner-token');
     expect(status).toBe(200);
     expect(body.complete).toBe(false);
+  });
+
+  // AND THE RUN-EVENT READ IS NOT A COMPLETENESS SIGNAL. It is `limit(1)` by
+  // design: asking for the newest run and getting exactly one is the intended
+  // outcome, not evidence that rows were dropped.
+  it('does not treat the one-row run-event read as a capped read', async () => {
+    const { body } = await read();
+    expect(body.derivation.everRun).toBe(true);
+    expect(body.complete).toBe(true);
   });
 
   it('reports complete:true only when every contributing read came back short', async () => {

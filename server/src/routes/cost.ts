@@ -74,7 +74,10 @@ import {
   type AcquisitionLotLineRow,
   type AcquisitionLotRow,
   type AcquisitionOrderRow,
+  type AcquisitionReceiptLineRow,
+  type AcquisitionReceiptRow,
   type AllocationMethod,
+  type ReceiptInventoryLinkRow,
   type CostAllocationRow,
   type BasisRecomputeOutcome,
   type CostComponentRow,
@@ -306,24 +309,76 @@ async function readAllUnresolvedBasis(client: Supa, workspaceId: string) {
 }
 
 /**
- * Has a governed recompute ever run in this workspace?
+ * The most recent governed recompute RUN.
  *
- * `inventory_cost_basis_events` records one row with a null
- * `inventory_cost_basis_id` per RUN, so a single such row settles the question.
- * Only one is read, because the question is existence and nothing else — this
- * surface deliberately does NOT try to decide whether the last run is still
- * current. See `DERIVATION_STALENESS_IS_NOT_EVIDENCED` in the contract for the
- * exact database fact that would be needed to answer that, and why guessing at
- * it was refused.
+ * `inventory_cost_basis_events` writes exactly one row with a null
+ * `inventory_cost_basis_id` per run — the schema enforces it with a partial
+ * unique index on `(workspace_id, recompute_id)` — and that row carries the
+ * version and time the run actually happened at.
+ *
+ * READ FROM THE RUN EVENT, NOT FROM THE BASIS ROWS. Scavenging the newest
+ * `derived_at` off `inventory_cost_basis_current` gets the right answer only
+ * when the last run produced rows. A recompute over a workspace with nothing
+ * derivable publishes none, and the scavenged version and timestamp would then
+ * belong to some earlier run while being labelled the last derivation — or,
+ * where no run has ever produced a row, would be null while a run demonstrably
+ * happened. The run event has no such gap.
+ *
+ * ORDERED DETERMINISTICALLY. `created_at` is `now()`, which is transaction time,
+ * so two recomputes in one transaction share it exactly; `recompute_id` breaks
+ * the tie so repeated reads of unchanged data cannot disagree about which run
+ * was last.
+ *
+ * `input_content_hash` is deliberately not read. It is the historical half of a
+ * comparison whose other half the database does not publish, so reading it would
+ * buy nothing but the temptation to guess — see
+ * `DERIVATION_STALENESS_IS_NOT_EVIDENCED` in the contract.
  */
-async function readDerivationRuns(client: Supa, workspaceId: string) {
-  return readRows<{ recompute_id: string }>(() =>
+async function readLatestRunEvent(client: Supa, workspaceId: string) {
+  return readRows<{ algorithm_version: string; created_at: string }>(() =>
     client
       .from('inventory_cost_basis_events')
-      .select('recompute_id')
+      .select('algorithm_version,created_at')
       .eq('workspace_id', workspaceId)
       .is('inventory_cost_basis_id', null)
+      .order('created_at', { ascending: false })
+      .order('recompute_id', { ascending: false })
       .limit(1));
+}
+
+/*
+ * The receiving evidence basis eligibility is decided from.
+ *
+ * Three narrow reads rather than one joined view, because no governed view
+ * publishes "reconciled, inventory-linked units per acquisition line" and this
+ * slice adds no SQL. Each selects only join keys and the one fact it needs; no
+ * identifier from any of them reaches the response.
+ */
+async function readReceipts(client: Supa, workspaceId: string) {
+  return readRows<AcquisitionReceiptRow>(() =>
+    client
+      .from('acquisition_receipts')
+      .select('id,status')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+async function readReceiptLines(client: Supa, workspaceId: string) {
+  return readRows<AcquisitionReceiptLineRow>(() =>
+    client
+      .from('acquisition_receipt_lines')
+      .select('id,acquisition_receipt_id,acquisition_line_item_id')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+async function readInventoryLinks(client: Supa, workspaceId: string) {
+  return readRows<ReceiptInventoryLinkRow>(() =>
+    client
+      .from('acquisition_receipt_line_inventory_links')
+      .select('acquisition_receipt_line_id,quantity_linked')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
 }
 
 async function readOrders(client: Supa, workspaceId: string) {
@@ -416,11 +471,16 @@ router.get('/unresolved', requireMember, asyncRoute(async (req, res) => {
     readAllUnresolvedBasis(client, workspaceId),
   ]);
 
-  const [allocations, lotLines, basisRows, derivationRuns] = await Promise.all([
+  const [
+    allocations, lotLines, basisRows, runEvents, receipts, receiptLines, inventoryLinks,
+  ] = await Promise.all([
     readAllocations(client, workspaceId, components.map((component) => component.id)),
     readLotLines(client, workspaceId),
     readAllBasisRows(client, workspaceId),
-    readDerivationRuns(client, workspaceId),
+    readLatestRunEvent(client, workspaceId),
+    readReceipts(client, workspaceId),
+    readReceiptLines(client, workspaceId),
+    readInventoryLinks(client, workspaceId),
   ]);
 
   /*
@@ -431,6 +491,10 @@ router.get('/unresolved', requireMember, asyncRoute(async (req, res) => {
    * claim this surface may only make after a COMPLETE authoritative read, so
    * every read that feeds a reason is checked, and the UI renders `partial`
    * rather than `empty` when any of them was cut short.
+   *
+   * The run-event read is absent from this list on purpose: it is `limit(1)` by
+   * design, asking for the newest run and no more, so its length proves nothing
+   * about completeness either way.
    */
   const complete =
     components.length < MAX_ASSEMBLY_ROWS
@@ -440,12 +504,20 @@ router.get('/unresolved', requireMember, asyncRoute(async (req, res) => {
     && orders.length < MAX_ASSEMBLY_ROWS
     && lines.length < MAX_ASSEMBLY_ROWS
     && basisRows.length < MAX_ASSEMBLY_ROWS
-    && unresolvedRows.length < MAX_ASSEMBLY_ROWS;
+    && unresolvedRows.length < MAX_ASSEMBLY_ROWS
+    && receipts.length < MAX_ASSEMBLY_ROWS
+    && receiptLines.length < MAX_ASSEMBLY_ROWS
+    && inventoryLinks.length < MAX_ASSEMBLY_ROWS;
 
+  const latestRun = runEvents[0];
   const queue = buildUnresolvedQueue({
     components, allocations, lots, lotLines, orders, lines, basisRows, unresolvedRows,
-    // A single run event is enough to establish that a derivation has happened.
-    derivationEverRun: derivationRuns.length > 0,
+    receipts, receiptLines, inventoryLinks,
+    latestRun: latestRun
+      ? { algorithmVersion: latestRun.algorithm_version, derivedAt: latestRun.created_at }
+      : null,
+    // Only a complete read can prove a basis row is ABSENT rather than unread.
+    absenceProvable: complete,
   });
 
   res.json({

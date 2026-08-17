@@ -608,6 +608,24 @@ describe('governed refusals keep their meaning', () => {
 const S26_ORDER = ORDER_ID;
 const S26_LINE_A = LINE_A;
 const S26_LINE_B = LINE_B;
+const LINE_A_PUBLIC_ID = 'RV-AL-AAA111';
+const LINE_B_PUBLIC_ID = 'RV-AL-BBB222';
+
+/** A settled, directly-attributed price on one line — the simplest evidence. */
+function priced(lineItemId: string, over: Partial<CostComponentRow> = {}): CostComponentRow {
+  return component({
+    id: `price-${lineItemId}`,
+    public_id: 'RV-ACOST-PRICE1',
+    component_type: 'item_price',
+    attribution_state: 'direct',
+    line_item_id: lineItemId,
+    lot_id: null,
+    order_id: null,
+    amount_state: 'known',
+    amount_minor: 4200,
+    ...over,
+  });
+}
 
 function s26Lots(): AcquisitionLotRow[] {
   return [
@@ -656,6 +674,34 @@ function unresolvedRow(over: Partial<UnresolvedBasisRow> = {}): UnresolvedBasisR
   };
 }
 
+/**
+ * Reconciled receiving that reaches inventory, for one acquisition line.
+ *
+ * Written out at all three levels the derivation actually walks — receipt,
+ * receipt line, inventory link — because each level can independently disqualify
+ * a line, and a helper that collapsed them would make the disqualifying cases
+ * untestable.
+ */
+function received(lineItemId: string, over: {
+  status?: string;
+  quantityLinked?: number;
+  linked?: boolean;
+} = {}) {
+  const suffix = lineItemId;
+  return {
+    receipts: [{ id: `receipt-${suffix}`, status: over.status ?? 'reconciled' }],
+    receiptLines: [{
+      id: `receipt-line-${suffix}`,
+      acquisition_receipt_id: `receipt-${suffix}`,
+      acquisition_line_item_id: lineItemId,
+    }],
+    inventoryLinks: over.linked === false ? [] : [{
+      acquisition_receipt_line_id: `receipt-line-${suffix}`,
+      quantity_linked: over.quantityLinked ?? 1,
+    }],
+  };
+}
+
 function queue(over: Partial<Parameters<typeof buildUnresolvedQueue>[0]> = {}) {
   return buildUnresolvedQueue({
     components: [],
@@ -666,7 +712,11 @@ function queue(over: Partial<Parameters<typeof buildUnresolvedQueue>[0]> = {}) {
     lines: s26Lines(),
     basisRows: [],
     unresolvedRows: [],
-    derivationEverRun: true,
+    receipts: [],
+    receiptLines: [],
+    inventoryLinks: [],
+    latestRun: { algorithmVersion: '1.1.0', derivedAt: '2026-08-15T10:00:00.000Z' },
+    absenceProvable: true,
     ...over,
   });
 }
@@ -750,17 +800,222 @@ describe('the unresolved queue names distinct, evidenced reasons', () => {
     }))).toContain('negative_net_cost_evidence');
   });
 
-  it('reports that no derivation has ever run', () => {
-    expect(reasons(queue({ derivationEverRun: false }))).toEqual(['basis_never_derived']);
-    expect(queue({ derivationEverRun: false }).rows[0].subject).toBe('workspace');
-  });
-
   it('never claims the derivation is stale, because nothing evidences it', () => {
     const result = queue({ basisRows: [basisRow()] });
     expect(result.derivation.staleness).toBe('not_evidenced');
-    expect(result.derivation.algorithmVersion).toBe('1.1.0');
-    expect(result.derivation.derivedAt).toBe('2026-08-15T10:00:00.000Z');
     expect(JSON.stringify(result.derivation)).not.toMatch(/stale":\s*true|isCurrent/);
+  });
+});
+
+/*
+ * THE FALSE CLEAN QUEUE.
+ *
+ * `basis_never_derived` used to ask one workspace-wide question — has any
+ * recompute ever run here — which a workspace answers yes to forever after its
+ * first run. Every test below exists because that question let a real gap go
+ * unreported, and the fix is to ask per (line, currency) instead.
+ */
+describe('basis_never_derived is line-scoped, not workspace-scoped', () => {
+  // THE REGRESSION THIS FIX EXISTS FOR.
+  it('does not let an old workspace recompute hide a newly basis-eligible line', () => {
+    const result = queue({
+      // A recompute demonstrably ran, and covered line A.
+      latestRun: { algorithmVersion: '1.1.0', derivedAt: '2026-08-01T00:00:00.000Z' },
+      basisRows: [basisRow({ acquisition_line_item_id: S26_LINE_A })],
+      // Line B became basis-eligible afterwards and no recompute covered it.
+      components: [priced(S26_LINE_A), priced(S26_LINE_B, { id: 'price-b', public_id: 'RV-ACOST-PRICE2' })],
+      ...received(S26_LINE_B),
+    });
+
+    const missing = result.rows.filter((row) => row.reason === 'basis_never_derived');
+    expect(missing).toHaveLength(1);
+    expect(missing[0].subject).toBe('acquisition_line');
+    expect(missing[0].currency).toBe('USD');
+    expect(missing[0].acquisitionLinePublicId).toBe(LINE_B_PUBLIC_ID);
+    // The workspace HAS derived before. That is no longer the question asked.
+    expect(result.derivation.everRun).toBe(true);
+  });
+
+  it('reports the gap per currency, and never merges two currencies into one row', () => {
+    const result = queue({
+      components: [
+        priced(S26_LINE_A),
+        priced(S26_LINE_A, { id: 'price-eur', public_id: 'RV-ACOST-PRICE3', currency: 'EUR' }),
+      ],
+      ...received(S26_LINE_A),
+    });
+
+    const missing = result.rows.filter((row) => row.reason === 'basis_never_derived');
+    expect(missing.map((row) => row.currency)).toEqual(['EUR', 'USD']);
+    // Each row is its own currency's problem; no row spans both, and no total does.
+    expect(missing.every((row) => row.netMinor === null && row.amount === null)).toBe(true);
+    expect(new Set(missing.map((row) => row.key)).size).toBe(2);
+  });
+
+  it('stays silent for the currency that IS derived while reporting the one that is not', () => {
+    const result = queue({
+      components: [
+        priced(S26_LINE_A),
+        priced(S26_LINE_A, { id: 'price-eur', public_id: 'RV-ACOST-PRICE3', currency: 'EUR' }),
+      ],
+      basisRows: [basisRow({ currency: 'USD' })],
+      ...received(S26_LINE_A),
+    });
+    expect(result.rows.filter((row) => row.reason === 'basis_never_derived')
+      .map((row) => row.currency)).toEqual(['EUR']);
+  });
+
+  // Evidence whose money is not attributable yet still makes a line eligible:
+  // the recompute publishes `unresolved` rows for it, so a line with an unknown
+  // amount and no basis row at all is a genuine gap, not a resolved one.
+  it('treats blocking evidence as basis-eligible, not as a reason to stay quiet', () => {
+    const result = queue({
+      components: [priced(S26_LINE_A, { amount_state: 'unknown', amount_minor: null })],
+      ...received(S26_LINE_A),
+    });
+    expect(reasons(result)).toContain('basis_never_derived');
+  });
+
+  it('expands shared blocking evidence across the active lines in its lot scope', () => {
+    const result = queue({
+      // A shared, unallocated order cost blocks every active line in the order.
+      components: [component()],
+      ...received(S26_LINE_A),
+    });
+    const missing = result.rows.filter((row) => row.reason === 'basis_never_derived');
+    expect(missing.map((row) => row.acquisitionLinePublicId)).toEqual([LINE_A_PUBLIC_ID]);
+  });
+
+  it('reports the missing basis without ever naming an internal identifier', () => {
+    const result = queue({
+      components: [priced(S26_LINE_A)],
+      ...received(S26_LINE_A),
+    });
+    const missing = result.rows.filter((row) => row.reason === 'basis_never_derived');
+    expect(missing).toHaveLength(1);
+    expect(containsInternalId(missing[0])).toBe(false);
+    expect(JSON.stringify(missing[0])).not.toContain(S26_LINE_A);
+  });
+});
+
+describe('basis_never_derived never queues a line that is not basis-eligible', () => {
+  const missingFor = (over: Partial<Parameters<typeof buildUnresolvedQueue>[0]>) =>
+    queue(over).rows.filter((row) => row.reason === 'basis_never_derived');
+
+  // Ordered but never received. The goods have not arrived; there is nothing for
+  // a derivation to have costed, and queueing it would be a receiving problem
+  // wearing a cost problem's clothes.
+  it('excludes a line with cost evidence and no receiving at all', () => {
+    expect(missingFor({ components: [priced(S26_LINE_A)] })).toEqual([]);
+  });
+
+  it.each([
+    ['open', 'open'],
+    ['submitted', 'submitted'],
+    ['cancelled', 'cancelled'],
+  ])('excludes a line whose only receipt is %s rather than reconciled', (_label, status) => {
+    expect(missingFor({
+      components: [priced(S26_LINE_A)],
+      ...received(S26_LINE_A, { status }),
+    })).toEqual([]);
+  });
+
+  // Received, reconciled, but never linked to inventory. The derivation walks
+  // links, so there is no unit for it to have produced a row for. That is a
+  // linking gap, and the receiving surface owns it.
+  it('excludes a reconciled receipt whose line was never linked to inventory', () => {
+    expect(missingFor({
+      components: [priced(S26_LINE_A)],
+      ...received(S26_LINE_A, { linked: false }),
+    })).toEqual([]);
+  });
+
+  // Reconciled, linked, and no applicable cost evidence in any currency. The
+  // recompute joins on the currencies the evidence establishes, so it would
+  // publish nothing here either — an absent row is the correct state, not a gap.
+  it('excludes reconciled linked inventory carrying no cost evidence', () => {
+    expect(missingFor({ ...received(S26_LINE_A) })).toEqual([]);
+  });
+
+  // Settled, allocated, candidate-free shared evidence reaches lines through its
+  // CONFIRMED allocations. Expanding it across the lot would claim a currency no
+  // confirmed allocation ever gave those lines.
+  it('excludes lot lines a settled allocated component never allocated to', () => {
+    expect(missingFor({
+      components: [component({ attribution_state: 'allocated' })],
+      ...received(S26_LINE_A),
+    })).toEqual([]);
+  });
+
+  it('excludes a pair that already holds a basis row, however old', () => {
+    expect(missingFor({
+      components: [priced(S26_LINE_A)],
+      basisRows: [basisRow({ derived_at: '2020-01-01T00:00:00.000Z' })],
+      ...received(S26_LINE_A),
+    })).toEqual([]);
+  });
+
+  /*
+   * ABSENCE IS ONLY PROVABLE FROM A COMPLETE READ.
+   *
+   * A truncated read of `inventory_cost_basis_current` is indistinguishable from
+   * a workspace that never derived those lines. Claiming the gap anyway would
+   * turn a short read into a page of confident fictions, so the reason is
+   * suppressed and the response's own `complete: false` carries the truth.
+   */
+  it('withholds the claim entirely when a contributing read was capped', () => {
+    expect(missingFor({
+      components: [priced(S26_LINE_A)],
+      ...received(S26_LINE_A),
+      absenceProvable: false,
+    })).toEqual([]);
+  });
+});
+
+describe('the last derivation is read from the run event, not from basis rows', () => {
+  // THE ZERO-ROW RECOMPUTE. A run over a workspace with nothing derivable
+  // publishes no basis rows, and its version and time are still facts.
+  it('reports a real version and time for a recompute that produced no rows', () => {
+    const result = queue({
+      latestRun: { algorithmVersion: '1.1.0', derivedAt: '2026-08-16T09:30:00.000Z' },
+      basisRows: [],
+    });
+    expect(result.derivation.everRun).toBe(true);
+    expect(result.derivation.algorithmVersion).toBe('1.1.0');
+    expect(result.derivation.derivedAt).toBe('2026-08-16T09:30:00.000Z');
+  });
+
+  // And it does not fall back to the rows an EARLIER run left behind.
+  it('prefers the run event over a newer-looking basis row', () => {
+    const result = queue({
+      latestRun: { algorithmVersion: '1.1.0', derivedAt: '2026-08-16T09:30:00.000Z' },
+      basisRows: [basisRow({ algorithm_version: '1.0.0', derived_at: '2026-08-01T00:00:00.000Z' })],
+    });
+    expect(result.derivation.algorithmVersion).toBe('1.1.0');
+    expect(result.derivation.derivedAt).toBe('2026-08-16T09:30:00.000Z');
+  });
+
+  it('says no derivation has run only when there is no run event', () => {
+    const result = queue({ latestRun: null });
+    expect(result.derivation.everRun).toBe(false);
+    expect(result.derivation.algorithmVersion).toBeNull();
+    expect(result.derivation.derivedAt).toBeNull();
+  });
+
+  /*
+   * NEVER INVERTED INTO A WORKSPACE-WIDE QUEUE ROW.
+   *
+   * "No derivation has ever run" is metadata ABOUT the derivation, not an
+   * unresolved cost, and a workspace with nothing else outstanding must still
+   * read as empty. `subject` no longer even has a `workspace` member — the
+   * grains are the two the reasons are actually evidenced at — so this asserts
+   * on the emitted values rather than on a comparison the compiler now rejects.
+   */
+  it('raises no workspace-scoped row when no derivation has ever run', () => {
+    const result = queue({ latestRun: null, components: [priced(S26_LINE_A)], ...received(S26_LINE_A) });
+    expect(new Set(result.rows.map((row) => row.subject)))
+      .toEqual(new Set(['acquisition_line']));
+    expect(queue({ latestRun: null }).rows).toEqual([]);
   });
 });
 
@@ -860,8 +1115,97 @@ describe('the unresolved queue is safe to render', () => {
     expect(REASON_DESCRIPTORS).toHaveLength(UNRESOLVED_REASONS.length);
   });
 
+  // Word-bounded on purpose. A bare `other` also matches "another", which turned
+  // a catch-all check into a ban on an ordinary English word and would have
+  // pushed the copy toward vagueness to satisfy the test.
   it('offers no catch-all bucket', () => {
-    expect(JSON.stringify(REASON_DESCRIPTORS)).not.toMatch(/needs attention|other|misc/i);
+    expect(JSON.stringify(REASON_DESCRIPTORS)).not.toMatch(/needs attention|\bother\b|\bmisc\w*\b/i);
     expect(isUnresolvedReason('needs_attention')).toBe(false);
+  });
+
+  /*
+   * A NEXT ACTION IS A PROMISE, AND THESE THREE ARE REFUSED.
+   *
+   * Each assertion below marks a specific way this copy went wrong, or could:
+   * naming work the application cannot carry out, naming work that would not
+   * change the outcome, and naming a governed decision as a lever to pull for a
+   * side effect.
+   */
+  const nextActions = () => REASON_DESCRIPTORS.map((entry) => entry.nextAction);
+  const descriptorFor = (reason: string) =>
+    REASON_DESCRIPTORS.find((entry) => entry.reason === reason)!;
+
+  // S2.4 leaves every unit beyond the expected source quantity unresolved BY
+  // DESIGN. Recording another cost component changes nothing about it, so an
+  // instruction to try is an instruction to waste an afternoon.
+  it('never suggests an overage can gain a basis from more cost evidence', () => {
+    const overage = descriptorFor('overage_without_cost');
+    const copy = `${overage.description} ${overage.nextAction}`;
+    // It says the opposite, explicitly, rather than merely omitting the claim.
+    expect(copy).toMatch(/will not give these units a basis/i);
+    expect(copy).toMatch(/receiving discrepancy/i);
+    // And no descriptor anywhere frames cost evidence as the remedy for units
+    // received beyond what the source priced.
+    for (const action of nextActions()) {
+      expect(action).not.toMatch(/establish cost evidence for the extra units/i);
+    }
+  });
+
+  // The recompute happens to run when an allocation is confirmed, reversed or
+  // withdrawn. Telling an owner to do one of those in order to trigger it asks
+  // them to falsify a governed review decision to move a number.
+  it('never tells an owner to touch an allocation in order to trigger a recompute', () => {
+    for (const action of nextActions()) {
+      expect(action).not.toMatch(/^(confirm|reverse|withdraw)[^.]*\brecompute\b/i);
+      expect(action).not.toMatch(/which runs the governed recompute/i);
+      expect(action).not.toMatch(/to (?:trigger|force|kick off) (?:a|the) (?:recompute|derivation)/i);
+    }
+    // The basis reasons state the absence of a lever rather than inventing one.
+    expect(descriptorFor('basis_never_derived').nextAction)
+      .toMatch(/nothing in this application requests a derivation/i);
+    expect(descriptorFor('basis_never_derived').nextAction)
+      .toMatch(/no allocation should be touched/i);
+  });
+
+  // Component amounts arrive through import. Nothing in this application edits
+  // one — `reverse_cost_component` exists and is deliberately unexposed — so
+  // "record the amount" would send an owner looking for a form that is not there.
+  it('never points at a repair surface this application does not have', () => {
+    const action = descriptorFor('amount_not_known').nextAction;
+    expect(action).toMatch(/no surface for editing a component amount/i);
+    expect(action).toMatch(/source import|at the source/i);
+    expect(nextActions().join(' ')).not.toMatch(/reverse_cost_component/);
+  });
+
+  /**
+   * THE REASON-COUNT ANTI-DRIFT GUARD.
+   *
+   * `UNRESOLVED_REASONS` is the only place the size of this vocabulary is
+   * stated. Prose that counts the list by hand — "six different problems", "the
+   * seven reasons" — is correct exactly until the list changes, and it changed
+   * once already. Every surface that wants the number derives it, so this scans
+   * the S2.6 sources for a hand-written one and fails on sight.
+   */
+  it('states the reason count nowhere in prose, in any source file', () => {
+    const root = fileURLToPath(new URL('../../../', import.meta.url));
+    const files = [
+      'server/src/cost/contract.ts',
+      'server/src/routes/cost.ts',
+      'client/src/lib/costApi.ts',
+      'client/src/pages/cost/UnresolvedCostPanel.tsx',
+      'client/src/pages/Cost.tsx',
+    ];
+    // Plural nouns and counts above one, because a vocabulary size is always
+    // plural. "the one reason asserting an absence" counts nothing and is prose
+    // this guard has no business policing.
+    const counted = String.raw`(?:\d+|two|three|four|five|six|seven|eight|nine|ten)`;
+    const drift = new RegExp(
+      String.raw`\b${counted}\s+(?:different\s+)?(?:reasons|problems|actions)\b`, 'i');
+
+    for (const file of files) {
+      const source = readFileSync(`${root}${file}`, 'utf8');
+      const found = drift.exec(source);
+      expect(found?.[0], `${file} hard-codes the reason count: ${found?.[0]}`).toBeUndefined();
+    }
   });
 });

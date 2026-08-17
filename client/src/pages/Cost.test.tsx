@@ -1259,14 +1259,24 @@ describe('the derived cost basis, shown beside the evidence', () => {
 
 // === S2.6: the governed unresolved-cost queue ================================
 
+/*
+ * The reason vocabulary as the SERVER sends it.
+ *
+ * Abbreviated, but faithful on every phrase these tests assert against — a
+ * fixture that softened the wording would let the panel pass while the real copy
+ * said something else. The three `nextAction` values that changed in the truth
+ * repair are kept verbatim, because what they now refuse to promise is the
+ * point: no invented repair surface, no costing an overage cannot receive, and
+ * no allocation touched to trigger a recompute.
+ */
 const REASONS = [
-  { reason: 'amount_not_known' as const, title: 'Amount never reported', description: 'The source did not report an amount for this cost component. That is not zero.', nextAction: 'Establish the amount from the source evidence.' },
+  { reason: 'amount_not_known' as const, title: 'Amount never reported', description: 'The source did not report an amount for this cost component. That is not zero.', nextAction: 'This application has no surface for editing a component amount — amounts reach the governed record from the source import. Correct it at the source and re-import.' },
   { reason: 'shared_cost_unallocated' as const, title: 'Shared cost not yet split', description: 'This cost applies to a whole lot or order, but no split has been proposed.', nextAction: 'Propose a split, then confirm it.' },
-  { reason: 'proposal_awaiting_review' as const, title: 'Proposed split awaiting review', description: 'A split has been proposed and is pending.', nextAction: 'Confirm the split, or withdraw it.' },
-  { reason: 'basis_unresolved' as const, title: 'Inventory cost basis not established', description: 'The governed recompute could not establish a cost for these units.', nextAction: 'Resolve the cost evidence this line depends on.' },
-  { reason: 'overage_without_cost' as const, title: 'More units received than the source priced', description: 'More units were reconciled than the acquisition expected.', nextAction: 'Record the receiving discrepancy.' },
-  { reason: 'negative_net_cost_evidence' as const, title: 'Cost evidence nets below zero', description: 'The applicable cost evidence sums to less than zero.', nextAction: 'Check the discount and price evidence.' },
-  { reason: 'basis_never_derived' as const, title: 'No cost basis has ever been derived', description: 'No governed recompute has ever run in this workspace.', nextAction: 'Confirm or reverse an allocation.' },
+  { reason: 'proposal_awaiting_review' as const, title: 'Proposed split awaiting review', description: 'A split has been proposed and is pending.', nextAction: 'Confirm the split, or withdraw it and propose a corrected one.' },
+  { reason: 'basis_unresolved' as const, title: 'Inventory cost basis not established', description: 'The governed recompute could not establish a cost for these units.', nextAction: 'Resolve the blocking evidence for this line — it is listed in this queue as its own entry.' },
+  { reason: 'overage_without_cost' as const, title: 'More units received than the source priced', description: 'The governed algorithm leaves every unit beyond the expected source quantity unresolved by design.', nextAction: 'Record the receiving discrepancy against the receipt. Recording another cost component will not give these units a basis.' },
+  { reason: 'negative_net_cost_evidence' as const, title: 'Cost evidence nets below zero', description: 'The applicable cost evidence sums to less than zero.', nextAction: 'Review the discount and price evidence on this line. A component amount cannot be edited in this application.' },
+  { reason: 'basis_never_derived' as const, title: 'No cost basis derived for these units', description: 'This line has reconciled inventory linked to it and applicable cost evidence in this currency, and the governed record holds no basis for it.', nextAction: 'Nothing in this application requests a derivation for one line. The governed recompute runs only as part of confirming, reversing or withdrawing a cost allocation, and no allocation should be touched for the sake of triggering it.' },
 ];
 
 function makeUnresolvedRow(over: Partial<UnresolvedRow> = {}): UnresolvedRow {
@@ -1382,15 +1392,30 @@ describe('the unresolved-cost queue', () => {
       .toBeNull();
   });
 
-  it('offers no link where no single component owns the problem', async () => {
+  /*
+   * A LINE-SCOPED PROBLEM HAS NO SINGLE COMPONENT TO OPEN, AND SAYS SO.
+   *
+   * The bar for a row with no link is not "renders without crashing" — it is
+   * that the row still tells the owner what to do, including when the honest
+   * answer is that this application has no surface for it. A row that went
+   * quiet here would leave a dead end on screen.
+   */
+  it('offers no link where no single component owns the problem, and still says what to do', async () => {
     unresolved = makeUnresolved([makeUnresolvedRow({
-      key: 'never', reason: 'basis_never_derived', subject: 'workspace',
-      componentPublicId: null, componentType: null, amount: null, currency: null,
-      orderPublicId: null, attributionState: null, candidateCount: null,
+      key: 'basis_never_derived|RV-AL-AAA111|USD',
+      reason: 'basis_never_derived',
+      subject: 'acquisition_line',
+      componentPublicId: null, componentType: null, amount: null, currency: 'USD',
+      acquisitionLinePublicId: 'RV-AL-AAA111', orderPublicId: null,
+      attributionState: null, candidateCount: null,
     })]);
     renderLanding();
-    await waitFor(() => expect(panel().getByText('No cost basis has ever been derived')).toBeTruthy());
+    await waitFor(() => expect(panel().getByText('No cost basis derived for these units')).toBeTruthy());
     expect(panel().queryByRole('link')).toBeNull();
+    // The line it concerns is named by governed public identity...
+    expect(panel().getByText('RV-AL-AAA111')).toBeTruthy();
+    // ...and the next action is present rather than blank.
+    expect(panel().getByText(/nothing in this application requests a derivation/i)).toBeTruthy();
   });
 
   // --- empty / partial / failure -------------------------------------------
@@ -1432,6 +1457,53 @@ describe('the unresolved-cost queue', () => {
     queueError = new CostError('dependency_failed', 502);
     renderLanding();
     await waitFor(() => expect(panel().getByText('Amount never reported')).toBeTruthy());
+  });
+
+  /*
+   * A FAILED READ AND A CAPPED READ ARE DIFFERENT ANSWERS, AND NEITHER IS EMPTY.
+   *
+   * Asserted side by side because the failure worth guarding against is the two
+   * collapsing into each other — or into the clean desk. A failed read knows
+   * nothing; a capped read knows some of it and says the list is short; only a
+   * complete read may say there is nothing to do.
+   */
+  it('separates a failed read from a capped one, and neither reads as empty', async () => {
+    unresolvedError = new CostError('dependency_failed', 502);
+    renderLanding();
+    await waitFor(() => expect(document.querySelector('[data-unresolved-cost]')?.getAttribute('data-unresolved-cost'))
+      .toBe('unavailable'));
+    expect(panel().queryByText('No unresolved cost')).toBeNull();
+    cleanup();
+
+    unresolvedError = null;
+    unresolved = makeUnresolved([makeUnresolvedRow()], { complete: false });
+    renderLanding();
+    await waitFor(() => expect(document.querySelector('[data-unresolved-cost]')?.getAttribute('data-unresolved-cost'))
+      .toBe('partial'));
+    // The rows it DID read are still shown — a short list is not no list.
+    expect(document.querySelectorAll('[data-unresolved-reason]').length).toBeGreaterThan(0);
+    expect(panel().queryByText('No unresolved cost')).toBeNull();
+  });
+
+  /*
+   * THE REASON COUNT IS DERIVED, NEVER WRITTEN DOWN.
+   *
+   * The header used to say "six different problems" while the vocabulary held
+   * seven. Rendering the same panel against two differently-sized vocabularies
+   * is the only way to prove the number is read rather than typed.
+   */
+  it('takes the reason count from the vocabulary the server sent', async () => {
+    const header = () => panel().getByRole('heading', { name: 'Unresolved cost' })
+      .parentElement?.textContent ?? '';
+
+    renderLanding();
+    await waitFor(() => expect(header()).toMatch(/tells\s*7\s*of them apart/));
+    cleanup();
+
+    unresolved = makeUnresolved([makeUnresolvedRow()], { reasons: REASONS.slice(0, 3) });
+    renderLanding();
+    await waitFor(() => expect(header()).toMatch(/tells\s*3\s*of them apart/));
+    expect(header()).not.toMatch(/\b(six|seven)\b/i);
   });
 
   // --- filtering ------------------------------------------------------------
@@ -1480,11 +1552,11 @@ describe('the unresolved-cost queue', () => {
 
   // --- derivation -----------------------------------------------------------
 
-  it('states what the last derivation was and refuses to claim it is current', async () => {
+  it('states when the recompute last RAN and refuses to claim its result is current', async () => {
     renderLanding();
     await waitFor(() =>
       expect(document.querySelector('[data-derivation-note]')?.textContent)
-        .toMatch(/last derived by algorithm 1\.1\.0/i));
+        .toMatch(/last ran under algorithm 1\.1\.0/i));
     expect(document.querySelector('[data-derivation-note]')?.textContent)
       .toMatch(/not something the governed record exposes/i);
     // It must never assert freshness either way.
@@ -1492,14 +1564,34 @@ describe('the unresolved-cost queue', () => {
       .not.toMatch(/up to date|out of date|stale/i);
   });
 
-  it('says plainly when no derivation has ever run', async () => {
+  // A RUN THAT DERIVED NOTHING STILL RAN. The server reads version and time from
+  // the run event, so the note reports them even with an empty queue and no
+  // basis rows behind it — never "never run", and never a blank.
+  it('states a real version and time for a recompute that produced no rows', async () => {
+    unresolved = makeUnresolved([], {
+      derivation: {
+        everRun: true, algorithmVersion: '1.1.0',
+        derivedAt: '2026-08-16T09:30:00.000Z', staleness: 'not_evidenced',
+      },
+    });
+    renderLanding();
+    await waitFor(() =>
+      expect(document.querySelector('[data-derivation-note]')?.textContent)
+        .toMatch(/last ran under algorithm 1\.1\.0/i));
+    expect(document.querySelector('[data-derivation-note]')?.textContent)
+      .not.toMatch(/never run/i);
+  });
+
+  it('says plainly when the recompute has never run', async () => {
     unresolved = makeUnresolved([], {
       derivation: { everRun: false, algorithmVersion: null, derivedAt: null, staleness: 'not_evidenced' },
     });
     renderLanding();
     await waitFor(() =>
       expect(document.querySelector('[data-derivation-note]')?.textContent)
-        .toMatch(/has ever run/i));
+        .toMatch(/has never run in this workspace/i));
+    // And it is not turned into a queue entry: nothing is unresolved here.
+    expect(panel().getByText('No unresolved cost')).toBeTruthy();
   });
 
   // --- roles and safety -----------------------------------------------------

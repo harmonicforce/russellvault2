@@ -738,19 +738,57 @@ test.describe('the unresolved-cost queue', () => {
 
   // --- derivation, roles, layout -------------------------------------------
 
-  test('says what the last derivation was and refuses to claim it is current', async ({ app }) => {
+  test('says when the recompute last ran and refuses to claim its result is current', async ({ app }) => {
     await openSurface(app, COST);
     await expect(app.locator('[data-derivation-note]'))
-      .toContainText('last derived by algorithm 1.1.0');
+      .toContainText('last ran under algorithm 1.1.0');
     await expect(app.locator('[data-derivation-note]'))
       .toContainText('not something the governed record exposes');
   });
 
-  test('says plainly when no derivation has ever run', async ({ app, scenario }) => {
+  /*
+   * THE FALSE CLEAN QUEUE, ON A REAL PAGE.
+   *
+   * The recompute HAS run — the note says so — and lines are still uncovered.
+   * A queue that asked only "has anything ever been derived here" would show a
+   * clean desk on this exact screen.
+   */
+  test('reports basis-eligible lines a past recompute never covered', async ({ app, scenario }) => {
     await scenario.set({ costBasisNotDerived: true });
     await openSurface(app, COST);
-    await expect(entry(app, 'basis_never_derived')).toBeVisible();
-    await expect(app.locator('[data-derivation-note]')).toContainText('has ever run');
+    await expect(entry(app, 'basis_never_derived').first()).toBeVisible();
+    // Line-scoped, so there is one entry per uncovered line rather than one
+    // workspace-wide row standing in for all of them.
+    await expect(entry(app, 'basis_never_derived')).toHaveCount(2);
+    await expect(app.locator('[data-unresolved-key="basis_never_derived|RV-AL-000001|USD"]'))
+      .toBeVisible();
+    // The recompute ran. That is no longer what decides this.
+    await expect(app.locator('[data-derivation-note]')).toContainText('last ran under algorithm');
+  });
+
+  // A row with no component to open still says what to do — including that this
+  // application has no surface for it. A dead end would be worse than a link.
+  test('states a next action even where it can offer no link', async ({ app, scenario }) => {
+    await scenario.set({ costBasisNotDerived: true });
+    await openSurface(app, COST);
+    const row = entry(app, 'basis_never_derived').first();
+    await expect(row).toContainText('Nothing in this application requests a derivation');
+    await expect(row.locator('[data-unresolved-link]')).toHaveCount(0);
+  });
+
+  // An overage is a RECEIVING question. The copy must not send an owner to
+  // record more cost evidence, which the governed algorithm would ignore.
+  test('never offers costing as the remedy for an overage', async ({ app }) => {
+    await openSurface(app, COST);
+    const row = entry(app, 'overage_without_cost');
+    await expect(row).toContainText('Record the receiving discrepancy');
+    await expect(row).toContainText('will not give these units a basis');
+  });
+
+  test('says plainly when the recompute has never run', async ({ app, scenario }) => {
+    await scenario.set({ costRecomputeNeverRan: true });
+    await openSurface(app, COST);
+    await expect(app.locator('[data-derivation-note]')).toContainText('has never run in this workspace');
   });
 
   test('lets a viewer read the queue and offers them no mutation', async ({ app, scenario }) => {
