@@ -13,7 +13,7 @@
 -- one order in B, and lots/lines carrying an active placement.
 begin;
 create extension if not exists pgtap;
-select plan(156);
+select plan(161);
 
 create function pg_temp.h(p_seed text) returns text language sql immutable as $$
   select encode(sha256(p_seed::bytea), 'hex')
@@ -101,6 +101,25 @@ insert into public.acquisition_lot_lines(id,workspace_id,lot_id,line_item_id,cre
  ('61000000-7400-4000-8000-000000000003','61000000-1000-4000-8000-000000000001','61000000-7300-4000-8000-000000000003','61000000-5000-4000-8000-000000000003','test.import'),
  ('61000000-7400-4000-8000-000000000004','61000000-1000-4000-8000-000000000001','61000000-7300-4000-8000-000000000004','61000000-5000-4000-8000-000000000004','test.import'),
  ('61000000-7400-4000-8000-000000000005','61000000-1000-4000-8000-000000000002','61000000-7300-4000-8000-000000000005','61000000-5000-4000-8000-000000000005','test.import');
+set local session_replication_role=origin;
+
+-- A missing custom GUC must fail closed even for the privileged migration/test
+-- role. These fixture rows are removed with triggers disabled after the guard
+-- assertions so the governed lifecycle below remains unchanged.
+set local session_replication_role=replica;
+insert into public.acquisition_payments(id,workspace_id,public_id,acquisition_order_id,paid_at,amount_minor,currency,instrument,idempotency_key,payload_fingerprint,created_by) values
+ ('61000000-7600-4000-8000-000000000001','61000000-1000-4000-8000-000000000001','RV-APAY-GUARD61','61000000-7200-4000-8000-000000000001','2026-08-03T08:00:00Z',25,'USD','cash','guard-pay-key-61',repeat('a',64),'61000000-0000-4000-8000-000000000001');
+insert into public.acquisition_shipments(id,workspace_id,public_id,acquisition_order_id,status,create_idempotency_key,create_fingerprint,created_by) values
+ ('61000000-7700-4000-8000-000000000001','61000000-1000-4000-8000-000000000001','RV-ASHIP-GUARD61','61000000-7200-4000-8000-000000000001','expected','guard-ship-key-61',repeat('b',64),'61000000-0000-4000-8000-000000000001');
+set local session_replication_role=origin;
+select is(current_setting('app.governed_acquisition_mutation',true),null,'the acquisition mutation GUC is genuinely unset');
+select throws_ok($$update public.acquisition_payments set evidence_note='direct rewrite' where id='61000000-7600-4000-8000-000000000001'$$,'42501','governed_write_required','privileged direct payment UPDATE fails closed with the GUC unset');
+select throws_ok($$delete from public.acquisition_payments where id='61000000-7600-4000-8000-000000000001'$$,'42501','governed_write_required','privileged direct payment DELETE fails closed with the GUC unset');
+select throws_ok($$update public.acquisition_shipments set evidence_note='direct rewrite' where id='61000000-7700-4000-8000-000000000001'$$,'42501','governed_write_required','privileged direct shipment UPDATE fails closed with the GUC unset');
+select throws_ok($$delete from public.acquisition_shipments where id='61000000-7700-4000-8000-000000000001'$$,'42501','governed_write_required','privileged direct shipment DELETE fails closed with the GUC unset');
+set local session_replication_role=replica;
+delete from public.acquisition_payments where id='61000000-7600-4000-8000-000000000001';
+delete from public.acquisition_shipments where id='61000000-7700-4000-8000-000000000001';
 set local session_replication_role=origin;
 
 -- =========================================================== anonymous ======
