@@ -17,10 +17,21 @@
 import { expect } from '@playwright/test';
 import { test } from '../fixtures/app';
 import { COST, COST_COMPONENT, documentOverflow, openSurface, overflowingElements } from '../fixtures/surfaces';
+import { SHIPPING_COMPONENT } from '../fixtures/costData';
 
-/** Whichever rendering this viewport is actually showing. */
+/**
+ * A row of the COMPONENT list, in whichever rendering this viewport shows.
+ *
+ * Scoped to that list on purpose. S2.6 added the unresolved-cost queue to the
+ * same page, and its entries are `li`s that legitimately name the same
+ * component public ids — an unscoped `li:visible` would resolve to a triage
+ * entry and quietly assert against the wrong surface.
+ */
 function visibleRow(app: import('@playwright/test').Page, text: string) {
-  return app.locator('tr:visible, li:visible').filter({ hasText: text }).first();
+  return app
+    .locator('tr:visible, ul[aria-label="Governed cost components"] > li:visible')
+    .filter({ hasText: text })
+    .first();
 }
 
 const proposedPanel = (app: import('@playwright/test').Page) =>
@@ -561,6 +572,237 @@ test.describe('the derived cost basis, shown beside the evidence', () => {
   test('does not overflow horizontally with the basis panel rendered', async ({ app }, testInfo) => {
     await openSurface(app, COST_COMPONENT);
     await expect(derivedBasis(app)).toBeVisible();
+    const { scrollWidth, clientWidth } = await documentOverflow(app);
+    expect(
+      scrollWidth,
+      `${testInfo.project.name}: widest offenders ${(await overflowingElements(app)).join(' | ')}`,
+    ).toBeLessThanOrEqual(clientWidth + 1);
+  });
+});
+
+// === S2.6: the governed unresolved-cost queue ================================
+
+const unresolvedPanel = (app: import('@playwright/test').Page) =>
+  app.getByRole('region', { name: 'Unresolved cost' });
+
+const entry = (app: import('@playwright/test').Page, reason: string) =>
+  app.locator(`[data-unresolved-reason="${reason}"]`);
+
+test.describe('the unresolved-cost queue', () => {
+  test('is part of /cost rather than a separate destination', async ({ app }) => {
+    await openSurface(app, COST);
+    await expect(unresolvedPanel(app)).toBeVisible();
+    // The component record is on the same page.
+    await expect(app.locator('[data-cost-count="awaiting_proposal"]')).toBeVisible();
+    // And the navigation does not grow a second cost entry.
+    await expect(app.getByRole('link', { name: /unresolved cost/i })).toHaveCount(0);
+  });
+
+  // THE TRUTH RULE, IN A REAL BROWSER.
+  test('shows an unknown amount as words, never as zero', async ({ app }) => {
+    await openSurface(app, COST);
+    const row = entry(app, 'amount_not_known');
+    await expect(row).toContainText('Amount never reported');
+    await expect(row).toContainText('Not reported');
+    await expect(row).not.toContainText('0.00');
+  });
+
+  test('names each distinct reason rather than a catch-all', async ({ app }) => {
+    await openSurface(app, COST);
+    await expect(entry(app, 'shared_cost_unallocated')).toContainText('Shared cost not yet split');
+    await expect(entry(app, 'basis_unresolved'))
+      .toContainText('Inventory cost basis not established');
+    await expect(entry(app, 'overage_without_cost'))
+      .toContainText('More units received than the source priced');
+    // Every entry names a specific problem.
+    await expect(entry(app, 'amount_not_known')).not.toContainText(/needs attention/i);
+  });
+
+  test('states the governed overage quantities', async ({ app }) => {
+    await openSurface(app, COST);
+    await expect(entry(app, 'overage_without_cost')).toContainText('over by');
+  });
+
+  // TRIAGE AND NAVIGATION: the link reaches the real S2.5 workflow.
+  test('links into the existing component workspace', async ({ app }) => {
+    await openSurface(app, COST);
+    await app.locator(`[data-unresolved-link="${SHIPPING_COMPONENT}"]`).click();
+    await expect(app.getByRole('region', { name: 'Proposed split' })).toBeVisible();
+    await expect(app.getByText(SHIPPING_COMPONENT).first()).toBeVisible();
+  });
+
+  test('duplicates no allocation editing of its own', async ({ app }) => {
+    await openSurface(app, COST);
+    await expect(unresolvedPanel(app)
+      .getByRole('button', { name: /Propose a split|Confirm|Withdraw|Reverse/i })).toHaveCount(0);
+  });
+
+  // --- the live workflow is reflected --------------------------------------
+
+  test('moves a component from "not yet split" to "awaiting review" when proposed', async ({ app, scenario }) => {
+    await openSurface(app, COST);
+    await expect(entry(app, 'shared_cost_unallocated')).toBeVisible();
+
+    scenario.state.cost.propose('manual_quantity', [
+      { sourceSystemPublicId: 'RV-SRC-WHATNOT', acquisitionLinePublicId: 'RV-AL-000001', amountMinor: '750' },
+      { sourceSystemPublicId: 'RV-SRC-WHATNOT', acquisitionLinePublicId: 'RV-AL-000002', amountMinor: '250' },
+    ]);
+    await openSurface(app, COST);
+    await expect(entry(app, 'proposal_awaiting_review')).toBeVisible();
+    await expect(entry(app, 'shared_cost_unallocated')).toHaveCount(0);
+  });
+
+  // WITHDRAWAL IS HISTORY, NOT A RESOLUTION.
+  test('shows the component still needs splitting after its proposal is withdrawn', async ({ app, scenario }) => {
+    scenario.state.cost.propose('manual_quantity', [
+      { sourceSystemPublicId: 'RV-SRC-WHATNOT', acquisitionLinePublicId: 'RV-AL-000001', amountMinor: '750' },
+      { sourceSystemPublicId: 'RV-SRC-WHATNOT', acquisitionLinePublicId: 'RV-AL-000002', amountMinor: '250' },
+    ]);
+    await openSurface(app, COST);
+    await expect(entry(app, 'proposal_awaiting_review')).toBeVisible();
+
+    scenario.state.cost.withdraw('Wrong weighting');
+    await openSurface(app, COST);
+    // The problem did NOT disappear with the withdrawal — the CURRENT truth is
+    // that the cost still needs splitting.
+    await expect(entry(app, 'shared_cost_unallocated')).toBeVisible();
+    await expect(entry(app, 'proposal_awaiting_review')).toHaveCount(0);
+  });
+
+  test('drops the component from the queue once its split is confirmed', async ({ app, scenario }) => {
+    scenario.state.cost.propose('manual_quantity', [
+      { sourceSystemPublicId: 'RV-SRC-WHATNOT', acquisitionLinePublicId: 'RV-AL-000001', amountMinor: '750' },
+      { sourceSystemPublicId: 'RV-SRC-WHATNOT', acquisitionLinePublicId: 'RV-AL-000002', amountMinor: '250' },
+    ]);
+    scenario.state.cost.confirm('1000');
+    await openSurface(app, COST);
+    await expect(entry(app, 'proposal_awaiting_review')).toHaveCount(0);
+    await expect(entry(app, 'shared_cost_unallocated')).toHaveCount(0);
+    // The unrelated problems remain.
+    await expect(entry(app, 'amount_not_known')).toBeVisible();
+  });
+
+  // --- empty / partial / failure -------------------------------------------
+
+  // "Nothing needs attention" only after a COMPLETE authoritative read.
+  test('renders a truthful empty state for a complete, empty answer', async ({ app, scenario }) => {
+    await scenario.set({ costUnresolvedEmpty: true });
+    await openSurface(app, COST);
+    await expect(unresolvedPanel(app).getByText('No unresolved cost')).toBeVisible();
+    await expect(unresolvedPanel(app).getByText(/an answer, not a failure to look/i)).toBeVisible();
+  });
+
+  test('is visibly partial, never empty, when the answer was cut short', async ({ app, scenario }) => {
+    await scenario.set({ costUnresolvedPartial: true });
+    await openSurface(app, COST);
+    await expect(unresolvedPanel(app).getByText(/Coverage is partial/i)).toBeVisible();
+    await expect(unresolvedPanel(app).getByText('No unresolved cost')).toHaveCount(0);
+  });
+
+  // A FAILED READ IS NEVER AN EMPTY QUEUE.
+  test('renders a failed read as unavailable, never as an empty queue', async ({ app, scenario }) => {
+    await scenario.set({ costUnresolvedFails: true });
+    await openSurface(app, COST);
+    await expect(app.locator('[data-unresolved-cost="unavailable"]')).toBeVisible();
+    await expect(unresolvedPanel(app).getByText('No unresolved cost')).toHaveCount(0);
+  });
+
+  // The two governed reads are independent.
+  test('keeps the component record readable when the triage read fails', async ({ app, scenario }) => {
+    await scenario.set({ costUnresolvedFails: true });
+    await openSurface(app, COST);
+    await expect(visibleRow(app, 'RV-ACOST-SHIP01')).toBeVisible();
+  });
+
+  // --- filtering ------------------------------------------------------------
+
+  test('filters by reason without concealing that other entries exist', async ({ app }) => {
+    await openSurface(app, COST);
+    const before = await app.locator('[data-unresolved-reason]').count();
+    expect(before).toBeGreaterThan(1);
+
+    await unresolvedPanel(app).getByLabel('Reason').selectOption('amount_not_known');
+    await expect(app.locator('[data-unresolved-reason]')).toHaveCount(1);
+    // The unfiltered total is still on screen.
+    await expect(app.locator('[data-unresolved-total]')).toContainText(String(before));
+  });
+
+  // CURRENCIES STAY SEPARATE.
+  test('lists currencies separately and never combines them', async ({ app }) => {
+    await openSurface(app, COST);
+    await expect(unresolvedPanel(app).getByText(/never added together/i)).toBeVisible();
+    await unresolvedPanel(app).getByLabel('Currency').selectOption('EUR');
+    await expect(entry(app, 'basis_unresolved')).toBeVisible();
+    await expect(entry(app, 'amount_not_known')).toHaveCount(0);
+  });
+
+  // --- derivation, roles, layout -------------------------------------------
+
+  test('says when the recompute last ran and refuses to claim its result is current', async ({ app }) => {
+    await openSurface(app, COST);
+    await expect(app.locator('[data-derivation-note]'))
+      .toContainText('last ran under algorithm 1.1.0');
+    await expect(app.locator('[data-derivation-note]'))
+      .toContainText('not something the governed record exposes');
+  });
+
+  /*
+   * THE FALSE CLEAN QUEUE, ON A REAL PAGE.
+   *
+   * The recompute HAS run — the note says so — and lines are still uncovered.
+   * A queue that asked only "has anything ever been derived here" would show a
+   * clean desk on this exact screen.
+   */
+  test('reports basis-eligible lines a past recompute never covered', async ({ app, scenario }) => {
+    await scenario.set({ costBasisNotDerived: true });
+    await openSurface(app, COST);
+    await expect(entry(app, 'basis_never_derived').first()).toBeVisible();
+    // Line-scoped, so there is one entry per uncovered line rather than one
+    // workspace-wide row standing in for all of them.
+    await expect(entry(app, 'basis_never_derived')).toHaveCount(2);
+    await expect(app.locator('[data-unresolved-key="basis_never_derived|RV-AL-000001|USD"]'))
+      .toBeVisible();
+    // The recompute ran. That is no longer what decides this.
+    await expect(app.locator('[data-derivation-note]')).toContainText('last ran under algorithm');
+  });
+
+  // A row with no component to open still says what to do — including that this
+  // application has no surface for it. A dead end would be worse than a link.
+  test('states a next action even where it can offer no link', async ({ app, scenario }) => {
+    await scenario.set({ costBasisNotDerived: true });
+    await openSurface(app, COST);
+    const row = entry(app, 'basis_never_derived').first();
+    await expect(row).toContainText('Nothing in this application requests a derivation');
+    await expect(row.locator('[data-unresolved-link]')).toHaveCount(0);
+  });
+
+  // An overage is a RECEIVING question. The copy must not send an owner to
+  // record more cost evidence, which the governed algorithm would ignore.
+  test('never offers costing as the remedy for an overage', async ({ app }) => {
+    await openSurface(app, COST);
+    const row = entry(app, 'overage_without_cost');
+    await expect(row).toContainText('Record the receiving discrepancy');
+    await expect(row).toContainText('will not give these units a basis');
+  });
+
+  test('says plainly when the recompute has never run', async ({ app, scenario }) => {
+    await scenario.set({ costRecomputeNeverRan: true });
+    await openSurface(app, COST);
+    await expect(app.locator('[data-derivation-note]')).toContainText('has never run in this workspace');
+  });
+
+  test('lets a viewer read the queue and offers them no mutation', async ({ app, scenario }) => {
+    await scenario.set({ costRole: 'viewer' });
+    await openSurface(app, COST);
+    await expect(entry(app, 'amount_not_known')).toBeVisible();
+    await expect(unresolvedPanel(app).getByRole('button')).toHaveCount(0);
+    // Reading is not what is withheld: the navigation link is still there.
+    await expect(app.locator(`[data-unresolved-link="${SHIPPING_COMPONENT}"]`)).toBeVisible();
+  });
+
+  test('does not overflow horizontally with the queue rendered', async ({ app }, testInfo) => {
+    await openSurface(app, COST);
+    await expect(unresolvedPanel(app)).toBeVisible();
     const { scrollWidth, clientWidth } = await documentOverflow(app);
     expect(
       scrollWidth,

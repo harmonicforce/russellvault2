@@ -36,13 +36,15 @@ import {
 import {
   costQueueKey,
   createCostTransport,
+  unresolvedCostKey,
   type AllocationWorkflowState,
   type CostComponentSummary,
 } from '../lib/costApi';
 import { useWorkspace } from '../lib/workspaceContext';
 import { createShadowClient } from '../lib/supabaseShadow';
 import { tokenProviderFromClient } from '../lib/tokenProvider';
-import { COST_COVERAGE, costQueueState } from './cost/costTruth';
+import { COST_COVERAGE, costQueueState, unresolvedCostState } from './cost/costTruth';
+import { UnresolvedCostPanel } from './cost/UnresolvedCostPanel';
 import { WORKFLOW_LABEL, costColumns, costRecords } from './cost/costPresentation';
 
 /**
@@ -94,8 +96,23 @@ export default function Cost() {
     enabled,
   });
 
+  /*
+   * A SEPARATE governed read from the component queue, on purpose.
+   *
+   * The two answer different questions from different surfaces. Sharing one
+   * query would mean a failure in either blanks both — and an owner who can
+   * still see the component list while triage is unavailable is strictly better
+   * off than one staring at a page that lost everything.
+   */
+  const unresolved = useQuery({
+    queryKey: unresolvedCostKey(workspace?.id),
+    queryFn: () => api.unresolved(workspace!.id),
+    enabled,
+  });
+
   const rowsTruth = costQueueState(queue, enabled);
   const rows = hasValue(rowsTruth) ? rowsTruth.value : [];
+  const unresolvedTruth = unresolvedCostState(unresolved, enabled);
 
   /**
    * Counts, computed only from rows we actually hold.
@@ -125,6 +142,18 @@ export default function Cost() {
       </header>
 
       <CoverageNotice coverage={COST_COVERAGE} />
+
+      {/*
+        TRIAGE FIRST. The question "what needs attention" is the one an owner
+        arrives with; the full component record answers "what is the picture"
+        and sits beneath it.
+      */}
+      <UnresolvedCostPanel
+        state={unresolvedTruth}
+        meta={unresolved.data}
+        onRetry={() => void unresolved.refetch()}
+        onRefresh={() => void unresolved.refetch()}
+      />
 
       {/*
         A deliberate, prominent statement of what is NOT here. An owner looking

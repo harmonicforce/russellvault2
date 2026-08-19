@@ -302,6 +302,90 @@ export type BasisRecomputeOutcome =
     }
   | { readonly status: 'failed'; readonly code: string; readonly retryable: true };
 
+// --- S2.6: the governed unresolved-cost queue --------------------------------
+
+/**
+ * Why one row needs attention.
+ *
+ * A CLOSED set of distinct, evidenced problems. There is deliberately no
+ * "needs attention" bucket: each names a different problem needing a different
+ * action, and collapsing them turns a work list into a pile.
+ *
+ * THE SIZE OF THIS SET IS NEVER WRITTEN DOWN IN PROSE, here or on screen. The
+ * server sends its own vocabulary with every response (`reasons`), so anything
+ * that needs the count derives it from that. A sentence that counted the list by
+ * hand was correct right up until the list changed — which it did.
+ */
+export type UnresolvedReason =
+  | 'amount_not_known'
+  | 'shared_cost_unallocated'
+  | 'proposal_awaiting_review'
+  | 'basis_unresolved'
+  | 'overage_without_cost'
+  | 'negative_net_cost_evidence'
+  /** Line-scoped: this line and currency are basis-eligible and hold no row. */
+  | 'basis_never_derived';
+
+export interface ReasonDescriptor {
+  readonly reason: UnresolvedReason;
+  readonly title: string;
+  readonly description: string;
+  readonly nextAction: string;
+}
+
+export type UnresolvedSubject = 'cost_component' | 'acquisition_line';
+
+export interface UnresolvedRow {
+  readonly key: string;
+  readonly reason: UnresolvedReason;
+  readonly subject: UnresolvedSubject;
+  readonly componentPublicId: string | null;
+  readonly componentType: CostComponentType | null;
+  /** Null where the row is not about a component's own amount at all. */
+  readonly amount: Amount | null;
+  /** Rows are never merged across currencies and no total spans them. */
+  readonly currency: string | null;
+  readonly orderPublicId: string | null;
+  readonly lotPublicId: string | null;
+  readonly acquisitionLinePublicId: string | null;
+  readonly sourceSystemPublicId: string | null;
+  readonly attributionState: CostAttributionState | null;
+  readonly candidateCount: number | null;
+  readonly basis: {
+    readonly unresolvedUnitCount: number;
+    readonly methods: readonly BasisMethod[];
+  } | null;
+  readonly quantities: {
+    readonly expected: number;
+    readonly reconciled: number;
+    readonly overage: number;
+  } | null;
+  readonly netMinor: string | null;
+}
+
+export interface UnresolvedCostQueue {
+  readonly coverage: 'governed_native_committed';
+  readonly historicalLegacyImported: false;
+  /** False when a read hit its ceiling, so the list is a subset and says so. */
+  readonly complete: boolean;
+  readonly role: Role;
+  readonly reasons: readonly ReasonDescriptor[];
+  /**
+   * What the last published derivation was.
+   *
+   * `staleness: 'not_evidenced'` is permanent and deliberate: nothing readable
+   * evidences whether the current derivation still reflects current inputs, so
+   * this surface reports what ran and refuses to claim whether it is current.
+   */
+  readonly derivation: {
+    readonly everRun: boolean;
+    readonly algorithmVersion: string | null;
+    readonly derivedAt: string | null;
+    readonly staleness: 'not_evidenced';
+  };
+  readonly rows: readonly UnresolvedRow[];
+}
+
 export class CostError extends Error {
   readonly code: string;
   readonly status: number;
@@ -359,6 +443,8 @@ async function call<T>(
 
 export const costQueueKey = (workspaceId: string | undefined) =>
   ['cost-queue', workspaceId] as const;
+export const unresolvedCostKey = (workspaceId: string | undefined) =>
+  ['cost-unresolved', workspaceId] as const;
 export const costComponentKey = (workspaceId: string | undefined, componentPublicId: string) =>
   ['cost-component', workspaceId, componentPublicId] as const;
 
@@ -376,6 +462,16 @@ export function createCostTransport(tokens: () => Promise<string | null>) {
 
   return {
     queue: (workspaceId: string) => call<CostQueue>(tokens, '/queue', workspaceId),
+
+    /**
+     * The unresolved-cost queue.
+     *
+     * A read, and only a read. It is deliberately a SEPARATE call from
+     * `queue()`: the two answer different questions from different governed
+     * surfaces, and one failing must not blank the other.
+     */
+    unresolved: (workspaceId: string) =>
+      call<UnresolvedCostQueue>(tokens, '/unresolved', workspaceId),
 
     component: (workspaceId: string, componentPublicId: string) =>
       call<CostComponentView>(tokens, component(componentPublicId), workspaceId),

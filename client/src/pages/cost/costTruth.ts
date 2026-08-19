@@ -31,6 +31,8 @@ import {
   type CostComponentSummary,
   type CostComponentView,
   type CostQueue,
+  type UnresolvedCostQueue,
+  type UnresolvedRow,
 } from '../../lib/costApi';
 
 export interface QueryLike<T> {
@@ -174,4 +176,57 @@ export function costComponentState(
 
   if (query.isLoading || !query.data) return loading();
   return ready(query.data);
+}
+
+/**
+ * What the page knows about the unresolved-cost queue — S2.6.
+ *
+ * THE MOST CONSEQUENTIAL EMPTY STATE IN THIS APPLICATION.
+ *
+ * "Nothing needs attention" is a claim an owner acts on by going home. It is
+ * therefore allowed here ONLY after a complete, authoritative read: a failure
+ * renders `unavailable`/`error`, a capped read renders `partial`, and neither
+ * is ever allowed to look like a clean desk.
+ *
+ * Deliberately a SEPARATE truth state from the component queue. The two are
+ * independent governed reads answering different questions, so one failing must
+ * not blank the other — and an owner who can still see the component list while
+ * the triage read is down is strictly better off than one staring at a page
+ * that lost both.
+ */
+export function unresolvedCostState(
+  query: QueryLike<UnresolvedCostQueue>,
+  workspaceSelected: boolean,
+): TruthState<readonly UnresolvedRow[]> {
+  if (!workspaceSelected) {
+    return notConfigured('No workspace is selected, so no unresolved cost work can be read.');
+  }
+
+  if (query.isError) {
+    // A failed RE-READ of a queue we already hold is stale, not gone.
+    if (query.data) {
+      return stale(query.data.rows, {
+        label:
+          'The unresolved-cost queue could not be re-read, so what is shown may no longer be current.',
+        canRefresh: true,
+      });
+    }
+    return failureState(query.error, 'the unresolved-cost queue');
+  }
+
+  if (query.isLoading || !query.data) return loading();
+
+  const { rows, complete } = query.data;
+  if (!complete) {
+    return partial(rows, {
+      included: 'Part of the unresolved cost work in this workspace.',
+      missing:
+        'Further unresolved cost. A governed read reached its size limit, so problems may be absent '
+        + 'from this list — this is NOT a statement that there are none.',
+      safeToAggregate: false,
+    });
+  }
+  // An authoritative answer that PROVED there is nothing outstanding.
+  if (rows.length === 0) return empty();
+  return ready(rows);
 }

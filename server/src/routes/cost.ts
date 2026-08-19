@@ -58,6 +58,7 @@ import {
   buildBasisImpact,
   buildComponentDetail,
   buildCostQueue,
+  buildUnresolvedQueue,
   classifyCostError,
   computeSplit,
   conserves,
@@ -65,6 +66,7 @@ import {
   knownDirectCostByLine,
   parseMinor,
   readRecomputeResult,
+  REASON_DESCRIPTORS,
   scopeLineIdsOf,
   splittableTotal,
   amountOf,
@@ -72,7 +74,10 @@ import {
   type AcquisitionLotLineRow,
   type AcquisitionLotRow,
   type AcquisitionOrderRow,
+  type AcquisitionReceiptLineRow,
+  type AcquisitionReceiptRow,
   type AllocationMethod,
+  type ReceiptInventoryLinkRow,
   type CostAllocationRow,
   type BasisRecomputeOutcome,
   type CostComponentRow,
@@ -270,6 +275,112 @@ async function readUnresolvedBasis(
       .limit(MAX_ASSEMBLY_ROWS));
 }
 
+/**
+ * Every published basis row in the workspace, for the unresolved queue.
+ *
+ * Explicit columns for the same reason as the component-scoped read: the
+ * governed view is `select b.*`, so `*` would carry seven internal identifiers
+ * into a payload. `acquisition_line_item_id` is a join key the assembly never
+ * copies out.
+ */
+async function readAllBasisRows(client: Supa, workspaceId: string) {
+  return readRows<InventoryCostBasisRow>(() =>
+    client
+      .from('inventory_cost_basis_current')
+      .select(
+        'public_id,subject_kind,inventory_lot_public_id,inventory_item_public_id,'
+        + 'acquisition_line_item_id,layer_seq,source_unit_ordinal,total_cost_minor,currency,'
+        + 'basis_method,state,algorithm_version,derived_at')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+/** Every line the governed view reports as not fully resolved. */
+async function readAllUnresolvedBasis(client: Supa, workspaceId: string) {
+  return readRows<UnresolvedBasisRow>(() =>
+    client
+      .from('unresolved_inventory_cost_basis')
+      .select(
+        'acquisition_line_item_id,acquisition_line_public_id,expected_quantity,'
+        + 'reconciled_quantity,pending_expected_quantity,overage_quantity,'
+        + 'has_unresolved_cost_evidence')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+/**
+ * The most recent governed recompute RUN.
+ *
+ * `inventory_cost_basis_events` writes exactly one row with a null
+ * `inventory_cost_basis_id` per run — the schema enforces it with a partial
+ * unique index on `(workspace_id, recompute_id)` — and that row carries the
+ * version and time the run actually happened at.
+ *
+ * READ FROM THE RUN EVENT, NOT FROM THE BASIS ROWS. Scavenging the newest
+ * `derived_at` off `inventory_cost_basis_current` gets the right answer only
+ * when the last run produced rows. A recompute over a workspace with nothing
+ * derivable publishes none, and the scavenged version and timestamp would then
+ * belong to some earlier run while being labelled the last derivation — or,
+ * where no run has ever produced a row, would be null while a run demonstrably
+ * happened. The run event has no such gap.
+ *
+ * ORDERED DETERMINISTICALLY. `created_at` is `now()`, which is transaction time,
+ * so two recomputes in one transaction share it exactly; `recompute_id` breaks
+ * the tie so repeated reads of unchanged data cannot disagree about which run
+ * was last.
+ *
+ * `input_content_hash` is deliberately not read. It is the historical half of a
+ * comparison whose other half the database does not publish, so reading it would
+ * buy nothing but the temptation to guess — see
+ * `DERIVATION_STALENESS_IS_NOT_EVIDENCED` in the contract.
+ */
+async function readLatestRunEvent(client: Supa, workspaceId: string) {
+  return readRows<{ algorithm_version: string; created_at: string }>(() =>
+    client
+      .from('inventory_cost_basis_events')
+      .select('algorithm_version,created_at')
+      .eq('workspace_id', workspaceId)
+      .is('inventory_cost_basis_id', null)
+      .order('created_at', { ascending: false })
+      .order('recompute_id', { ascending: false })
+      .limit(1));
+}
+
+/*
+ * The receiving evidence basis eligibility is decided from.
+ *
+ * Three narrow reads rather than one joined view, because no governed view
+ * publishes "reconciled, inventory-linked units per acquisition line" and this
+ * slice adds no SQL. Each selects only join keys and the one fact it needs; no
+ * identifier from any of them reaches the response.
+ */
+async function readReceipts(client: Supa, workspaceId: string) {
+  return readRows<AcquisitionReceiptRow>(() =>
+    client
+      .from('acquisition_receipts')
+      .select('id,status')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+async function readReceiptLines(client: Supa, workspaceId: string) {
+  return readRows<AcquisitionReceiptLineRow>(() =>
+    client
+      .from('acquisition_receipt_lines')
+      .select('id,acquisition_receipt_id,acquisition_line_item_id')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
+async function readInventoryLinks(client: Supa, workspaceId: string) {
+  return readRows<ReceiptInventoryLinkRow>(() =>
+    client
+      .from('acquisition_receipt_line_inventory_links')
+      .select('acquisition_receipt_line_id,quantity_linked')
+      .eq('workspace_id', workspaceId)
+      .limit(MAX_ASSEMBLY_ROWS));
+}
+
 async function readOrders(client: Supa, workspaceId: string) {
   return readRows<AcquisitionOrderRow>(() =>
     client.from('acquisition_orders')
@@ -329,6 +440,96 @@ router.get('/queue', requireMember, asyncRoute(async (req, res) => {
       method, description: ALLOCATION_METHOD_DESCRIPTION[method],
     })),
     rows: buildCostQueue({ components, allocations, lots, orders, lines }),
+  });
+}));
+
+/**
+ * The governed unresolved-cost queue — S2.6.
+ *
+ * ONE READ ENDPOINT, and the minimum one. It answers "what cost truth still
+ * needs attention, why, and where do I go to resolve it" entirely from surfaces
+ * the caller may already read under their own JWT. It adds no SQL, invokes no
+ * function, and mutates nothing.
+ *
+ * IT IS TRIAGE AND NAVIGATION, NOT AN EDITOR. Every actionable row carries the
+ * governed component public identity so the browser can link into the existing
+ * S2.5 component workspace; allocation editing is not duplicated here.
+ *
+ * READ AS A MEMBER, act as S2.5 already allows. A viewer can see the queue —
+ * knowing what is unresolved is not a privileged act — and gains no mutation
+ * authority from it, because this endpoint offers none and the S2.5 routes each
+ * enforce their own role gate.
+ */
+router.get('/unresolved', requireMember, asyncRoute(async (req, res) => {
+  const { workspaceId, client, role } = caller(req);
+
+  const [components, lots, orders, lines, unresolvedRows] = await Promise.all([
+    readComponents(client, workspaceId),
+    readLots(client, workspaceId),
+    readOrders(client, workspaceId),
+    readLines(client, workspaceId),
+    readAllUnresolvedBasis(client, workspaceId),
+  ]);
+
+  const [
+    allocations, lotLines, basisRows, runEvents, receipts, receiptLines, inventoryLinks,
+  ] = await Promise.all([
+    readAllocations(client, workspaceId, components.map((component) => component.id)),
+    readLotLines(client, workspaceId),
+    readAllBasisRows(client, workspaceId),
+    readLatestRunEvent(client, workspaceId),
+    readReceipts(client, workspaceId),
+    readReceiptLines(client, workspaceId),
+    readInventoryLinks(client, workspaceId),
+  ]);
+
+  /*
+   * Truthful completeness, and it is load-bearing here more than anywhere.
+   *
+   * A cost queue that silently drops rows because a read hit its ceiling reads
+   * exactly like a workspace with less to do. "Nothing needs attention" is a
+   * claim this surface may only make after a COMPLETE authoritative read, so
+   * every read that feeds a reason is checked, and the UI renders `partial`
+   * rather than `empty` when any of them was cut short.
+   *
+   * The run-event read is absent from this list on purpose: it is `limit(1)` by
+   * design, asking for the newest run and no more, so its length proves nothing
+   * about completeness either way.
+   */
+  const complete =
+    components.length < MAX_ASSEMBLY_ROWS
+    && allocations.length < MAX_ASSEMBLY_ROWS
+    && lots.length < MAX_ASSEMBLY_ROWS
+    && lotLines.length < MAX_ASSEMBLY_ROWS
+    && orders.length < MAX_ASSEMBLY_ROWS
+    && lines.length < MAX_ASSEMBLY_ROWS
+    && basisRows.length < MAX_ASSEMBLY_ROWS
+    && unresolvedRows.length < MAX_ASSEMBLY_ROWS
+    && receipts.length < MAX_ASSEMBLY_ROWS
+    && receiptLines.length < MAX_ASSEMBLY_ROWS
+    && inventoryLinks.length < MAX_ASSEMBLY_ROWS;
+
+  const latestRun = runEvents[0];
+  const queue = buildUnresolvedQueue({
+    components, allocations, lots, lotLines, orders, lines, basisRows, unresolvedRows,
+    receipts, receiptLines, inventoryLinks,
+    latestRun: latestRun
+      ? { algorithmVersion: latestRun.algorithm_version, derivedAt: latestRun.created_at }
+      : null,
+    // Only a complete read can prove a basis row is ABSENT rather than unread.
+    absenceProvable: complete,
+  });
+
+  res.json({
+    coverage: 'governed_native_committed',
+    historicalLegacyImported: false,
+    complete,
+    role,
+    // The reason vocabulary travels with the data, so the screen states each
+    // problem in the same words the server used to detect it.
+    reasons: REASON_DESCRIPTORS,
+    derivation: queue.derivation,
+    rows: queue.rows,
   });
 }));
 
