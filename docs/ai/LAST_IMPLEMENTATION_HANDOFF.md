@@ -8,11 +8,12 @@ cost truth still needs attention, why, and where do I go to resolve it.**
 - Repository: `harmonicforce/russellvault2`. Canonical branch: `main`.
 - Branch: `claude/s2-6-unresolved-cost-queue`.
 - Base SHA: `3efe5b9422aa6016aa1ed36047f6a90ffa2c6a7d` (S2.5 merged as PR #70).
-- Current `main` merged in twice to clear merge conflicts — at `a8c9517` (S3.1,
-  PR #73) and again at `44b98eb` (S3.2, PR #74). Both times the only conflict was
-  this file, because each slice adds a section at the top; every section is kept
-  and Codex's text is verbatim. `git diff origin/main HEAD -- supabase/
-  docs/ai/CURRENT_STATE.md` is empty after both merges.
+- Current `main` merged in three times as other slices landed — `a8c9517`
+  (S3.1, PR #73), `44b98eb` (S3.2, PR #74) and `a37109d` (the S3.1 ordering
+  repair, PR #76). The first two conflicted only in this file, because each slice
+  adds a section at the top; every section is kept and Codex's text is verbatim.
+  `git diff origin/main HEAD -- supabase/ docs/ai/CURRENT_STATE.md` is empty
+  after every merge.
 - PR: **#72 (open, unmerged)**.
 - Status: **implemented, truth-repaired and validated locally.** Not merged, not
   deployed, not hosted-accepted.
@@ -83,8 +84,10 @@ an honest "there is nowhere to do this yet" is better than a fabricated button.
 ### Scope discipline
 
 **Zero Supabase edits, zero migrations, zero pgTAP changes, zero function
-changes** — `git diff 3efe5b9 -- supabase/` is empty. No S3 or reconciliation
-file touched (Codex owns S3.1). `docs/ai/CURRENT_STATE.md` untouched. No COGS,
+changes** — `git diff origin/main HEAD -- supabase/` is empty. (Stated against
+`main` rather than the original base, because merging `main` in legitimately
+brings other slices' migrations onto the branch; what matters is that S2.6
+contributes none of them.) No S3 or reconciliation file authored here. `docs/ai/CURRENT_STATE.md` untouched. No COGS,
 sales, profit, marketplace, Railway or hosted-acceptance work.
 
 The entire queue is derived from governed surfaces already granted to
