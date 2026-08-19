@@ -1,5 +1,81 @@
 # Last Implementation Handoff
 
+## S3.2 — Offline Reconciliation Runner + Synthetic Divergence Tests
+
+- Repository/canonical branch: `harmonicforce/russellvault2`, `main`.
+- Branch: `codex/s3-2-reconciliation-runner`.
+- Exact base SHA: `a8c951728c887ffdba330b98b6d6416cd0a839e7` (merged PR #73 / S3.1).
+- Final SHA: recorded after the delivery commit.
+- Authority: branch and Create PR only. No merge, hosted database, deployment,
+  production data, historical import, SQLite mutation, or S3.3 work authorized.
+
+### Implemented architecture and evidence contract
+
+The reusable ESM runner under `scripts/reconciliation/` separates fixed JSON
+artifact parsing/hashing, domain configuration validation, deterministic L1/L2
+comparison, CLI serialization, and optional ledger persistence. Artifact input
+is `{ "artifactVersion": 1, "rows": [...] }`; SHA-256 and byte length are
+computed from the exact input bytes. Authoritative output contains no timestamp
+or machine-local path and is canonically serialized with stable object-key and
+finding order.
+
+Domain configuration supplies the domain, comparison key, complete ordered
+field list with per-field materiality, numeric aggregate fields, categorical
+aggregate fields, and only explicitly selected string normalization. Duplicate
+or missing keys, malformed rows/configuration, non-finite numeric evidence, and
+unsafe integer aggregation fail closed.
+
+L1 records row count, distinct key count, configured numeric sums, configured
+group counts, and artifact metadata on both sides. It explicitly records that
+aggregate agreement is not a reconciliation pass. L2 indexes both sides and
+emits exactly one ordered finding for every key in their union. Differences
+remain independent and ordered; source-only/target-only findings carry no
+fabricated field differences.
+
+The optional persistence adapter has no database client dependency. A caller
+injects an RPC function; the adapter uses only S3.1's
+`begin_reconciliation_run`, `record_reconciliation_finding`,
+`complete_reconciliation_run`, and, after a begun-run persistence failure,
+`fail_reconciliation_run`. Comparison remains entirely offline.
+
+### Synthetic and integration proof
+
+The focused Node suite has 15 passing tests covering all required synthetic
+divergence, union, materiality, fail-closed, ordering, hash/output determinism,
+zero/null, normalization, network independence, and governed adapter cases.
+`supabase/tests/69_reconciliation_runner_integration.sql` supplies a synthetic
+runner result to the S3.1 functions and asserts three findings for three union
+keys, preserved differences/hashes, governed completion, and explicit L1
+non-pass semantics. It passed all 8 assertions in both its focused position and
+the full sequential database suite.
+
+### Validation and operational status
+
+- Root, client, and server `npm ci`: passed; npm reported existing dependency
+  audit findings and a root Node-engine warning.
+- `npm run test:reconciliation`: 15/15 passed.
+- `npm run typecheck`: passed.
+- `npm test`: server 861, client 1601, Node 39; all passed (2501 total).
+- `npm run build:ci`: passed with the existing Vite chunk-size warning.
+- `PGOPTIONS='-c jit=off' npm run db:reset`: passed after starting the local
+  PostgreSQL cluster and creating the sandbox's missing local `root` role.
+- `PGOPTIONS='-c jit=off' npm run db:test`: 69 files, 2656 assertions, all
+  passed; the new integration test passed 8/8. Initial reset/test attempts
+  failed because the local PostgreSQL cluster was stopped, then because the
+  sandbox lacked its expected local role; both environment conditions were
+  corrected before the final green runs.
+- `git diff --check`: passed before the handoff update and will be rerun before
+  commit.
+- Draft PR/CI: not created or checked; the owner reserved creation for the
+  Create PR button.
+- Live Supabase parity, Railway, `/api/version`, and hosted acceptance: not
+  checked/not authorized. Production and SQLite data touched: none.
+- `docs/ai/CURRENT_STATE.md`: untouched.
+- Rollback: revert the S3.2 commit; no schema or live state changed.
+- Exact next owner decision: use Create PR for this committed branch, run the
+  database suites and exact-head CI where PostgreSQL is available, and decide
+  whether to merge S3.2. Do not begin S3.3.
+
 ## S3.1 — Reconciliation Ledger Final Integrity Repair
 
 - Repository/canonical branch: `harmonicforce/russellvault2`, `main`.
