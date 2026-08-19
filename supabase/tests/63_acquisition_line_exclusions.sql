@@ -18,7 +18,7 @@
 begin;
 create extension if not exists pgtap;
 create extension if not exists dblink;
-select plan(159);
+select plan(161);
 
 create function pg_temp.h(p_seed text) returns text language sql immutable as $$
   select encode(sha256(p_seed::bytea), 'hex')
@@ -130,6 +130,18 @@ select ('63000000-7400-4000-8000-00000000000'||n)::uuid,'63000000-1000-4000-8000
 from generate_series(1,5) n;
 insert into public.acquisition_lot_lines(id,workspace_id,lot_id,line_item_id,created_by_process) values
  ('63000000-7400-4000-8000-000000000009','63000000-1000-4000-8000-000000000002','63000000-7300-4000-8000-000000000002','63000000-5000-4000-8000-000000000009','test.import');
+set local session_replication_role=origin;
+
+-- Prove the privileged path cannot forge the exact supersession UPDATE used by
+-- the governed decision function when its mutation GUC has never been set.
+set local session_replication_role=replica;
+insert into public.acquisition_line_exclusions(id,workspace_id,public_id,acquisition_line_item_id,decision_state,reason,idempotency_key,payload_fingerprint,created_by) values
+ ('63000000-7800-4000-8000-000000000001','63000000-1000-4000-8000-000000000002','RV-AEXCL-GUARD0630001','63000000-5000-4000-8000-000000000009','excluded','guard fixture','guard-exclusion-key-63',repeat('e',64),'63000000-0000-4000-8000-000000000004');
+set local session_replication_role=origin;
+select is(current_setting('app.governed_acquisition_exclusion_mutation',true),null,'the acquisition exclusion mutation GUC is genuinely unset');
+select throws_ok($$update public.acquisition_line_exclusions set superseded_at=clock_timestamp(),superseded_by_exclusion_id='63000000-7800-4000-8000-000000000002' where id='63000000-7800-4000-8000-000000000001'$$,'55000','append_only_violation','privileged supersession-shaped UPDATE fails closed with the GUC unset');
+set local session_replication_role=replica;
+delete from public.acquisition_line_exclusions where id='63000000-7800-4000-8000-000000000001';
 set local session_replication_role=origin;
 
 -- ================================================== GATE 1 — DEFAULT ========

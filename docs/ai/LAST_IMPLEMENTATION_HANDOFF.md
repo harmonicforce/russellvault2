@@ -1,5 +1,19 @@
 # Last Implementation Handoff
 
+## Hosted parity prerequisite — NULL-safe acquisition mutation guards
+
+- Repository: `harmonicforce/russellvault2`; canonical branch: `main`.
+- Branch: `fix/null-safe-acquisition-guards`.
+- Base SHA: `f5a12aaa88297ab6019a1fd0b54f6339d28040ad`.
+- PR: to be created from the committed branch; status is implemented and locally validated except for the pre-existing Cycle Count concurrency assertion described below. Not merged, deployed, hosted-accepted, or applied to live Supabase.
+- Migration: `20260819000200_null_safe_acquisition_mutation_guards.sql` (forward-only additive replacement of two trigger functions; no merged migration changed).
+- Guard repair: both mutation checks now use `coalesce(current_setting(..., true), '') <> 'on'`. Every remaining condition, SQLSTATE, trigger, grant, and RLS rule is unchanged.
+- Regression evidence: with each custom GUC asserted genuinely NULL, privileged payment UPDATE/DELETE and shipment UPDATE/DELETE are refused with `42501/governed_write_required`, and a privileged exclusion supersession-shaped UPDATE is refused with `55000/append_only_violation`. Existing governed payment, shipment, exclusion, and restoration lifecycle assertions remain green; focused files now contain 161 assertions each.
+- Validation: `PGOPTIONS='-c jit=off' npm run db:reset` passed. Two complete `db:test` runs reached every file and both showed the unrelated pre-existing nondeterministic `40_cycle_count_concurrency.sql` cancel/observation race assertion failure (assertion 8 on the first run, assertion 6 on the second); all other files passed on the second run, including `06` (56), `61` (161), and `63` (161). `npm run typecheck`, `npm test` (server 953, client 1,626, Node 38), `npm run build:ci`, and `git diff --check` passed.
+- Live Supabase migration parity: not checked. Production data, hosted schema, S3, Railway, and application code were not touched.
+- Rollback: revert the branch commit before merge; after migration application, a new forward migration would be required.
+- Exact next owner decision: review/create the PR and decide whether the unrelated Cycle Count concurrency test defect must be repaired separately before merge.
+
 ## S2.6 — Governed Unresolved Cost Queue (COMPLETE, including the final truth repair)
 
 The final S2 application slice. An owner-usable triage queue answering: **what

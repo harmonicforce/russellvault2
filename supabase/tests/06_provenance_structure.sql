@@ -431,8 +431,8 @@ select is(
 -- reconcile a mismatch by lowering the number.
 select is(
   (select count(*)::int from public.schema_migrations_log),
-  78,
-  'seventy-eight migrations are recorded, one per file in supabase/migrations'
+  79,
+  'seventy-nine migrations are recorded, one per file in supabase/migrations'
 );
 
 select results_eq(
@@ -515,8 +515,9 @@ select results_eq(
     ('20260815000100_cost_allocation_withdrawn_state'),
     ('20260815000200_cost_basis_truth_hardening'),
     ('20260815000300_reconciliation_ledger'),
-    ('20260819000100_reconciliation_deterministic_ordering')$$,
-  'the migration ledger matches every governed migration through the S3.1 ordering repair'
+    ('20260819000100_reconciliation_deterministic_ordering'),
+    ('20260819000200_null_safe_acquisition_mutation_guards')$$,
+  'the migration ledger matches every governed migration through the NULL-safe acquisition guard repair'
 );
 
 select * from finish();
