@@ -11,9 +11,11 @@ A handoff must let another agent continue from repository evidence without relyi
 3. Push all intended commits.
 4. Open or update the draft PR.
 5. Run the required validation matrix and check every exit code.
-6. Inspect CI for the exact PR head.
-7. Update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`.
-8. Do not edit `CURRENT_STATE.md` unless explicitly authorized.
+6. Inspect all required CI jobs on the exact PR head.
+7. If the work has already merged, separately inspect the GitHub Actions workflow triggered by the push to `main` on the resulting merge SHA.
+8. If making any live Supabase claim, verify the production project ref from the deployed Railway Supabase URL before querying or changing it.
+9. Update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`.
+10. Do not edit `CURRENT_STATE.md` unless explicitly authorized.
 
 ## Required surrender record
 
@@ -27,8 +29,10 @@ The handoff must state:
 - database functions, read models, grants, and security changes;
 - client/server contracts and recovery behavior;
 - test commands, totals, exit codes, and exact failures;
-- CI run IDs and conclusions for every required job;
-- live Supabase migration count and parity status, or explicitly `not checked`;
+- CI run IDs and conclusions for every required job on the exact PR head;
+- if merged, the `main` push workflow run ID and conclusion on the exact merge SHA, reported separately from PR-head CI;
+- the live Supabase project ref and the deployed configuration evidence used to establish that identity, or explicitly `not checked`;
+- live Supabase migration count and parity status for that verified project, or explicitly `not checked`;
 - Railway deployment and `/api/version` result, or explicitly `not authorized/not checked`;
 - hosted acceptance steps and results;
 - production data touched, if any;
@@ -43,15 +47,19 @@ Use these terms precisely:
 - **implemented**: code exists on the stated branch;
 - **validated**: the stated automated checks passed on the exact SHA;
 - **merged**: GitHub records the PR as merged;
+- **main-green**: the required GitHub Actions push workflow on the stated current `main` SHA completed successfully;
 - **deployed**: Railway reports success for the stated SHA;
-- **hosted-accepted**: the owner workflow was exercised against the deployed app and live schema;
+- **hosted-parity**: the migration ledger was checked on the Supabase project whose ref was independently verified from deployed configuration;
+- **hosted-accepted**: the owner workflow was exercised against the deployed app and verified live schema;
 - **complete**: all work-order acceptance gates are satisfied.
 
 Do not collapse these into one word.
 
 ## Failure reporting
 
-Report every timeout, cancellation, hang, skipped test, unverified exit code, unavailable dependency, blocked credential, and environment limitation. A per-file sweep is not equivalent to a full-suite pass. A Railway build is not a substitute for CI. Green CI is not a substitute for hosted acceptance.
+Report every timeout, cancellation, hang, skipped test, unverified exit code, unavailable dependency, blocked credential, and environment limitation. A per-file sweep is not equivalent to a full-suite pass. A Railway build is not a substitute for CI. Green PR-head CI is not a substitute for a green post-merge `main` push workflow. Green CI is not a substitute for hosted acceptance.
+
+Do not convert access limitations into claims about reality. “This token cannot list the project” is not evidence that the project does not exist. Resolve production identity from deployed configuration before drawing conclusions from scoped connector listings.
 
 ## Cross-agent continuation
 
@@ -61,7 +69,8 @@ The incoming agent must:
 2. verify the handoff SHA and PR directly;
 3. inspect the diff relevant to the next task;
 4. treat the handoff as evidence, not unquestionable authority;
-5. preserve or explicitly supersede unfinished commitments.
+5. when live systems matter, verify the deployed production target independently;
+6. preserve or explicitly supersede unfinished commitments.
 
 ## Handoff ownership
 

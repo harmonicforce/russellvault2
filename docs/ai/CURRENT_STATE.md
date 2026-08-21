@@ -1,107 +1,126 @@
 # Russell Vault Current State
 
-Last reviewer update: 2026-08-01
+Last reviewer update: 2026-08-21
 
 This is the canonical operational ledger. Implementation agents must not edit it unless a work order explicitly grants a one-time exception.
 
-## Deployment and verification
+## Deployment identity and verification
 
 - Repository: `harmonicforce/russellvault2`
 - Canonical and GitHub default branch: `main`
 - Railway source branch: `main`
 - Live app: `https://russellvault2-production.up.railway.app`
-- Supabase project: `ykdyqnvmwpxhowbwhzqz`
-- Last reviewed merge: `2f7a73ad4380c091da65db78a6f83a52f553d93c` (PR #25)
-- Repository migration count: 47
-- Exact PR-head CI run `30675105213`: success
-- Required jobs green: build-and-verify, shadow-db-postgres-shim, shadow-db-supabase-stack, dev-advisory-report
-- Railway deployment status on the reviewed merge: success
-- Hosted Cycle Count acceptance steps 1–8: reported green by the owner
+- Canonical deployed Supabase project: `ncyqqitqtsyjrijieykd`
+- Railway `VITE_SUPABASE_URL`: `https://ncyqqitqtsyjrijieykd.supabase.co`
+- `ykdyqnvmwpxhowbwhzqz` is a different Supabase project and is not the database configured by the deployed Railway service.
+- Current reviewed `main` SHA: `a647b77a0f88fbaac9abc86430be58502a562bf9` (merge of PR #77).
+- Repository governed migration count at that SHA: **79**.
+- Hosted `ncyqqitqtsyjrijieykd` governed migration ledger: **79 / 79**, through `20260819000200_null_safe_acquisition_mutation_guards`.
+- Railway deployment status on the reviewed merge: success.
 
-The repository documents do not independently prove the live Supabase migration ledger. Each migration-bearing release must verify live parity before acceptance.
+### Production identity rule
 
-## Confirmed owner-facing foundation
+The deployed Railway Supabase URL is authoritative for deciding which Supabase project is production. Before any live migration, reset, restore, acceptance, or parity claim, verify the project ref from the deployed environment. Project names, repository prose, agent memory, and scoped Supabase project listings are not sufficient substitutes.
 
-- Supabase authentication, workspace selection, and first-run workspace/location setup
-- workspace-scoped locations
-- multi-category single and batch intake with draft recovery
-- Product → SKU → Lot → Item identity hierarchy
-- serialized and lot-managed inventory
-- Current Inventory with server-side paging, sorting, filtering, and URL-held state
-- private inventory media and signed display URLs
-- item and lot detail routes
-- printable inventory labels
-- scan/find and governed movement
-- lot adjustments, recount, split, and merge with immutable history
-- correction requests, review, supersession, and duplicate voiding
-- Daily Workbench foundation
-- deterministic database test runner and concurrency harness
+## Current CI state: RED
 
-## Shipped: governed Cycle Count
+`main` is currently red and new merge/release claims are blocked until the failing required job is diagnosed and repaired.
 
-Cycle Count is implemented, merged, CI-green, deployed, and owner-smoke-tested.
+Main push workflow:
 
-Confirmed capabilities include:
+- run: `32265646383`
+- event: `push`
+- head: `a647b77a0f88fbaac9abc86430be58502a562bf9`
+- overall conclusion: **failure**
+- `build-and-verify`: green
+- `shadow-db-postgres-shim`: green
+- `dev-advisory-report`: green
+- `shadow-db-supabase-stack`: **failed by 12-minute timeout** while executing `supabase/tests/15_acquisition_digest_parity.sql`
 
-- location-scoped count creation and frozen snapshots;
-- blind initial and recount rounds;
-- immutable round evidence and latest-round results;
-- atomic keyed item and lot observations with replay/conflict outcomes;
-- lifecycle locking across observe, submit, recount, resolution, completion, and cancellation;
-- discrepancy review and multi-subject recount selection;
-- governed resolution matrix with approval-required actions;
-- durable failed-attempt and item-loss evidence;
-- latest-result summaries that do not double-count historical rounds;
-- owner-facing list, counting, review, completion, and audit surfaces;
-- Workbench integration;
-- rendered client tests, server tests, pgTAP, and genuine overlapping-session concurrency tests.
+The exact PR-head workflow immediately before merge, run `32265592383`, was green on all four required jobs. That does not override the later red `main` push workflow.
 
-The CI-repair PR corrected stale test bindings and assertions without changing the governed Cycle Count schema or functions.
+Do not describe `main` as green until a required push workflow on the current main SHA completes successfully.
 
-## Current known incomplete or weak areas
+## Completed platform and governed foundation
 
-### Media
+Confirmed shipped capabilities include:
 
-- multi-file progress and per-file retry need production hardening;
-- reorder and rotation are not fully confirmed;
-- atomic primary switching, deletion recovery, and orphan reconciliation need reinforcement;
-- category-aware required-photo workflows remain incomplete.
+- Supabase authentication, workspace selection, and first-run workspace/location setup;
+- workspace-scoped locations;
+- multi-category single and batch intake with draft recovery;
+- Product → SKU → Lot → Item governed identity;
+- serialized and lot-managed inventory;
+- Current Inventory with server paging/sorting/filtering and URL-held state;
+- private media foundation, labels, scan/find, and governed movement;
+- lot adjustment, recount, split, merge, correction, supersession, and duplicate voiding;
+- governed Cycle Count with blind rounds, recounts, resolutions, audit, owner UI, and concurrency coverage;
+- S1.6 governed UI/design-system foundation and browser quality gate;
+- customizable governed Workbench with truth-state discipline;
+- governed acquisition classification, read/detail surfaces, payments, shipments, and exclusions;
+- governed receiving lifecycle and owner UI;
+- governed cost allocation, withdrawal/recovery, inventory cost-basis derivation, and unresolved-cost owner queue.
 
-### Acquisition and cost
+## Commercial Core status
 
-- owner-facing acquisition-to-inventory receiving remains incomplete;
-- landed-cost allocation and inventory cost-basis read models remain incomplete;
-- source and cost review queues need owner-facing completion.
+### S0 — Safety prerequisites
 
-### Listing and sales operations
+Implemented through the boot-write isolation and governed configuration work. S0.3 hosted/backup rehearsal remains deferred operational debt and is not evidence for live data restoration by itself.
 
-- Listing Prep and readiness workflows are incomplete;
-- marketplace publishing remains out of scope unless explicitly authorized;
-- sales, fulfillment, returns, and governed inventory exit are incomplete.
+### S1 — Acquisition foundation
 
-### Dashboard and acceptance infrastructure
+Complete for the planned program scope, including classification, detail/read surfaces, payments/shipments, and exclusions. The latest acquisition mutation guards are NULL-safe and fail closed when their custom GUCs are unset.
 
-- Dashboard and Workbench intelligence remain limited;
-- saved views, explainable priority rules, aging, and cross-workflow activity are incomplete;
-- broad Playwright coverage and release normalization remain future work;
-- `15_acquisition_digest_parity.sql` has shown an intermittent local in-suite slowdown while passing standalone and CI.
+### S2 — Receiving, landed cost, and inventory cost basis
 
-## Recommended next-stage options
+Complete through **S2.6**:
 
-Choose one coherent vertical slice:
+- S2.1 receiving schema;
+- S2.2 governed receiving functions and hardening;
+- S2.3 receiving UI;
+- S2.4 inventory cost-basis schema/recompute;
+- S2.4.1 truth hardening and allocation withdrawal;
+- S2.5 cost allocation owner surface;
+- S2.6 unresolved cost queue.
 
-1. Listing Prep Command Center
-2. Media and Photography Hardening
-3. Acquisition Receiving and Landed Cost
-4. Sales, Fulfillment, and Inventory Exit
-5. Operational Dashboard and Inventory Intelligence
+Cost-basis algorithm is at version **1.1.0**. Currencies remain separate. Unresolved or overage basis is never silently rendered as zero.
 
-Recommended commercial sequence:
+### S3 — Historical reconciliation and import
 
-`acquisition/cost → listing prep → media hardening → sales/fulfillment → dashboard intelligence`
+Implemented:
 
-Media may be moved ahead of Listing Prep when photography is the immediate operational bottleneck.
+- **S3.1** governed append-only reconciliation ledger;
+- deterministic reconciliation ordering repair merged in PR #76;
+- **S3.2** deterministic offline reconciliation runner and governed persistence adapter merged in PR #74.
+
+Not yet implemented:
+
+- **S3.3 reconciliation review UI**;
+- S3.4 inventory import functions + duplicate scan;
+- S3.5 inventory import execution + adjudication;
+- S3.6 acquisition import execution;
+- S3.7 cost allocation import + conservation proof;
+- S3.8 cutover removal of legacy write handlers.
+
+Historical import has **not** been executed. The 2,149 repository acquisition-line set versus the owner-attested 2,119 production-backup count still requires record-level reconciliation. Never assume the 30-row difference is the known food subset without key-level proof.
+
+## Open repository/process debt
+
+- `main` red on the Supabase-stack `15_acquisition_digest_parity.sql` timeout. This is the top blocker.
+- `supabase/tests/40_cycle_count_concurrency.sql` has a known nondeterministic concurrency/timestamp assertion debt and should be repaired without weakening the genuine race proof.
+- PR #75 remains open but is superseded by merged PR #76 and should not be merged.
+- The client dependency audit continues to report GHSA-qwww-vcr4-c8h2; the repository's explicit BrowserRouter/no-RSC conditional audit gate is the accepted current policy. Do not call raw client `npm audit` clean.
+- Cost-basis staleness is not currently evidenced because the database does not publish a read-only current-input hash for comparison with the stored recompute hash.
+
+## Next product slice
+
+Once required `main` CI is green, the next approved application slice is:
+
+**S3.3 — Reconciliation Review UI**
+
+It should extend the owner review workflow with reconciliation runs, L1 evidence, complete L2 findings, exact field differences, materiality, append-only adjudication history/actions, and authoritative cutover eligibility. It must not perform historical import or independently reimplement cutover truth in TypeScript.
+
+After S3.3, continue in the approved order: S3.4 → S3.5 → S3.6 → S3.7 → S3.8.
 
 ## Stewardship note
 
-Implementation evidence belongs in `LAST_IMPLEMENTATION_HANDOFF.md`. This file is updated only after independent review of repository state, CI, deployment evidence, live migration status when relevant, and hosted acceptance.
+Implementation evidence belongs in `LAST_IMPLEMENTATION_HANDOFF.md`. This file is updated only after independent review of repository state, CI, deployment evidence, live migration status when relevant, and hosted configuration.

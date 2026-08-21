@@ -57,17 +57,17 @@ The database may use broader verticals internally, but the owner-facing subtype 
 
 Identity facts are immutable after commit except through governed correction or supersession. Examples include product/SKU identity, certificate, serial, public identifiers, and scan SKU.
 
-Operational facts change only through governed actions preserving history. Examples include location movements, lot adjustments, media-primary changes, workflow transitions, loss, and cycle-count resolutions.
+Operational facts change only through governed actions preserving history. Examples include location movements, lot adjustments, receiving evidence, cost allocations, media-primary changes, workflow transitions, loss, cycle-count resolutions, and reconciliation adjudications.
 
 ## Evidence rule
 
-Never invent or silently strengthen condition, grade, edition, language, packaging condition, authenticity, identifiers, source, cost, purchase details, listing claims, weights, fees, or market values.
+Never invent or silently strengthen condition, grade, edition, language, packaging condition, authenticity, identifiers, source, cost, purchase details, listing claims, weights, fees, market values, reconciliation outcomes, or cutover readiness.
 
-Use explicit `Unknown`, `Unassessed`, or review states when evidence is incomplete.
+Use explicit `Unknown`, `Unassessed`, unresolved, partial, unavailable, or review states when evidence is incomplete.
 
 ## Existing product surfaces
 
-The application includes or has foundations for:
+The application includes or has governed foundations for:
 
 - authentication, workspaces, and first-run setup;
 - locations;
@@ -80,11 +80,21 @@ The application includes or has foundations for:
 - lot quantity adjustment, recount, split, and merge;
 - governed corrections and supersession;
 - governed Cycle Count with blind rounds, recounts, resolutions, and audit;
-- Daily Workbench;
-- provenance and acquisition foundations;
-- legacy SQLite operational surfaces retained during transition.
+- governed UI/design-system primitives and responsive browser quality gates;
+- customizable Daily Workbench;
+- governed acquisition classification, list/detail, payment, shipment, and exclusion flows;
+- governed receiving from acquisition evidence into inventory provenance;
+- governed cost allocation, withdrawal/recovery, derived inventory cost basis, and unresolved-cost triage;
+- append-only reconciliation ledger and deterministic offline reconciliation runner;
+- legacy SQLite operational surfaces retained only during transition and never to be conflated with governed truth.
 
-Consult `CURRENT_STATE.md` for reviewed shipped state and `PROJECT_ROADMAP.md` for next-stage options.
+The next owner-facing reconciliation surface is S3.3. Historical data import has not yet been executed.
+
+Consult `CURRENT_STATE.md` for reviewed shipped state and blockers, and `PROJECT_ROADMAP.md` for the approved continuation sequence.
+
+## Deployment identity
+
+The deployed Russell Vault Railway service is configured to use Supabase project `ncyqqitqtsyjrijieykd`. The deployed environment value is authoritative for production identity; older documentation or similarly named Supabase projects must not override it.
 
 ## Out of scope unless explicitly added
 
@@ -92,7 +102,7 @@ Consult `CURRENT_STATE.md` for reviewed shipped state and `PROJECT_ROADMAP.md` f
 - customer accounts;
 - billing;
 - tax advice or filing;
-- automated marketplace publishing;
+- unrestricted automated marketplace publishing;
 - AI identification of inventory;
 - fabricated price recommendations;
 - destructive deletion of committed inventory;

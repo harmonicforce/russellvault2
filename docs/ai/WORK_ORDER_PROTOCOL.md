@@ -11,7 +11,8 @@ Repository-wide context belongs in `AGENTS.md`, `CLAUDE.md`, and `docs/ai/*`. A 
 3. Confirm the working tree is clean.
 4. Inspect the existing implementation, migrations, routes, read models, and tests relevant to the task.
 5. Inspect current CI and deployment status when hosted behavior is affected.
-6. Create a short-lived branch and draft PR unless the work order explicitly directs otherwise.
+6. If the task touches or claims anything about live Supabase, verify the target project ref against the Supabase URL configured in the deployed Railway environment before querying or mutating it.
+7. Create a short-lived branch and draft PR unless the work order explicitly directs otherwise.
 
 Do not produce a fresh architecture review unless requested.
 
@@ -54,12 +55,16 @@ When database behavior changes:
 5. reset and test from empty on the shim;
 6. test on the local Supabase CI tier;
 7. stop at a green draft PR unless release is explicitly authorized;
-8. when release is authorized, verify live migration parity before applying migrations;
-9. verify the hosted workflow after deployment.
+8. when release is authorized, verify the production project ref from deployed Railway configuration;
+9. verify live migration parity on that exact project before applying migrations;
+10. apply only the required forward migrations to the verified project;
+11. recheck parity and verify the hosted workflow after deployment.
+
+A Supabase project name, stale repository line, agent memory, or scoped `list_projects` result is not sufficient production identity evidence.
 
 ## UI workflow
 
-Owner-facing work includes understandable labels, active workspace context, loading/empty/error states, refresh recovery, iPad and desktop layouts, governed public identifiers, and direct links to the next action.
+Owner-facing work includes understandable labels, active workspace context, loading/empty/partial/stale/unavailable/error states where applicable, refresh recovery, iPad and desktop layouts, governed public identifiers, and direct links to the next action.
 
 ## Default completion gate
 
@@ -75,13 +80,18 @@ Unless the work order explicitly grants release authority:
 
 Only when explicitly authorized:
 
-1. confirm the exact green PR head;
+1. confirm the exact green PR head and all four required jobs;
 2. merge through GitHub without force-pushing `main`;
-3. verify live Supabase parity and apply required migrations;
-4. confirm Railway deployment success;
-5. confirm `/api/version` returns the final merge SHA;
-6. run task-specific hosted acceptance;
-7. report rollback information and any incomplete proof.
+3. record the resulting merge SHA;
+4. inspect the GitHub Actions workflow triggered by the push to `main` on that exact merge SHA and require all four jobs to pass;
+5. verify the live Supabase project ref from Railway configuration;
+6. verify live Supabase parity on that project and apply required migrations if authorized;
+7. confirm Railway deployment success;
+8. confirm `/api/version` returns the final merge SHA;
+9. run task-specific hosted acceptance;
+10. report rollback information and any incomplete proof.
+
+A green PR-head run or green Railway deployment does not override a red, timed-out, cancelled, or incomplete required `main` push workflow.
 
 ## State ownership
 
@@ -98,14 +108,16 @@ Every surrender report must include:
 3. files and migrations changed;
 4. owner workflows completed;
 5. exact tests and results;
-6. CI run IDs and conclusions;
-7. live Supabase status;
-8. Railway and `/api/version` status;
-9. hosted acceptance result;
-10. incomplete requirements and exact reasons;
-11. reversions, false starts, flaky tests, blocked egress, and unchecked commands;
-12. newly discovered follow-up work;
-13. rollback path;
-14. exact owner decision required next.
+6. exact PR-head CI run IDs and conclusions;
+7. if merged, the exact `main` push workflow run ID and conclusion;
+8. live Supabase project ref and how its production identity was verified;
+9. live Supabase migration parity status;
+10. Railway and `/api/version` status;
+11. hosted acceptance result;
+12. incomplete requirements and exact reasons;
+13. reversions, false starts, flaky tests, blocked egress, and unchecked commands;
+14. newly discovered follow-up work;
+15. rollback path;
+16. exact owner decision required next.
 
 Do not describe timed-out, cancelled, hanging, skipped, or unchecked commands as passing.

@@ -44,8 +44,19 @@ Implementation agents update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md` and provid
 - Canonical and GitHub default branch: `main`
 - Railway source branch: `main`
 - Live app: `https://russellvault2-production.up.railway.app`
-- Supabase project: `ykdyqnvmwpxhowbwhzqz`
+- Canonical deployed Supabase project: `ncyqqitqtsyjrijieykd`
+- Railway `VITE_SUPABASE_URL` points to `https://ncyqqitqtsyjrijieykd.supabase.co`.
 - Railway exposes `/api/health` and `/api/version` for deployment verification.
+
+### Deployment identity rule
+
+The deployed environment is authoritative for production identity. Before any live Supabase read, migration, reset, restore, or acceptance claim, verify that the target project ref matches the project ref in Railway's deployed Supabase URL. A repository document, remembered project name, Supabase project listing, or agent handoff is not sufficient proof by itself.
+
+`ykdyqnvmwpxhowbwhzqz` is a different Supabase project and is not the database configured by the deployed Russell Vault Railway service. Do not treat it as production merely because older repository documentation named it.
+
+### CI truth rule
+
+For an unmerged PR, inspect the exact PR-head required jobs. After merge, inspect the GitHub Actions workflow triggered by the push to `main` on the merge SHA as a separate release signal. A green PR-head run, Railway deployment status, or GitHub commit status must not be used to claim `main` is green when the `main` push workflow is red, timed out, cancelled, or still running.
 
 ## Work-order rule
 

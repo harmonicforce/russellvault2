@@ -8,6 +8,7 @@
 - [ ] Confirm a clean working tree.
 - [ ] Confirm work-order scope and release authority.
 - [ ] Inspect relevant existing code, migrations, tests, CI, and deployment state.
+- [ ] If live Supabase matters to the task, verify the target project ref against the deployed Railway Supabase URL before making any live claim or operation.
 - [ ] Create a short-lived feature branch and draft PR.
 
 ## Plan
@@ -38,7 +39,7 @@
 - [ ] Database reset from empty passes.
 - [ ] Full pgTAP passes on PostgreSQL shim.
 - [ ] Full pgTAP passes on local Supabase CI tier.
-- [ ] Production audits pass.
+- [ ] Production audits pass under the repository's explicit audit policy.
 - [ ] Rendered/browser tests cover the owner workflow where applicable.
 - [ ] `git diff --check` passes.
 - [ ] Every claimed command has a checked exit code.
@@ -49,7 +50,7 @@
 - [ ] Working tree is clean.
 - [ ] Draft PR targets current `main`.
 - [ ] Exact PR-head SHA is recorded.
-- [ ] All required CI jobs are green on that SHA.
+- [ ] All four required CI jobs are green on that exact PR-head SHA.
 - [ ] `LAST_IMPLEMENTATION_HANDOFF.md` is current.
 - [ ] No unauthorized live migration, merge, or deployment occurred.
 
@@ -57,8 +58,12 @@
 
 - [ ] Owner or work order explicitly authorizes release.
 - [ ] Exact green PR head is merged through GitHub.
-- [ ] Live Supabase migration parity is checked.
-- [ ] Required migrations are applied and rechecked.
+- [ ] Record the exact resulting `main` merge SHA.
+- [ ] Inspect the GitHub Actions workflow triggered by the push to `main` on that merge SHA; all four required jobs are green.
+- [ ] Do not substitute PR-head CI, Railway deployment status, or commit-status summaries for the `main` push workflow.
+- [ ] Re-verify the deployed Railway Supabase URL and extract the production project ref.
+- [ ] Live Supabase migration parity is checked against that exact deployed project.
+- [ ] Required migrations are applied only to that verified project and parity is rechecked.
 - [ ] Railway deploys the final merge SHA.
 - [ ] `/api/health` succeeds.
 - [ ] `/api/version` reports the final SHA.
@@ -70,7 +75,8 @@
 - [ ] Branch, base SHA, final SHA, and PR are recorded.
 - [ ] Files and migrations changed are listed.
 - [ ] Tests, totals, failures, and CI run IDs are recorded.
-- [ ] Live Supabase, Railway, and hosted acceptance status are explicit.
+- [ ] PR-head CI and, when merged, `main` push CI are reported separately.
+- [ ] Live Supabase project ref, how it was verified, migration parity, Railway, and hosted acceptance status are explicit.
 - [ ] Known defects and skipped proof are explicit.
 - [ ] Exact next owner decision is stated.
 - [ ] `CURRENT_STATE.md` was not edited unless explicitly authorized.
