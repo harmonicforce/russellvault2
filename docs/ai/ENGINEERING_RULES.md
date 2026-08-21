@@ -13,12 +13,14 @@
 
 - Prefer additive migrations.
 - Preserve existing identifiers and history.
-- Use append-only events for movement, quantity adjustments, corrections, lineage, and other auditable changes.
+- Use append-only events for movement, quantity adjustments, corrections, lineage, reconciliation adjudications, and other auditable changes.
 - Use atomic functions for multi-step state changes.
 - Lock rows and reject stale expected state where concurrent edits could lose data.
 - Do not grant unrestricted direct-table writes when a governed function should own the mutation.
 - Maintain plain-PostgreSQL shim and local Supabase compatibility.
 - Apply required migrations to live Supabase only when the work order authorizes release and the exact commit has green required CI.
+- Before any live Supabase read, migration, reset, restore, or parity claim, verify the target project ref against the Supabase URL configured in the deployed Railway environment. Do not infer production identity from a project name, repository document, remembered ref, or scoped project listing.
+- The current deployed Russell Vault project ref is `ncyqqitqtsyjrijieykd`; re-verify the deployed environment before consequential live work rather than treating this line as permanent authority.
 
 ## 3. Identity
 
@@ -37,6 +39,7 @@
 - Location changes create movement events.
 - Quantity changes create adjustment, split, merge, receipt, sale, or other explicit events.
 - Preserve actor, timestamp, reason, and before/after state.
+- Do not infer authoritative chronology from random UUID ordering or transaction-stable timestamps when a governed sequence exists.
 
 ## 5. Client experience
 
@@ -47,6 +50,7 @@
 - Network retries must not create duplicates.
 - Avoid page-level horizontal overflow.
 - Use readable public IDs and scan identifiers.
+- Never render empty or zero when the underlying read is unavailable, partial, stale, or unauthorized.
 
 ## 6. Media
 
@@ -65,6 +69,8 @@
 - Preserve currency and original entered totals.
 - Cost allocations must reconcile exactly, with rounding adjustments explicit.
 - Do not invent shipping, tax, fees, discounts, weights, or market values.
+- Keep currencies separate unless a governed FX fact explicitly authorizes conversion.
+- Unresolved cost or basis must never be represented as a silent zero.
 
 ## 8. Testing
 
@@ -79,13 +85,19 @@ Required before release acceptance:
 - production dependency audits;
 - focused rendered, browser, or hosted acceptance for the changed owner workflow.
 
-Do not weaken tests merely to obtain green CI. Report skipped, timed-out, cancelled, or unchecked commands honestly.
+Do not weaken tests merely to obtain green CI. Report skipped, timed-out, cancelled, hanging, or unchecked commands honestly.
 
-## 9. Branch, merge, and deployment
+Database suites that share one shadow database run sequentially. A focused pgTAP file may be run directly for diagnosis, but it does not substitute for the full suite.
+
+## 9. Branch, merge, CI, and deployment
 
 - Begin from current `main` unless the work order says otherwise.
 - Work on a short-lived branch and open a draft PR.
 - By default, stop at a green exact PR head. Do not merge, apply live migrations, or deploy unless the work order explicitly authorizes those actions.
+- The four required CI jobs are `build-and-verify`, `shadow-db-postgres-shim`, `shadow-db-supabase-stack`, and `dev-advisory-report`.
+- For an unmerged PR, inspect all four required jobs on the exact PR-head SHA.
+- After a merge, separately inspect the GitHub Actions workflow triggered by the push to `main` on the merge SHA. A green PR-head run does not prove the resulting `main` push run is green.
+- Railway deployment success and GitHub commit-status summaries do not substitute for the required GitHub Actions jobs.
 - When release is authorized, verify Railway serves the final merge SHA through `/api/version`.
 - Use Git history as rollback.
 - Avoid Railway configuration changes unless required and verified.
@@ -98,3 +110,4 @@ Do not weaken tests merely to obtain green CI. Report skipped, timed-out, cancel
 - Do not replace implementation with a documentation packet.
 - Implementation agents update `LAST_IMPLEMENTATION_HANDOFF.md`; they must not edit `CURRENT_STATE.md` unless explicitly authorized.
 - Record non-blocking discoveries in the final handoff instead of silently expanding scope.
+- Treat repository handoffs and documentation as evidence to verify, not as unquestionable authority when they conflict with deployed configuration, GitHub, or the live governed database.
