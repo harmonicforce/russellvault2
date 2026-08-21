@@ -18,6 +18,8 @@ Read `CLAUDE.md` and every file in its required reading order before editing.
 - Never expose service-role credentials to the browser.
 - Do not modify `docs/ai/CURRENT_STATE.md` unless explicitly authorized.
 - Update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md` before surrendering work.
+- Before touching live Supabase, verify the target project ref against the deployed Railway Supabase URL. Do not infer production identity from a project name, stale document, remembered ref, or scoped project listing.
+- Before calling `main` green, inspect the GitHub Actions run triggered by the push to the current `main` SHA. A green PR-head run is necessary before merge but does not substitute for the post-merge main run.
 
 ## Default authority boundary
 
@@ -38,4 +40,4 @@ When the requested slice is large, create an internal phased plan, checkpoint co
 
 ## Surrender requirement
 
-Use `docs/ai/HANDOFF_PROTOCOL.md` and `docs/ai/SESSION_CHECKLIST.md`. Leave the branch, PR, evidence, limitations, and exact next decision in a state another agent can continue without reconstructing the session from chat history.
+Use `docs/ai/HANDOFF_PROTOCOL.md` and `docs/ai/SESSION_CHECKLIST.md`. Leave the branch, PR, evidence, limitations, exact production target where relevant, and exact next decision in a state another agent can continue without reconstructing the session from chat history.
