@@ -60,6 +60,15 @@ jobs:
         run: node --test scripts/db/guard.test.mjs
       - name: Test (client audit-gate policy)
         run: node --test scripts/ci/client-audit-gate.test.mjs
+      - name: Test (current-state guard policy)
+        run: node --test scripts/ci/current-state-guard.test.mjs
+      # Fails when the governed migration set moves without updating the
+      # machine-readable attestation and its derived documentation, when
+      # canonical documents disagree about the production Supabase project, or
+      # when a CI claim hides a rerun. The deployed runtime — never this file —
+      # remains the authority for production identity.
+      - name: Current-state freshness and production-identity guard
+        run: node scripts/ci/current-state-guard.mjs
 
       # --- S1.6.7 browser quality gate (LOAD-BEARING) ---
       # Deliberately inside build-and-verify rather than in a fifth job. The

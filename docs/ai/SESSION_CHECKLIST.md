@@ -49,7 +49,8 @@
 - [ ] Working tree is clean.
 - [ ] Draft PR targets current `main`.
 - [ ] Exact PR-head SHA is recorded.
-- [ ] All required CI jobs are green on that SHA.
+- [ ] All required CI jobs are green on that SHA, with the run id **and run attempt** recorded, and any earlier failed attempt of the same run disclosed.
+- [ ] If the governed migration set changed, `CURRENT_STATE.attestation.json` and its derived documentation were updated and `node scripts/ci/current-state-guard.mjs` passes.
 - [ ] `LAST_IMPLEMENTATION_HANDOFF.md` is current.
 - [ ] No unauthorized live migration, merge, or deployment occurred.
 
@@ -57,7 +58,8 @@
 
 - [ ] Owner or work order explicitly authorizes release.
 - [ ] Exact green PR head is merged through GitHub.
-- [ ] Live Supabase migration parity is checked.
+- [ ] The production Supabase project ref was read from the deployed Railway environment immediately before any live action, and matches the intended target.
+- [ ] Live Supabase migration parity is checked against that verified project.
 - [ ] Required migrations are applied and rechecked.
 - [ ] Railway deploys the final merge SHA.
 - [ ] `/api/health` succeeds.

@@ -1,5 +1,16 @@
 # Target Commercial Architecture
 
+> **HISTORICAL — DESIGN-ONLY.** This is a point-in-time program design document,
+> preserved as written. It is **not** a statement of current state. Its base
+> commit, migration counts, phase status, and "not implemented" notes were true
+> when written and have since moved on — much of the S1/S2/S3 work described here
+> as future has shipped.
+>
+> For present state use `docs/ai/CURRENT_STATE.md` and the machine-readable
+> `docs/ai/CURRENT_STATE.attestation.json`. For sequence use
+> `docs/ai/PROJECT_ROADMAP.md`. Do not cite this file as evidence of what exists
+> today, and do not rewrite its history to match the present.
+
 Phase 0 deliverable 4 of 8. **Design only — this document contains no migration
 and adds no schema.** Written against
 `885db791f98ef036ba5d6a028b5370802476c5d8`.

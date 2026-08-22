@@ -1,0 +1,211 @@
+{
+  "$comment": [
+    "Machine-readable current-state attestation for Russell Vault, owned by this repository.",
+    "It is a BOUNDED PROJECTION of verified truth, not a live mirror of production.",
+    "Every claim below carries an explicit evidenceClass. Read evidenceClasses first.",
+    "Validated by scripts/ci/current-state-guard.mjs (unit tests in current-state-guard.test.mjs).",
+    "It is deliberately NOT pinned to exact HEAD: only a change to the governed migration",
+    "set forces an update, so documentation-only commits never invalidate it."
+  ],
+  "schemaVersion": 1,
+  "attestationId": "russell-vault-current-state",
+  "evidenceClasses": {
+    "deployed_config": "Read directly from the deployed Railway service configuration or the deployed application bundle. The only class that may establish production identity.",
+    "live_schema": "Read directly from a live Supabase database over an authenticated connection. Proves what a database contains, never which database production uses.",
+    "repository": "Read from files at the reviewed commit in this repository.",
+    "github_api": "Read from the GitHub API for an exact SHA, run id, and run attempt.",
+    "unmerged": "Present only on an open pull request. Never an executable baseline.",
+    "not_inspectable": "Could not be inspected from the verifying environment. Recorded as a blocker, never silently downgraded into a claim about reality."
+  },
+  "review": {
+    "lastReviewedMainSha": "a647b77a0f88fbaac9abc86430be58502a562bf9",
+    "lastReviewedMainShaShort": "a647b77",
+    "lastReviewedMergePr": 77,
+    "verifiedAtUtc": "2026-08-22T04:10:00Z",
+    "verifiedBy": "genome-repair-work-order-1",
+    "evidenceClass": "github_api"
+  },
+  "migrationLedger": {
+    "$comment": [
+      "expectedCount and lastMigrationName describe the REPOSITORY migration set at the",
+      "reviewed SHA. setDigest is sha256 over the sorted migration basenames without the",
+      "'.sql' suffix, one per line, each line newline-terminated. The digest catches a",
+      "replaced or renamed migration that leaves the count unchanged."
+    ],
+    "expectedCount": 79,
+    "lastMigrationName": "20260819000200_null_safe_acquisition_mutation_guards",
+    "setDigest": "sha256:da426b95d517cb89626809c0ce4411ce49973b70429bb00954474daee0d10592",
+    "sourceOfTruth": "supabase/migrations/*.sql",
+    "derivedAssertion": "supabase/tests/06_provenance_structure.sql",
+    "evidenceClass": "repository"
+  },
+  "deploymentIdentity": {
+    "$comment": [
+      "canonicalProjectRef stays null unless deployment verification was ACTUALLY performed.",
+      "A ledger that matches the repository is strong circumstantial evidence about a database;",
+      "it is not evidence about which database the deployed service is configured to use.",
+      "Repeating a remembered ref in more documents does not make it verified."
+    ],
+    "verificationPerformed": false,
+    "canonicalProjectRef": null,
+    "authoritativeSource": "VITE_SUPABASE_URL in the deployed Railway service environment, or the Supabase URL embedded in the bundle served by the live app",
+    "liveApp": "https://russellvault2-production.up.railway.app",
+    "blocker": "Railway configuration and the live app host were not reachable from the verifying environment: the egress policy answered 403 to CONNECT for russellvault2-production.up.railway.app:443. Railway environment variables are not stored in this repository.",
+    "evidenceClass": "not_inspectable",
+    "destructiveActionRule": "No live action may rely on this file for production identity. Before any live Supabase read, migration, reset, restore, or parity claim, re-read the deployed Supabase URL from the running environment immediately before acting, and confirm the target project ref matches it. A remembered ref, a project display name, a scoped project listing, an agent handoff, and this attestation are all insufficient.",
+    "$stateMachine": [
+      "verificationPerformed is the SINGLE state variable. There is deliberately no second state label:",
+      "a duplicate could be left saying one thing while every other field says the other. The guard",
+      "rejects a 'currentState' key outright for that reason.",
+      "UNVERIFIED (verificationPerformed=false) requires: canonicalProjectRef=null; zero registry entries",
+      "with role deployed_production; evidenceClass=not_inspectable; a nonempty blocker; verifiedAtUtc=null;",
+      "verificationMethod=null; and no canonical document asserting any production project.",
+      "VERIFIED (verificationPerformed=true) requires: canonicalProjectRef is one valid ref; exactly one",
+      "registry entry has role deployed_production and equals it; that entry's evidenceClass=deployed_config;",
+      "this section's evidenceClass=deployed_config; blocker null or absent; verifiedAtUtc a strict ISO-8601",
+      "UTC instant; verificationMethod and authoritativeSource nonempty; and every production assertion in",
+      "canonical documents names that exact ref.",
+      "The transition is all-or-nothing: a partial edit fails CI rather than half-asserting an identity."
+    ],
+    "verifiedAtUtc": null,
+    "verificationMethod": null
+  },
+  "projectRefRegistry": {
+    "$comment": [
+      "Every Supabase project ref that appears in a canonical document must be registered here.",
+      "role 'deployed_production' may only be assigned when deploymentIdentity.verificationPerformed",
+      "is true. The guard enforces both rules."
+    ],
+    "refs": [
+      {
+        "ref": "ncyqqitqtsyjrijieykd",
+        "role": "ledger_match_candidate",
+        "evidenceClass": "live_schema",
+        "observedAtUtc": "2026-08-22T04:08:00Z",
+        "governedLedgerCount": 79,
+        "lastMigrationName": "20260819000200_null_safe_acquisition_mutation_guards",
+        "note": "Its governed public.schema_migrations_log matches the reviewed repository set exactly (79/79, same last migration). Not returned by the scoped Supabase project listing available to the verifier, yet directly reachable — absence from a scoped listing is not evidence of absence. Matching a ledger is not proof of deployment; production identity remains unverified."
+      },
+      {
+        "ref": "ykdyqnvmwpxhowbwhzqz",
+        "role": "superseded_documentation_ref",
+        "evidenceClass": "live_schema",
+        "observedAtUtc": "2026-08-22T04:09:00Z",
+        "governedLedgerCount": 40,
+        "lastMigrationName": "20260729000300_cycle_count_observations",
+        "note": "Named as 'Supabase project' by canonical documents until this repair. It is a real, ACTIVE_HEALTHY Russell Vault database displayed as 'The Russell Vault 2', but its governed ledger stops 39 migrations behind the reviewed repository set, at the Cycle Count era that the stale CURRENT_STATE.md described. Because it is a plausible-looking Russell Vault database, a destructive action aimed here on the strength of the old documentation would have hit the wrong database. Do not treat it as production."
+      }
+    ]
+  },
+  "ci": {
+    "$comment": [
+      "A CI claim must name the exact SHA, run id, AND run attempt. When runAttempt > 1 the",
+      "earlier attempts must be listed. 'Green after rerun' must never be reduced to 'never failed'."
+    ],
+    "workflow": "CI",
+    "headSha": "a647b77a0f88fbaac9abc86430be58502a562bf9",
+    "event": "push",
+    "branch": "main",
+    "runId": "32265646383",
+    "runAttempt": 2,
+    "conclusion": "success",
+    "greenAfterRerun": true,
+    "priorAttempts": [
+      {
+        "runAttempt": 1,
+        "conclusion": "failure",
+        "failedJobs": [
+          "shadow-db-supabase-stack"
+        ],
+        "note": "The 'Run pgTAP suite inside the local stack' step ran 14:45:56Z–14:58:08Z on 2026-08-19 (~12m12s) and failed. The other three required jobs were green on attempt 1."
+      }
+    ],
+    "requiredJobs": [
+      {
+        "name": "build-and-verify",
+        "conclusion": "success"
+      },
+      {
+        "name": "shadow-db-postgres-shim",
+        "conclusion": "success"
+      },
+      {
+        "name": "shadow-db-supabase-stack",
+        "conclusion": "success",
+        "note": "Re-run on attempt 2; the pgTAP step completed in 59s (04:25:22Z–04:26:21Z on 2026-08-21)."
+      },
+      {
+        "name": "dev-advisory-report",
+        "conclusion": "success"
+      }
+    ],
+    "verifiedAtUtc": "2026-08-22T04:05:00Z",
+    "evidenceClass": "github_api"
+  },
+  "openPullRequests": {
+    "$comment": "Unmerged work is never an executable baseline. Listed so agents do not rediscover it as news.",
+    "reviewedAtUtc": "2026-08-22T04:04:00Z",
+    "evidenceClass": "unmerged",
+    "items": [
+      {
+        "number": 78,
+        "headSha": "ea8dc2768c39a59ca9a666ffa6a7273e932f0330",
+        "state": "open",
+        "draft": true,
+        "title": "Docs: reconcile canonical production identity and current program state",
+        "assessment": "Superseded by this repair, which preserves its valid corrections. Its production-identity and program-phase corrections were sound. Its 'Current CI state: RED' section is stale: it was written against attempt 1 of run 32265646383, and attempt 2 of that same run succeeded on the same SHA. It also asserted a canonical deployed project ref that its own evidence did not establish from deployed configuration."
+      },
+      {
+        "number": 75,
+        "headSha": "453075c8368f9756800a1783e2131d87bec8afaa",
+        "state": "open",
+        "draft": false,
+        "title": "S3.1.1: Deterministic adjudication ordering for reconciliation ledger",
+        "assessment": "Superseded by merged PR #76, which solved the same defect on main as 20260819000100_reconciliation_deterministic_ordering. Its migration 20260818000100 is not on main and would collide with the reviewed ledger. Should be closed rather than merged; that is an owner decision."
+      }
+    ]
+  },
+  "programPhase": {
+    "$comment": "Re-proved from executable code at the reviewed SHA, not carried over from prose.",
+    "evidenceClass": "repository",
+    "shipped": [
+      {
+        "slice": "S1 governed acquisition",
+        "proof": "migrations 20260804000100–20260806000800; routes /acquisitions, /acquisitions/:sourceSystemPublicId/:linePublicId, /acquisition-review"
+      },
+      {
+        "slice": "S2.1–S2.3 governed receiving",
+        "proof": "migrations 20260807000100, 20260808000100, 20260809000100; routes /receiving, /receiving/:receiptPublicId"
+      },
+      {
+        "slice": "S2.4–S2.6 cost basis and allocation",
+        "proof": "migrations 20260812000100, 20260815000100, 20260815000200; routes /cost, /cost/:componentPublicId; cost-basis algorithm version 1.1.0"
+      },
+      {
+        "slice": "S3.1 reconciliation ledger",
+        "proof": "migrations 20260815000300, 20260819000100; supabase/tests/68_reconciliation_ledger.sql"
+      },
+      {
+        "slice": "S3.2 offline reconciliation runner",
+        "proof": "scripts/reconciliation/{runner,cli,artifact,domains,ledger}.mjs, TOOL_VERSION russell-vault-reconciliation/1.0.0, runner.test.mjs"
+      }
+    ],
+    "notShipped": [
+      {
+        "slice": "S3.3 reconciliation review UI",
+        "proof": "No client route or page mounts any reconciliation surface at the reviewed SHA."
+      },
+      {
+        "slice": "S3.4–S3.8 historical import and cutover",
+        "proof": "No import-execution migrations or governed cutover handlers exist at the reviewed SHA."
+      }
+    ],
+    "note": "Legacy SQLite surfaces (/inventory, /purchases, /cost-links, /listings, /sales, /checks) remain mounted ungated during transition and must never be conflated with governed truth."
+  },
+  "liveParity": {
+    "$comment": "Parity is a claim about a NAMED database. It cannot be stated for production while production identity is unverified.",
+    "checkedForCanonicalProduction": false,
+    "reason": "deploymentIdentity.verificationPerformed is false, so there is no verified production target to claim parity against.",
+    "evidenceClass": "not_inspectable"
+  }
+}

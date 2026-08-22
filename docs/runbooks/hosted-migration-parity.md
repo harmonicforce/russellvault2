@@ -25,6 +25,20 @@ It is also worth running before any release that depends on migrations
 `20260801000100` and later (media hardening, Listing Prep, operations dashboard,
 and the repair-pass corrections).
 
+## Step 0 — establish which project you are actually connected to
+
+**Do this first, every time. Do not skip it because you "know" which project it is.**
+
+At least two real Russell Vault databases exist. Both are plausible-looking, and canonical repository documents named the wrong one as the Supabase project until 2026-08-22. A parity check run against the wrong database produces a confident, entirely false answer.
+
+1. Read the Supabase URL from the **deployed Railway service** environment (`VITE_SUPABASE_URL`), not from any document, not from memory, and not from a Supabase project display name. The project ref is the subdomain: `https://<ref>.supabase.co`.
+2. Confirm the SQL editor or connection you are about to use belongs to that exact ref.
+3. Record the ref and where you read it from. Every later step in this runbook is a claim about *that* database and no other.
+
+A scoped Supabase project listing is not a census: a project can be missing from the list and still exist and be reachable. Absence from a listing is never evidence that a project does not exist.
+
+If you cannot read the deployed configuration, stop. Report that production identity is unverified rather than proceeding against a guess.
+
 ## Step 1 — list what the repository expects
 
 From a checkout of the branch you intend to release:
@@ -109,6 +123,7 @@ investigate rather than re-applying.
 
 Write down, with the date and the project reference:
 
+- the project ref from Step 0 **and where you read it from**;
 - the repository migration count and the branch/SHA it came from;
 - the hosted count;
 - the exact list of missing names;

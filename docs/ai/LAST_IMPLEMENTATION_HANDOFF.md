@@ -1,5 +1,178 @@
 # Last Implementation Handoff
 
+## Genome Repair Work Order 1 — production identity, current-state truth, and freshness guards
+
+- Repository: `harmonicforce/russellvault2`; canonical branch: `main`.
+- Branch: `claude/russell-vault-genome-repair-hjt51c`.
+- Base SHA: `a647b77a0f88fbaac9abc86430be58502a562bf9` (merge of PR #77). `origin/main` was at exactly this SHA at fetch time; **main did not drift** from the sequencing baseline.
+- Release authority: branch and draft PR only. No merge, live migration, Railway change, or deployment was performed or authorized.
+- Status: **implemented** and **validated**. Not merged, not deployed, not hosted-accepted.
+
+### What this changes
+
+Documentation and repository control plane only. **No SQL, no migration, and no application code changed** — `git status --short -- supabase/` is empty and no file under `client/` or `server/` was touched.
+
+Added:
+
+- `docs/ai/CURRENT_STATE.attestation.json` — a machine-readable, evidence-classed projection of current state.
+- `scripts/ci/current-state-guard.mjs` and `scripts/ci/current-state-guard.test.mjs` — the freshness and production-identity guard.
+- A `Current-state freshness and production-identity guard` step plus its policy test in the `build-and-verify` CI job; `npm test` and `npm run guard:current-state` also run them.
+
+Repaired: `CLAUDE.md`, `AGENTS.md`, `docs/ai/CURRENT_STATE.md`, `PROJECT_CONTEXT.md`, `ENGINEERING_RULES.md`, `PROJECT_ROADMAP.md`, `HANDOFF_PROTOCOL.md`, `SESSION_CHECKLIST.md`, `docs/runbooks/hosted-migration-parity.md`. Marked historical without rewriting: the nine `docs/programs/commercial-core-legacy-retirement/*` documents and `docs/ai/WORKBENCH_AUDIT_2026-08-01.md`.
+
+`docs/ai/CURRENT_STATE.md` was edited under the one-time exception this work order explicitly grants. Normal stewardship returns to ChatGPT.
+
+### Production identity — UNVERIFIED, and deliberately so
+
+Deployment configuration **could not be inspected**: the egress policy answered `403` to `CONNECT` for `russellvault2-production.up.railway.app:443`, so `/api/health`, `/api/version`, and the served bundle were all unreachable, and Railway environment variables are not in the repository.
+
+Therefore the attestation carries `verificationPerformed: false` and `canonicalProjectRef: null`. The repository now names **no** production project, and the guard forbids any document from asserting one until deployment verification is actually recorded.
+
+Separately, by **live-schema** evidence (a different and weaker class than deployed config):
+
+- `ncyqqitqtsyjrijieykd` — governed ledger 79/79, last `20260819000200_null_safe_acquisition_mutation_guards`; matches the reviewed repository set exactly. Registered as `ledger_match_candidate`, **not** as production. It does not appear in the verifier's scoped Supabase project listing yet is directly reachable.
+- `ykdyqnvmwpxhowbwhzqz` — governed ledger 40, last `20260729000300_cycle_count_observations`; 39 migrations behind. This is the ref the canonical docs named as *the* Supabase project. It is a real `ACTIVE_HEALTHY` Russell Vault database, so a destructive action aimed there on the old documentation would have hit a credible-looking wrong database.
+
+### CI truth for the exact baseline SHA
+
+Run `32265646383`, event `push`, branch `main`, head `a647b77a0f88fbaac9abc86430be58502a562bf9`:
+
+- **attempt 1: failure** — `shadow-db-supabase-stack`, pgTAP step ran ~12m12s on 2026-08-19 and failed; the other three required jobs were green.
+- **attempt 2: success** — the re-run job's pgTAP step completed in 59s on 2026-08-21. Overall run conclusion **success**.
+
+This is *green after a rerun*, not *never failed*. PR #78's "Current CI state: RED" was written against attempt 1 and went stale when attempt 2 succeeded.
+
+### Validation, all exit codes checked
+
+- `npm ci` (root, client, server): exit 0.
+- `npm run lint`: exit 0 (pre-existing `react-refresh/only-export-components` warnings only).
+- `npm run typecheck`: exit 0 (server and client).
+- `npm run build:ci`: exit 0 (pre-existing Vite chunk-size warning).
+- `npm test`: exit 0 — server **953** tests / 34 files, client **1626** tests / 68 files, Node guards **64** tests.
+- `PGOPTIONS='-c jit=off' npm run db:reset`: exit 0, after installing pgTAP and starting the local PostgreSQL 16 cluster.
+- `PGOPTIONS='-c jit=off' npm run db:test`: exit 0 — **all files passed, 2673 assertions**. `06_provenance_structure.sql` passed its 79-migration ledger contract; `15_acquisition_digest_parity.sql` took 5.5s locally and did not reproduce the CI timeout.
+- `node scripts/ci/current-state-guard.mjs`: exit 0 on the repaired baseline.
+- `git diff --check`: **the first report of this was wrong.** It was run against a clean working tree after
+  committing, which checks nothing. Run against the base range it flagged trailing whitespace at
+  `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md:51`. Fixed in the review-repair commit; `git diff --check`
+  and `git diff --cached --check` now both exit 0, verified against `origin/main...HEAD`.
+
+Not run: local Supabase CI tier (`supabase` CLI stack) and hosted/browser acceptance — not reachable from this environment. The change contains no SQL and no client code, so neither gates it; CI will run both.
+
+### Review repair (second commit on this branch)
+
+Independent adversarial review found two blocking holes in the guard and three consistency defects. All are fixed:
+
+1. **Deployment-identity state machine.** The guard previously returned zero findings for an incoherent
+   `verificationPerformed: true` + `canonicalProjectRef: null` + no `deployed_production` entry + a document
+   asserting production. It now enforces two complete states. UNVERIFIED requires `verificationPerformed:false`,
+   a null canonical ref, no `deployed_production` role, a nonempty `blocker`, and no production assertion in any
+   canonical document. VERIFIED requires `verificationPerformed:true`, exactly one valid canonical ref, exactly
+   one `deployed_production` registry entry equal to it, that entry's `evidenceClass` to be `deployed_config`,
+   its own `verifiedAtUtc` and `verificationMethod`, an `authoritativeSource`, and every document assertion to
+   name that exact ref. Duplicate registry refs and unknown evidence classes are rejected at parse time.
+   A `live_schema` ledger match can never satisfy production identity.
+
+2. **Bare-reference bypass.** `findProjectRefs('Supabase project: ncyqqitqtsyjrijieykd')` returned nothing.
+   Supabase hosts and backticked refs are still recognised on every line; an unquoted 20-character ref is now
+   also recognised on any line carrying a production/deployment assertion. An unrelated 20-letter English word
+   outside identity context is still ignored.
+
+3. **Structurally exact derived-document markers.** The old check passed if `79` appeared anywhere in
+   `CURRENT_STATE.md`, so a stale contradictory count could coexist with the right one. Three labelled fields —
+   `reviewed-main-sha`, `governed-migration-count`, `last-migration-name` — now live in a marked
+   `machine-derived-baseline` block. Each label must appear exactly once in the whole document, inside the block,
+   non-empty, and exactly equal to the attestation. Unrelated prose edits do not invalidate it.
+
+4. **Stewardship contradiction resolved.** One model, stated identically in `AGENTS.md`, `CLAUDE.md`,
+   `ENGINEERING_RULES.md`, `HANDOFF_PROTOCOL.md`, `WORK_ORDER_PROTOCOL.md`, and `CURRENT_STATE.md`:
+   migration-bearing work is auto-authorized to update **only** the marked baseline block and the attestation,
+   together; all narrative and program-phase content stays steward-controlled behind an explicit exception.
+
+5. **Program sequence corrected.** `docs/ai/GENOME_PROGRAM_REGISTRY.md` records the active reliability track —
+   WO1 (this PR) active, WO2 Legacy Confidentiality Membrane next, S3.3 remapped to WO13 after prerequisite
+   hardening. WO3–WO12 are explicitly left unenumerated rather than invented. The commercial roadmap is
+   preserved and marked as the separate product track.
+
+### Second review repair (third commit on this branch)
+
+A further review found one remaining state-coherence bypass and two consistency gaps.
+
+**The bypass.** Setting `verificationPerformed:true`, a canonical ref, `verifiedAtUtc`, `verificationMethod`, and a
+`deployed_production` / `deployed_config` registry entry — while leaving `currentState: UNVERIFIED`,
+`evidenceClass: not_inspectable`, and the Railway-unreachable `blocker` in place — returned **zero findings**. The
+attestation simultaneously claimed VERIFIED, UNVERIFIED, deployed evidence, not-inspectable evidence, and an active
+verification blocker.
+
+`deploymentIdentity.currentState` was introduced by the previous repair and was the root cause: a second,
+independently editable state label that can disagree with `verificationPerformed`. It is **removed**, and the guard
+now **rejects the key at parse time** so it cannot return — including when it happens to agree. `verificationPerformed`
+is the single state variable.
+
+**Both tuples are now complete and all-or-nothing:**
+
+| Field | UNVERIFIED | VERIFIED |
+| --- | --- | --- |
+| `verificationPerformed` | `false` | `true` |
+| `canonicalProjectRef` | `null` | one valid 20-char ref |
+| registry `deployed_production` entries | zero | exactly one, equal to `canonicalProjectRef` |
+| that entry's `evidenceClass` | n/a | `deployed_config` |
+| `deploymentIdentity.evidenceClass` | `not_inspectable` | `deployed_config` |
+| `blocker` | nonempty | `null` or absent |
+| `verifiedAtUtc` | `null` | strict ISO-8601 UTC instant |
+| `verificationMethod` | `null` | nonempty |
+| `authoritativeSource` | — | nonempty |
+| production assertions in canonical docs | none | must name the canonical ref |
+
+`deploymentIdentity.evidenceClass` is validated against the known evidence-class set at parse time, alongside registry
+entries. `verifiedAtUtc` uses a strict `YYYY-MM-DDTHH:MM:SS(.sss)?(Z|+00:00)` check — `Date.parse` alone accepted
+`2026-08-22` and other junk. A test walks every strict prefix of the seven-step transition and asserts each one fails,
+then asserts the complete tuple passes: the owner transition cannot be applied halfway.
+
+**Production-identity wording contradiction resolved.** `CLAUDE.md` said no repository document may name the production
+project, while the owner transition requires recording the verified ref in the attestation. One rule now, applied in
+`CLAUDE.md`, `AGENTS.md`, `PROJECT_CONTEXT.md`, and `CURRENT_STATE.md`: the attestation **may** record the last
+deployment-verified ref with its evidence; ordinary prose must **not** replicate it; the attestation is historical
+verification evidence, **not** live-action authority; every live action re-reads the deployed environment immediately
+before acting.
+
+**Program registry completed.** WO1–WO17 with titles and prerequisites, supplied by the program owner. Prompts remain
+owner-held. The prerequisite graph is not linear — WO11 gates on `main` being green, and WO10/12/15/16 fan in from
+several predecessors — so the registry says to read the prerequisite column rather than the numbering. S3.3 is carried
+by WO13, gated on WO4, WO5, WO7, WO9, WO11.
+
+### Guard behaviour, demonstrated against the real repository
+
+| Case | Result |
+| --- | --- |
+| Migration added, attestation untouched | FAIL — `migration_count_drift`, `migration_last_name_drift`, `migration_set_digest_drift` |
+| Migration renamed, count unchanged | FAIL — `migration_set_digest_drift` (unit test) |
+| Attestation updated but `CURRENT_STATE.md` left behind | FAIL — `derived_doc_count_stale`, `derived_doc_last_migration_stale` |
+| Two refs presented as production | FAIL — `conflicting_production_refs` |
+| A ref asserted as production while deployment unverified | FAIL — `unverified_production_assertion` |
+| Malformed attestation | FAIL — parse/shape error, guard exits 1 |
+| Rerun-recovered run presented without its failed attempt | FAIL — `ci_claim_hides_rerun` |
+| Repaired baseline | PASS |
+
+The guard's authority model: the **deployed runtime** owns production identity. The guard never blesses a hard-coded ref — it forbids the repository from claiming an identity it has not verified, which is the opposite of making a stale ref safer by repeating it. It is not pinned to `HEAD`: only a governed migration-set change invalidates the attestation, so documentation-only commits need no edit.
+
+### Open PR collision
+
+- **PR #78** (head `ea8dc27`, draft, based on this same SHA) — superseded, valid corrections preserved, its two defects (stale CI-RED claim; a canonical deployed ref its evidence did not establish from deployed config) corrected. Not merged, not closed. Owner decides.
+- **PR #75** (head `453075c`) — superseded by merged PR #76; its migration `20260818000100` is absent from `main` and would collide with the 79-migration ledger. Recommend closing. Owner decides.
+
+### Remaining owner-only action
+
+1. Read `VITE_SUPABASE_URL` from the deployed Railway service, then set `deploymentIdentity.verificationPerformed: true`, `canonicalProjectRef`, and the matching registry role in the attestation. Until then production identity stays unverified by design.
+2. Decide PR #78 and PR #75 disposition.
+3. `15_acquisition_digest_parity.sql` against the 12-minute Supabase-stack budget remains the top platform debt; it caused the real attempt-1 failure above.
+
+### Rollback
+
+Revert the branch commit. Nothing was merged, migrated, deployed, or changed in any live system.
+
+---
+
 ## Hosted parity prerequisite — NULL-safe acquisition mutation guards
 
 - Repository: `harmonicforce/russellvault2`; canonical branch: `main`.
