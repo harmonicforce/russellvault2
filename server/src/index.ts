@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { prepareLegacyDatabase } from './legacyBootstrap.js';
 import { buildHealthResponse, checkLegacyDatabaseHealth } from './legacyDatabaseHealth.js';
 import { legacyWriteGuard, legacyWritesEnabled } from './legacyWriteGuard.js';
+import { legacyAccessGuard } from './legacy/accessGuard.js';
+import { LEGACY_ROUTE_PREFIXES, type LegacyRoutePrefix } from './legacy/routeInventory.js';
+import { buildCorsOptions, describeCorsPolicy, resolveCorsPolicy } from './corsPolicy.js';
 import { ValidationError } from './validation.js';
 import inventoryRouter from './routes/inventory.js';
 import purchasesRouter from './routes/purchases.js';
@@ -37,7 +40,17 @@ import costRouter from './routes/cost.js';
 prepareLegacyDatabase();
 
 const app = express();
-app.use(cors());
+
+// Cross-origin policy. Production emits no CORS headers at all (the client is
+// served from this same process); development allows an explicit, bounded
+// origin list. `app.use(cors())` — reflect every origin — is gone. See
+// corsPolicy.ts for why, and note that CORS grants no access on its own: an
+// allowed origin still has to satisfy the legacy access guard below.
+const corsPolicy = resolveCorsPolicy(process.env);
+const corsOptions = buildCorsOptions(corsPolicy);
+if (corsOptions) app.use(cors(corsOptions));
+console.log(describeCorsPolicy(corsPolicy));
+
 app.use(express.json({ limit: '2mb' }));
 // Phase 3 staging provenance is mounted BEFORE the legacy write guard, and is
 // deliberately not subject to it.
@@ -105,16 +118,40 @@ app.use('/api/receiving', receivingRouter);
 // components. The two are not merged, and neither reads the other.
 app.use('/api/cost', costRouter);
 
-app.use('/api', legacyWriteGuard);
+// ---------------------------------------------------------------------------
+// LEGACY SQLite SURFACE — quarantined.
+//
+// Every one of these routers was anonymously readable before Work Order 2. They
+// are now mounted ONLY through this loop, so each one gets, in order:
+//   1. legacyAccessGuard — bearer token verified by the governed Supabase
+//      project, membership in the configured LEGACY_WORKSPACE_ID resolved under
+//      the caller's own JWT, and write authority checked against both role and
+//      ALLOW_LEGACY_WRITES. Unconfigured deployments fail closed with 503.
+//   2. legacyWriteGuard — the pre-existing read-only switch, retained.
+//
+// The mount is data-driven from LEGACY_ROUTE_PREFIXES so a legacy router cannot
+// be added to the app without appearing in the inventory; routeInventory.test.ts
+// fails if any legacy prefix is ever mounted directly instead of through here.
+//
+// Note that the guard is deliberately NOT mounted at '/api': that would also
+// capture /api/health and /api/version, which must stay public.
+//
+// Authenticating these routes does not make legacy rows authoritative. It only
+// stops anonymous access to a non-authoritative store.
+const legacyRouters: Record<LegacyRoutePrefix, express.Router> = {
+  '/api/inventory': inventoryRouter,
+  '/api/purchases': purchasesRouter,
+  '/api/cost-links': costLinksRouter,
+  '/api/listings': listingsRouter,
+  '/api/sales': salesRouter,
+  '/api/dashboard': dashboardRouter,
+  '/api/checks': checksRouter,
+  '/api/lookups': lookupsRouter,
+};
 
-app.use('/api/inventory', inventoryRouter);
-app.use('/api/purchases', purchasesRouter);
-app.use('/api/cost-links', costLinksRouter);
-app.use('/api/listings', listingsRouter);
-app.use('/api/sales', salesRouter);
-app.use('/api/dashboard', dashboardRouter);
-app.use('/api/checks', checksRouter);
-app.use('/api/lookups', lookupsRouter);
+for (const prefix of LEGACY_ROUTE_PREFIXES) {
+  app.use(prefix, legacyAccessGuard, legacyWriteGuard, legacyRouters[prefix]);
+}
 
 // `ok` and `readOnly` are unchanged and still carry what the client reads:
 // `readOnly` reflects the legacy-write guard's live state and is never a secret.
