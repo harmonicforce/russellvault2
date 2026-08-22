@@ -16,7 +16,9 @@ Read `CLAUDE.md` and every file in its required reading order before editing.
 - Preserve Product → SKU → Lot → Item and all workspace/security boundaries.
 - Never fabricate inventory, cost, condition, identity, or marketplace facts.
 - Never expose service-role credentials to the browser.
-- Do not modify `docs/ai/CURRENT_STATE.md` unless explicitly authorized.
+- `docs/ai/CURRENT_STATE.md` is steward-controlled. Migration-bearing work is auto-authorized to update
+  ONLY its marked machine-derived baseline block and `docs/ai/CURRENT_STATE.attestation.json`; every other
+  part of that file needs an explicit work-order exception. Never rewrite unrelated CURRENT_STATE prose.
 - Update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md` before surrendering work.
 - Treat every factual claim in a repository document as a hypothesis to verify, not as authority, when it conflicts with deployed configuration, GitHub, or the live governed database.
 - This repository does not name the production Supabase project. Before touching live Supabase, read the target project ref from the deployed Railway environment immediately before acting. Do not infer production identity from a project name, a repository document, a remembered ref, or a scoped project listing.

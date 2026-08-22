@@ -14,9 +14,11 @@ A handoff must let another agent continue from repository evidence without relyi
 6. Inspect all required CI jobs for the exact PR head, recording the run id **and run attempt**.
 7. If the work has already merged, separately inspect the workflow triggered by the push to `main` on the resulting merge SHA.
 8. If making any live Supabase claim, verify the target project ref from the deployed Railway environment before querying or changing it.
-9. If the change touches the governed migration set, update `docs/ai/CURRENT_STATE.attestation.json` and its derived documentation.
+9. If the change touches the governed migration set, update `docs/ai/CURRENT_STATE.attestation.json` together with the marked machine-derived baseline block in `docs/ai/CURRENT_STATE.md`.
 10. Update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`.
-11. Do not edit `CURRENT_STATE.md` unless explicitly authorized.
+11. Do not edit `CURRENT_STATE.md` beyond the standing exception: migration-bearing work may update its marked
+    machine-derived baseline block and `CURRENT_STATE.attestation.json` together, and nothing else in that file.
+    Narrative and program-phase edits require an explicit work-order exception.
 
 ## Required surrender record
 

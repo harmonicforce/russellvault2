@@ -48,13 +48,51 @@ This is *green after a rerun*, not *never failed*. PR #78's "Current CI state: R
 - `npm run lint`: exit 0 (pre-existing `react-refresh/only-export-components` warnings only).
 - `npm run typecheck`: exit 0 (server and client).
 - `npm run build:ci`: exit 0 (pre-existing Vite chunk-size warning).
-- `npm test`: exit 0 — server **953** tests / 34 files, client **1626** tests / 68 files, Node guards **64** tests. 
+- `npm test`: exit 0 — server **953** tests / 34 files, client **1626** tests / 68 files, Node guards **64** tests.
 - `PGOPTIONS='-c jit=off' npm run db:reset`: exit 0, after installing pgTAP and starting the local PostgreSQL 16 cluster.
 - `PGOPTIONS='-c jit=off' npm run db:test`: exit 0 — **all files passed, 2673 assertions**. `06_provenance_structure.sql` passed its 79-migration ledger contract; `15_acquisition_digest_parity.sql` took 5.5s locally and did not reproduce the CI timeout.
 - `node scripts/ci/current-state-guard.mjs`: exit 0 on the repaired baseline.
-- `git diff --check`: exit 0.
+- `git diff --check`: **the first report of this was wrong.** It was run against a clean working tree after
+  committing, which checks nothing. Run against the base range it flagged trailing whitespace at
+  `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md:51`. Fixed in the review-repair commit; `git diff --check`
+  and `git diff --cached --check` now both exit 0, verified against `origin/main...HEAD`.
 
 Not run: local Supabase CI tier (`supabase` CLI stack) and hosted/browser acceptance — not reachable from this environment. The change contains no SQL and no client code, so neither gates it; CI will run both.
+
+### Review repair (second commit on this branch)
+
+Independent adversarial review found two blocking holes in the guard and three consistency defects. All are fixed:
+
+1. **Deployment-identity state machine.** The guard previously returned zero findings for an incoherent
+   `verificationPerformed: true` + `canonicalProjectRef: null` + no `deployed_production` entry + a document
+   asserting production. It now enforces two complete states. UNVERIFIED requires `verificationPerformed:false`,
+   a null canonical ref, no `deployed_production` role, a nonempty `blocker`, and no production assertion in any
+   canonical document. VERIFIED requires `verificationPerformed:true`, exactly one valid canonical ref, exactly
+   one `deployed_production` registry entry equal to it, that entry's `evidenceClass` to be `deployed_config`,
+   its own `verifiedAtUtc` and `verificationMethod`, an `authoritativeSource`, and every document assertion to
+   name that exact ref. Duplicate registry refs and unknown evidence classes are rejected at parse time.
+   A `live_schema` ledger match can never satisfy production identity.
+
+2. **Bare-reference bypass.** `findProjectRefs('Supabase project: ncyqqitqtsyjrijieykd')` returned nothing.
+   Supabase hosts and backticked refs are still recognised on every line; an unquoted 20-character ref is now
+   also recognised on any line carrying a production/deployment assertion. An unrelated 20-letter English word
+   outside identity context is still ignored.
+
+3. **Structurally exact derived-document markers.** The old check passed if `79` appeared anywhere in
+   `CURRENT_STATE.md`, so a stale contradictory count could coexist with the right one. Three labelled fields —
+   `reviewed-main-sha`, `governed-migration-count`, `last-migration-name` — now live in a marked
+   `machine-derived-baseline` block. Each label must appear exactly once in the whole document, inside the block,
+   non-empty, and exactly equal to the attestation. Unrelated prose edits do not invalidate it.
+
+4. **Stewardship contradiction resolved.** One model, stated identically in `AGENTS.md`, `CLAUDE.md`,
+   `ENGINEERING_RULES.md`, `HANDOFF_PROTOCOL.md`, `WORK_ORDER_PROTOCOL.md`, and `CURRENT_STATE.md`:
+   migration-bearing work is auto-authorized to update **only** the marked baseline block and the attestation,
+   together; all narrative and program-phase content stays steward-controlled behind an explicit exception.
+
+5. **Program sequence corrected.** `docs/ai/GENOME_PROGRAM_REGISTRY.md` records the active reliability track —
+   WO1 (this PR) active, WO2 Legacy Confidentiality Membrane next, S3.3 remapped to WO13 after prerequisite
+   hardening. WO3–WO12 are explicitly left unenumerated rather than invented. The commercial roadmap is
+   preserved and marked as the separate product track.
 
 ### Guard behaviour, demonstrated against the real repository
 

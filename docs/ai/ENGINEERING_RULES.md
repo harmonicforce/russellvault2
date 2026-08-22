@@ -20,7 +20,7 @@
 - Maintain plain-PostgreSQL shim and local Supabase compatibility.
 - Apply required migrations to live Supabase only when the work order authorizes release and the exact commit has green required CI.
 - Before any live Supabase read, migration, reset, restore, or parity claim, verify the target project ref against the Supabase URL configured in the deployed Railway environment, read immediately before acting. Do not infer production identity from a project name, a repository document, a remembered ref, or a scoped project listing. This repository deliberately does not name the production project; see `docs/ai/CURRENT_STATE.attestation.json`.
-- A migration-bearing change must update `docs/ai/CURRENT_STATE.attestation.json` (count, last migration name, and set digest) and its derived documentation in the same change.
+- A migration-bearing change must update `docs/ai/CURRENT_STATE.attestation.json` (count, last migration name, and set digest) together with the marked machine-derived baseline block in `docs/ai/CURRENT_STATE.md`, in the same change. That pair is auto-authorized; the rest of `CURRENT_STATE.md` is not.
 
 ## 3. Identity
 
@@ -102,7 +102,10 @@ Do not weaken tests merely to obtain green CI. Report skipped, timed-out, cancel
 - Prefer one coherent owner-facing vertical slice over disconnected partial features.
 - Do not stop at backend-only implementation.
 - Do not replace implementation with a documentation packet.
-- Implementation agents update `LAST_IMPLEMENTATION_HANDOFF.md`; they must not edit `CURRENT_STATE.md` unless explicitly authorized.
+- Implementation agents update `LAST_IMPLEMENTATION_HANDOFF.md`. `CURRENT_STATE.md` is steward-controlled with one
+  standing exception: migration-bearing work is auto-authorized to update its marked machine-derived baseline block
+  and `CURRENT_STATE.attestation.json`, and nothing else in that file. All narrative and program-phase changes need
+  an explicit work-order exception.
 - Record non-blocking discoveries in the final handoff instead of silently expanding scope.
 - Treat repository handoffs and documentation as evidence to verify, not as unquestionable authority, when they conflict with deployed configuration, GitHub, or the live governed database.
 - Do not convert an access limitation into a claim about reality. "This token cannot list the project" is not evidence that the project does not exist.

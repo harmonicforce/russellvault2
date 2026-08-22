@@ -86,7 +86,9 @@ Only when explicitly authorized:
 ## State ownership
 
 - Implementation agents update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md`.
-- Implementation agents must not edit `docs/ai/CURRENT_STATE.md` unless explicitly authorized.
+- Implementation agents may edit `docs/ai/CURRENT_STATE.md` only within the standing exception: the marked
+  machine-derived baseline block, updated together with `docs/ai/CURRENT_STATE.attestation.json`, on
+  migration-bearing work. Anything else in that file requires explicit authorization.
 - ChatGPT updates `CURRENT_STATE.md` after independent review.
 
 ## Evidence report

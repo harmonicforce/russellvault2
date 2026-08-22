@@ -6,6 +6,15 @@ This is the canonical operational ledger. Implementation agents must not edit it
 
 > **Editing note.** This file was last edited by an implementation agent under a one-time exception granted by Genome Repair Work Order 1, whose scope was explicitly to repair stale production-identity and program-phase claims. Normal stewardship returns to ChatGPT.
 
+## Who may edit this file
+
+One maintenance model, no exceptions beyond it:
+
+- **Auto-authorized on migration-bearing work:** the marked `machine-derived-baseline` block below, updated together with `CURRENT_STATE.attestation.json`. `scripts/ci/current-state-guard.mjs` verifies exactly that projection and fails CI if either is left behind. Updating the block is a mechanical projection of the migration set, not a state review.
+- **Steward-controlled:** everything else here — narrative, program phase, CI state, blockers, shipped and not-shipped lists, next slice. Changing any of it requires an explicit work-order exception.
+
+Implementation agents must not rewrite unrelated prose in this file.
+
 ## How to read this file
 
 Every factual claim below is tagged with the class of evidence behind it. The classes are defined in `docs/ai/CURRENT_STATE.attestation.json`, which is the machine-readable form of this projection and is validated in CI by `scripts/ci/current-state-guard.mjs`.
@@ -25,8 +34,17 @@ This is a **bounded projection**, not a live mirror. It is not pinned to exact `
 - Canonical and GitHub default branch: `main` **[repo]**
 - Railway source branch: `main` **[repo]**
 - Live app: `https://russellvault2-production.up.railway.app` **[repo]**
-- Reviewed `main` SHA: `a647b77a0f88fbaac9abc86430be58502a562bf9` (merge of PR #77) **[github]**
-- Repository governed migration count at that SHA: **79**, last migration `20260819000200_null_safe_acquisition_mutation_guards` **[repo]**
+- Reviewed merge: PR #77 **[github]**
+
+The block below is **machine-owned**. `scripts/ci/current-state-guard.mjs` parses it and compares each field exactly against `CURRENT_STATE.attestation.json`. Each label must appear exactly once in this whole document, so a stale copy cannot coexist elsewhere. Migration-bearing work is auto-authorized to update this block and the attestation together — and nothing else in this file. Do not reformat the labels or the markers.
+
+<!-- machine-derived-baseline:begin -->
+- reviewed-main-sha: `a647b77a0f88fbaac9abc86430be58502a562bf9`
+- governed-migration-count: `79`
+- last-migration-name: `20260819000200_null_safe_acquisition_mutation_guards`
+<!-- machine-derived-baseline:end -->
+
+Evidence classes for the block: SHA **[github]**, count and last migration **[repo]**.
 
 ## Production identity: UNVERIFIED
 
@@ -131,11 +149,17 @@ Unmerged work is never an executable baseline. **[unmerged]**
 - **PR #78** (`docs/state-truth-sweep-2026-08-21`, head `ea8dc27`) — superseded by the Genome Repair Work Order 1 branch, which preserves its valid corrections. Its production-identity and program-phase corrections were sound. Its "Current CI state: RED" section was written against attempt 1 of run `32265646383` and went stale when attempt 2 of that same run succeeded on the same SHA. It also asserted a canonical deployed project ref that its own evidence did not establish from deployed configuration.
 - **PR #75** (`codex/create-repair-branch-for-s3.1.1-adjudication-ordering`, head `453075c`) — superseded by merged PR #76, which fixed the same defect on `main` as `20260819000100_reconciliation_deterministic_ordering`. Its migration `20260818000100` is not on `main` and would collide with the reviewed ledger. It should be closed rather than merged; that is an owner decision.
 
-## Next slice
+## Active program position
 
-**S3.3 — Reconciliation Review UI.** Turn the S3.1/S3.2 evidence machinery into an owner-usable review workflow: run list/detail, L1 aggregate evidence shown as context rather than proof of record-level parity, complete L2 per-key findings, exact field differences and materiality, append-only adjudication history and governed actions, and authoritative cutover eligibility read from the database. It must not perform historical import or reimplement cutover truth in TypeScript.
+Two sequences run in parallel and must not be confused. `docs/ai/GENOME_PROGRAM_REGISTRY.md` is authoritative for the reliability track; `PROJECT_ROADMAP.md` for the product track.
 
-After S3.3, continue S3.4 → S3.5 → S3.6 → S3.7 → S3.8.
+- **Active slice:** Genome Repair Work Order 1 — Production Identity, Current-State Truth, and Freshness Guards, delivered as **PR #79** (draft, not merged).
+- **Next after PR #79 merges:** **Work Order 2 — Legacy Confidentiality Membrane.**
+- **S3.3 — Reconciliation Review UI** remains planned but is **not** the next slice. It maps to **Work Order 13**, after prerequisite hardening. Its scope is unchanged and recorded in `PROJECT_ROADMAP.md`.
+
+An earlier revision of this file named S3.3 as the immediate next slice. That predated the Genome Repair sequencing and is corrected here.
+
+The product continuation after S3.3, when reached, remains S3.4 → S3.5 → S3.6 → S3.7 → S3.8.
 
 Historical reconciliation must answer the repository 2,149 acquisition-line set against the owner-attested 2,119 production-backup count record-by-record. Do not assume the 30-row difference is the known food subset without key-level evidence.
 

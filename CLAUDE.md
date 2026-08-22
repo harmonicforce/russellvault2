@@ -34,7 +34,16 @@ Implement owner-usable vertical slices in the hosted Russell Vault application. 
 
 ## State stewardship
 
-`docs/ai/CURRENT_STATE.md` is maintained by ChatGPT as the independent project-state steward. Implementation agents must not edit it unless a work order explicitly grants a one-time exception.
+`docs/ai/CURRENT_STATE.md` is maintained by ChatGPT as the independent project-state steward.
+
+### The one standing exception
+
+There is exactly one maintenance model, and it resolves the apparent conflict between "do not edit CURRENT_STATE" and "a migration-bearing PR must update it":
+
+- **Auto-authorized on migration-bearing work:** the marked `machine-derived-baseline` block in `CURRENT_STATE.md` **and** `CURRENT_STATE.attestation.json`. These two must move together, and `scripts/ci/current-state-guard.mjs` verifies exactly that projection.
+- **Steward-controlled, needs an explicit work-order exception:** everything else in `CURRENT_STATE.md` — narrative, program phase, blockers, shipped/not-shipped lists, next slice.
+
+Implementation agents must not rewrite unrelated `CURRENT_STATE.md` prose. Updating the baseline block is a mechanical projection of the migration set, not a state review.
 
 Implementation agents update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md` and provide the evidence required by `docs/ai/HANDOFF_PROTOCOL.md`.
 

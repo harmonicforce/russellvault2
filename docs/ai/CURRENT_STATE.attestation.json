@@ -9,7 +9,6 @@
   ],
   "schemaVersion": 1,
   "attestationId": "russell-vault-current-state",
-
   "evidenceClasses": {
     "deployed_config": "Read directly from the deployed Railway service configuration or the deployed application bundle. The only class that may establish production identity.",
     "live_schema": "Read directly from a live Supabase database over an authenticated connection. Proves what a database contains, never which database production uses.",
@@ -18,7 +17,6 @@
     "unmerged": "Present only on an open pull request. Never an executable baseline.",
     "not_inspectable": "Could not be inspected from the verifying environment. Recorded as a blocker, never silently downgraded into a claim about reality."
   },
-
   "review": {
     "lastReviewedMainSha": "a647b77a0f88fbaac9abc86430be58502a562bf9",
     "lastReviewedMainShaShort": "a647b77",
@@ -27,7 +25,6 @@
     "verifiedBy": "genome-repair-work-order-1",
     "evidenceClass": "github_api"
   },
-
   "migrationLedger": {
     "$comment": [
       "expectedCount and lastMigrationName describe the REPOSITORY migration set at the",
@@ -42,7 +39,6 @@
     "derivedAssertion": "supabase/tests/06_provenance_structure.sql",
     "evidenceClass": "repository"
   },
-
   "deploymentIdentity": {
     "$comment": [
       "canonicalProjectRef stays null unless deployment verification was ACTUALLY performed.",
@@ -56,9 +52,21 @@
     "liveApp": "https://russellvault2-production.up.railway.app",
     "blocker": "Railway configuration and the live app host were not reachable from the verifying environment: the egress policy answered 403 to CONNECT for russellvault2-production.up.railway.app:443. Railway environment variables are not stored in this repository.",
     "evidenceClass": "not_inspectable",
-    "destructiveActionRule": "No live action may rely on this file for production identity. Before any live Supabase read, migration, reset, restore, or parity claim, re-read the deployed Supabase URL from the running environment immediately before acting, and confirm the target project ref matches it. A remembered ref, a project display name, a scoped project listing, an agent handoff, and this attestation are all insufficient."
+    "destructiveActionRule": "No live action may rely on this file for production identity. Before any live Supabase read, migration, reset, restore, or parity claim, re-read the deployed Supabase URL from the running environment immediately before acting, and confirm the target project ref matches it. A remembered ref, a project display name, a scoped project listing, an agent handoff, and this attestation are all insufficient.",
+    "$stateMachine": [
+      "Exactly two coherent states exist and the guard enforces both.",
+      "UNVERIFIED: verificationPerformed=false, canonicalProjectRef=null, no registry entry may hold",
+      "role deployed_production, no canonical document may assert any production project, and blocker",
+      "must explain why verification is unavailable.",
+      "VERIFIED: verificationPerformed=true, canonicalProjectRef is one valid ref, exactly one registry",
+      "entry holds deployed_production, that entry equals canonicalProjectRef, its evidenceClass is",
+      "deployed_config, and verifiedAtUtc plus verificationMethod record when and how the deployed",
+      "runtime was actually read. Any production assertion in canonical documents must name that ref."
+    ],
+    "currentState": "UNVERIFIED",
+    "verifiedAtUtc": null,
+    "verificationMethod": null
   },
-
   "projectRefRegistry": {
     "$comment": [
       "Every Supabase project ref that appears in a canonical document must be registered here.",
@@ -86,7 +94,6 @@
       }
     ]
   },
-
   "ci": {
     "$comment": [
       "A CI claim must name the exact SHA, run id, AND run attempt. When runAttempt > 1 the",
@@ -104,20 +111,34 @@
       {
         "runAttempt": 1,
         "conclusion": "failure",
-        "failedJobs": ["shadow-db-supabase-stack"],
+        "failedJobs": [
+          "shadow-db-supabase-stack"
+        ],
         "note": "The 'Run pgTAP suite inside the local stack' step ran 14:45:56Z–14:58:08Z on 2026-08-19 (~12m12s) and failed. The other three required jobs were green on attempt 1."
       }
     ],
     "requiredJobs": [
-      { "name": "build-and-verify", "conclusion": "success" },
-      { "name": "shadow-db-postgres-shim", "conclusion": "success" },
-      { "name": "shadow-db-supabase-stack", "conclusion": "success", "note": "Re-run on attempt 2; the pgTAP step completed in 59s (04:25:22Z–04:26:21Z on 2026-08-21)." },
-      { "name": "dev-advisory-report", "conclusion": "success" }
+      {
+        "name": "build-and-verify",
+        "conclusion": "success"
+      },
+      {
+        "name": "shadow-db-postgres-shim",
+        "conclusion": "success"
+      },
+      {
+        "name": "shadow-db-supabase-stack",
+        "conclusion": "success",
+        "note": "Re-run on attempt 2; the pgTAP step completed in 59s (04:25:22Z–04:26:21Z on 2026-08-21)."
+      },
+      {
+        "name": "dev-advisory-report",
+        "conclusion": "success"
+      }
     ],
     "verifiedAtUtc": "2026-08-22T04:05:00Z",
     "evidenceClass": "github_api"
   },
-
   "openPullRequests": {
     "$comment": "Unmerged work is never an executable baseline. Listed so agents do not rediscover it as news.",
     "reviewedAtUtc": "2026-08-22T04:04:00Z",
@@ -141,24 +162,43 @@
       }
     ]
   },
-
   "programPhase": {
     "$comment": "Re-proved from executable code at the reviewed SHA, not carried over from prose.",
     "evidenceClass": "repository",
     "shipped": [
-      { "slice": "S1 governed acquisition", "proof": "migrations 20260804000100–20260806000800; routes /acquisitions, /acquisitions/:sourceSystemPublicId/:linePublicId, /acquisition-review" },
-      { "slice": "S2.1–S2.3 governed receiving", "proof": "migrations 20260807000100, 20260808000100, 20260809000100; routes /receiving, /receiving/:receiptPublicId" },
-      { "slice": "S2.4–S2.6 cost basis and allocation", "proof": "migrations 20260812000100, 20260815000100, 20260815000200; routes /cost, /cost/:componentPublicId; cost-basis algorithm version 1.1.0" },
-      { "slice": "S3.1 reconciliation ledger", "proof": "migrations 20260815000300, 20260819000100; supabase/tests/68_reconciliation_ledger.sql" },
-      { "slice": "S3.2 offline reconciliation runner", "proof": "scripts/reconciliation/{runner,cli,artifact,domains,ledger}.mjs, TOOL_VERSION russell-vault-reconciliation/1.0.0, runner.test.mjs" }
+      {
+        "slice": "S1 governed acquisition",
+        "proof": "migrations 20260804000100–20260806000800; routes /acquisitions, /acquisitions/:sourceSystemPublicId/:linePublicId, /acquisition-review"
+      },
+      {
+        "slice": "S2.1–S2.3 governed receiving",
+        "proof": "migrations 20260807000100, 20260808000100, 20260809000100; routes /receiving, /receiving/:receiptPublicId"
+      },
+      {
+        "slice": "S2.4–S2.6 cost basis and allocation",
+        "proof": "migrations 20260812000100, 20260815000100, 20260815000200; routes /cost, /cost/:componentPublicId; cost-basis algorithm version 1.1.0"
+      },
+      {
+        "slice": "S3.1 reconciliation ledger",
+        "proof": "migrations 20260815000300, 20260819000100; supabase/tests/68_reconciliation_ledger.sql"
+      },
+      {
+        "slice": "S3.2 offline reconciliation runner",
+        "proof": "scripts/reconciliation/{runner,cli,artifact,domains,ledger}.mjs, TOOL_VERSION russell-vault-reconciliation/1.0.0, runner.test.mjs"
+      }
     ],
     "notShipped": [
-      { "slice": "S3.3 reconciliation review UI", "proof": "No client route or page mounts any reconciliation surface at the reviewed SHA." },
-      { "slice": "S3.4–S3.8 historical import and cutover", "proof": "No import-execution migrations or governed cutover handlers exist at the reviewed SHA." }
+      {
+        "slice": "S3.3 reconciliation review UI",
+        "proof": "No client route or page mounts any reconciliation surface at the reviewed SHA."
+      },
+      {
+        "slice": "S3.4–S3.8 historical import and cutover",
+        "proof": "No import-execution migrations or governed cutover handlers exist at the reviewed SHA."
+      }
     ],
     "note": "Legacy SQLite surfaces (/inventory, /purchases, /cost-links, /listings, /sales, /checks) remain mounted ungated during transition and must never be conflated with governed truth."
   },
-
   "liveParity": {
     "$comment": "Parity is a claim about a NAMED database. It cannot be stated for production while production identity is unverified.",
     "checkedForCanonicalProduction": false,

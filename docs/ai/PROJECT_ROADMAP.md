@@ -39,7 +39,17 @@ Completed so far: S3.1 append-only reconciliation ledger, the deterministic reco
 
 Historical production data has **not** been imported.
 
-## Next approved owner-facing slice
+## Which track is active right now
+
+This file is the **product** sequence. The **Genome Repair** reliability program is what is actively being executed, and it is ahead of this roadmap; see `docs/ai/GENOME_PROGRAM_REGISTRY.md`.
+
+- Active slice: Genome Repair Work Order 1 (PR #79, draft).
+- Next after it merges: Work Order 2 — Legacy Confidentiality Membrane.
+- S3.3 below is **planned, not next**: it maps to Work Order 13, after prerequisite hardening. An earlier revision of this file called it the next approved slice; that predated the Genome Repair sequencing.
+
+Product work resumes in the order below once its prerequisite hardening lands. Nothing here is erased or reordered by the reliability program.
+
+## Next approved owner-facing product slice (Work Order 13)
 
 ### S3.3 — Reconciliation Review UI
 

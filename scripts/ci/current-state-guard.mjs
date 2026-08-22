@@ -13,17 +13,21 @@
 //      derived documentation must be updated in the same change. Count, last
 //      migration name, and a digest over the whole sorted set are all checked,
 //      so a renamed or swapped migration that leaves the count intact is caught.
+//      The derived values are read from an explicit machine-owned marker block,
+//      not by hunting for a number somewhere in the prose.
 //
-//   2. IDENTITY CONFLICT. Every Supabase project ref appearing in a canonical
-//      document must be registered in the attestation, and two different refs
-//      may never both be presented as production.
+//   2. DEPLOYMENT-IDENTITY STATE MACHINE. Deployment identity is exactly one of
+//      two coherent states, UNVERIFIED or VERIFIED, and every field, registry
+//      role, and document assertion must agree with the declared state. A
+//      half-populated state (claiming verification while naming nothing, or
+//      naming a ref no registry entry backs) is itself a failure.
 //
-//   3. UNEARNED AUTHORITY. A ref may be called production ONLY when deployment
-//      verification was actually performed. This is the point of the guard that
-//      must not be misunderstood: it does NOT make a hard-coded ref safer by
-//      repeating it. The deployed runtime remains the sole authority for
-//      production identity; the guard's job is to stop the repository from
-//      asserting an identity it has not verified.
+//   3. UNEARNED AUTHORITY. A ref may be called production ONLY in the VERIFIED
+//      state, backed by a registry entry whose evidence class is deployed_config.
+//      This is the point of the guard that must not be misunderstood: it does
+//      NOT make a hard-coded ref safer by repeating it. The deployed runtime
+//      remains the sole authority for production identity; the guard's job is to
+//      stop the repository from asserting an identity it has not verified.
 //
 //   4. CI CLAIM SHAPE. A CI claim must name the exact SHA, run id, and run
 //      ATTEMPT, and must list earlier attempts when it is not the first. "Green
@@ -55,6 +59,7 @@ export const CANONICAL_DOCS = [
   'docs/ai/HANDOFF_PROTOCOL.md',
   'docs/ai/WORK_ORDER_PROTOCOL.md',
   'docs/ai/SESSION_CHECKLIST.md',
+  'docs/ai/GENOME_PROGRAM_REGISTRY.md',
   'docs/runbooks/hosted-migration-parity.md',
   'docs/runbooks/railway-backup-deploy-preflight.md',
   'supabase/config.toml',
@@ -64,13 +69,18 @@ export const CANONICAL_DOCS = [
 
 // A Supabase project ref is exactly 20 lowercase letters.
 const REF_BODY = '[a-z]{20}';
-// Only recognise a ref in an unambiguous context: a supabase.co host, or a
-// backtick-quoted bare token. A bare 20-letter word in prose is not treated as
-// a ref, which keeps ordinary English out of the registry requirement.
+const REF_EXACT_RE = new RegExp(`^${REF_BODY}$`);
+
+// Contexts in which a token is unambiguously a project ref, recognised on every
+// line of a document.
 const REF_PATTERNS = [
   new RegExp(`\\b(${REF_BODY})\\.supabase\\.co\\b`, 'g'),
   new RegExp('`(' + REF_BODY + ')`', 'g'),
 ];
+// A BARE, unquoted ref is only recognised on a line that also carries an
+// identity assertion. That keeps an ordinary 20-letter English word in prose out
+// of the registry requirement while closing the "Supabase project: <ref>" hole.
+const BARE_REF_RE = new RegExp(`(?<![a-z\`./])(${REF_BODY})(?![a-z\`.])`, 'g');
 
 // Phrases that present a ref as THE production/deployed database. A line
 // carrying one of these plus a ref is an identity assertion.
@@ -91,13 +101,6 @@ const QUOTED_SPAN_RE = /"[^"]*"|'[^']*'|`[^`]*`|“[^”]*”/g;
 const PROHIBITION_RE =
   /\b(never|not|don'?t|avoid|rather than|instead of)\b[^.]*\b(reduce|restate|describe|call|claim|say|state|present|collapse|launder|report|write)\b/i;
 
-// True when the line actually ASSERTS that CI never failed.
-export function assertsNeverFailed(line) {
-  const text = String(line ?? '');
-  if (PROHIBITION_RE.test(text)) return false;
-  return NEVER_FAILED_RE.test(text.replace(QUOTED_SPAN_RE, ' '));
-}
-
 export const VALID_REF_ROLES = new Set([
   'deployed_production',
   'ledger_match_candidate',
@@ -105,6 +108,28 @@ export const VALID_REF_ROLES = new Set([
   'historical_reference',
   'local_shadow',
 ]);
+
+export const VALID_EVIDENCE_CLASSES = new Set([
+  'deployed_config',
+  'live_schema',
+  'repository',
+  'github_api',
+  'unmerged',
+  'not_inspectable',
+]);
+
+// The machine-owned block inside the derived document. Only this block and the
+// attestation are auto-authorized for migration-bearing work; everything else in
+// CURRENT_STATE.md stays steward-controlled.
+export const BASELINE_BEGIN = '<!-- machine-derived-baseline:begin -->';
+export const BASELINE_END = '<!-- machine-derived-baseline:end -->';
+
+// Exactly-labeled fields inside that block.
+export const BASELINE_FIELDS = {
+  reviewedMainSha: 'reviewed-main-sha',
+  migrationCount: 'governed-migration-count',
+  lastMigrationName: 'last-migration-name',
+};
 
 // ---- pure helpers (unit-tested in current-state-guard.test.mjs) ------------
 
@@ -180,15 +205,22 @@ export function parseAttestation(text) {
   if (!Array.isArray(obj.projectRefRegistry?.refs)) {
     throw new Error('projectRefRegistry.refs must be an array');
   }
+  const seen = new Set();
   for (const entry of obj.projectRefRegistry.refs) {
-    if (typeof entry?.ref !== 'string' || !new RegExp(`^${REF_BODY}$`).test(entry.ref)) {
+    if (typeof entry?.ref !== 'string' || !REF_EXACT_RE.test(entry.ref)) {
       throw new Error(`registry entry has an invalid project ref: ${JSON.stringify(entry?.ref)}`);
     }
+    if (seen.has(entry.ref)) {
+      throw new Error(`projectRefRegistry contains a duplicate entry for ${entry.ref}`);
+    }
+    seen.add(entry.ref);
     if (!VALID_REF_ROLES.has(entry?.role)) {
       throw new Error(`registry entry ${entry.ref} has an unknown role: ${JSON.stringify(entry?.role)}`);
     }
-    if (typeof entry?.evidenceClass !== 'string' || entry.evidenceClass === '') {
-      throw new Error(`registry entry ${entry.ref} is missing an evidenceClass`);
+    if (!VALID_EVIDENCE_CLASSES.has(entry?.evidenceClass)) {
+      throw new Error(
+        `registry entry ${entry.ref} has an unknown evidenceClass: ${JSON.stringify(entry?.evidenceClass)}`,
+      );
     }
   }
   return obj;
@@ -199,7 +231,10 @@ export function findProjectRefs(text) {
   const found = new Map();
   const lines = String(text ?? '').split('\n');
   lines.forEach((line, i) => {
-    for (const pattern of REF_PATTERNS) {
+    const assertsProduction = PRODUCTION_ASSERTION_RE.test(line);
+    // Bare refs only count on an identity-assertion line.
+    const patterns = assertsProduction ? [...REF_PATTERNS, BARE_REF_RE] : REF_PATTERNS;
+    for (const pattern of patterns) {
       pattern.lastIndex = 0;
       let m;
       while ((m = pattern.exec(line)) !== null) {
@@ -208,7 +243,7 @@ export function findProjectRefs(text) {
         const hits = found.get(ref);
         // One entry per ref per line, even if the line mentions it twice.
         if (!hits.some((h) => h.line === i + 1)) {
-          hits.push({ line: i + 1, text: line.trim(), assertsProduction: PRODUCTION_ASSERTION_RE.test(line) });
+          hits.push({ line: i + 1, text: line.trim(), assertsProduction });
         }
       }
     }
@@ -230,7 +265,8 @@ export function checkMigrationLedger(attestation, migrationNames) {
       message:
         `The repository has ${actualCount} governed migrations but ` +
         `${ATTESTATION_PATH} expects ${ledger.expectedCount}. A migration-bearing change must ` +
-        `update migrationLedger (count, lastMigrationName, setDigest) and ${DERIVED_DOC_PATH}.`,
+        `update migrationLedger (count, lastMigrationName, setDigest) and the machine-derived ` +
+        `baseline block in ${DERIVED_DOC_PATH}.`,
     });
   }
   if (actualLast !== ledger.lastMigrationName) {
@@ -253,85 +289,132 @@ export function checkMigrationLedger(attestation, migrationNames) {
   return findings;
 }
 
+// Read the machine-owned baseline block out of the derived document.
+// Returns { block, fields, findings }. Structural problems are findings, not
+// throws, so one malformed block reports alongside everything else.
+export function parseBaselineBlock(derivedText) {
+  const findings = [];
+  const text = String(derivedText ?? '');
+  const begins = text.split(BASELINE_BEGIN).length - 1;
+  const ends = text.split(BASELINE_END).length - 1;
+
+  if (begins === 0 || ends === 0) {
+    findings.push({
+      code: 'baseline_block_missing',
+      message:
+        `${DERIVED_DOC_PATH} has no machine-derived baseline block. It must contain exactly one ` +
+        `${BASELINE_BEGIN} … ${BASELINE_END} block declaring ` +
+        `${Object.values(BASELINE_FIELDS).join(', ')}.`,
+    });
+    return { block: null, fields: {}, findings };
+  }
+  if (begins > 1 || ends > 1) {
+    findings.push({
+      code: 'baseline_block_duplicate',
+      message:
+        `${DERIVED_DOC_PATH} contains ${begins} baseline begin markers and ${ends} end markers. ` +
+        `Exactly one block is allowed.`,
+    });
+    return { block: null, fields: {}, findings };
+  }
+  const start = text.indexOf(BASELINE_BEGIN);
+  const stop = text.indexOf(BASELINE_END);
+  if (stop < start) {
+    findings.push({
+      code: 'baseline_block_malformed',
+      message: `${DERIVED_DOC_PATH} closes the baseline block before it opens it.`,
+    });
+    return { block: null, fields: {}, findings };
+  }
+  const block = text.slice(start + BASELINE_BEGIN.length, stop);
+
+  const fields = {};
+  for (const [key, label] of Object.entries(BASELINE_FIELDS)) {
+    // Labelled occurrences anywhere in the document, so a stale duplicate copy
+    // outside the block is caught rather than silently ignored.
+    const anywhere = [...text.matchAll(new RegExp(`${label}\\s*:\\s*\`?([^\`\\s]*)\`?`, 'gi'))];
+    const inBlock = [...block.matchAll(new RegExp(`${label}\\s*:\\s*\`?([^\`\\s]*)\`?`, 'gi'))];
+    if (anywhere.length === 0) {
+      findings.push({
+        code: 'baseline_field_missing',
+        message: `${DERIVED_DOC_PATH} does not declare \`${label}\` in its machine-derived baseline block.`,
+      });
+      continue;
+    }
+    if (anywhere.length > 1) {
+      findings.push({
+        code: 'baseline_field_duplicate',
+        message:
+          `${DERIVED_DOC_PATH} declares \`${label}\` ${anywhere.length} times ` +
+          `(values: ${anywhere.map((m) => JSON.stringify(m[1])).join(', ')}). ` +
+          `Exactly one declaration is allowed, so a stale copy cannot coexist with the correct one.`,
+      });
+      continue;
+    }
+    if (inBlock.length !== 1) {
+      findings.push({
+        code: 'baseline_field_outside_block',
+        message:
+          `${DERIVED_DOC_PATH} declares \`${label}\` outside the machine-derived baseline block. ` +
+          `Machine-owned fields must live inside the marked block.`,
+      });
+      continue;
+    }
+    const value = inBlock[0][1];
+    if (value === '') {
+      findings.push({
+        code: 'baseline_field_malformed',
+        message: `${DERIVED_DOC_PATH} declares \`${label}\` with an empty value.`,
+      });
+      continue;
+    }
+    fields[key] = value;
+  }
+  return { block, fields, findings };
+}
+
 // The derived prose must agree with the machine-readable projection, so a
 // migration-bearing change cannot update one and leave the other stale.
 export function checkDerivedDocumentation(attestation, derivedText) {
-  const findings = [];
-  const text = String(derivedText ?? '');
-  const { expectedCount, lastMigrationName } = attestation.migrationLedger;
-  const sha = attestation.review.lastReviewedMainSha;
-
-  if (!new RegExp(`\\b${expectedCount}\\b`).test(text)) {
-    findings.push({
-      code: 'derived_doc_count_stale',
-      message:
-        `${DERIVED_DOC_PATH} does not state the attested migration count ${expectedCount}. ` +
-        `Update the derived documentation alongside the attestation.`,
-    });
+  const { fields, findings } = parseBaselineBlock(derivedText);
+  const expected = {
+    reviewedMainSha: attestation.review.lastReviewedMainSha,
+    migrationCount: String(attestation.migrationLedger.expectedCount),
+    lastMigrationName: attestation.migrationLedger.lastMigrationName,
+  };
+  for (const [key, label] of Object.entries(BASELINE_FIELDS)) {
+    if (!(key in fields)) continue; // already reported by parseBaselineBlock
+    if (fields[key] !== expected[key]) {
+      findings.push({
+        code: 'baseline_field_mismatch',
+        message:
+          `${DERIVED_DOC_PATH} declares \`${label}: ${fields[key]}\` but ${ATTESTATION_PATH} ` +
+          `says ${JSON.stringify(expected[key])}. Update the attestation and the baseline block together.`,
+      });
+    }
   }
-  if (!text.includes(lastMigrationName)) {
+  if (Number.isInteger(attestation.migrationLedger.expectedCount) &&
+      'migrationCount' in fields && !/^\d+$/.test(fields.migrationCount)) {
     findings.push({
-      code: 'derived_doc_last_migration_stale',
-      message:
-        `${DERIVED_DOC_PATH} does not name the attested last migration ${lastMigrationName}.`,
-    });
-  }
-  if (!text.includes(sha) && !text.includes(sha.slice(0, 7))) {
-    findings.push({
-      code: 'derived_doc_sha_stale',
-      message:
-        `${DERIVED_DOC_PATH} does not state the attested reviewed SHA ${sha.slice(0, 7)}.`,
+      code: 'baseline_field_malformed',
+      message: `${DERIVED_DOC_PATH} declares a non-numeric governed-migration-count: ${JSON.stringify(fields.migrationCount)}.`,
     });
   }
   return findings;
 }
 
-export function checkProjectRefs(attestation, docs) {
+// The deployment-identity state machine. Exactly two coherent states exist, and
+// every field, registry role, and document assertion must agree with the one
+// declared. A half-populated state is itself a failure.
+export function checkDeploymentIdentity(attestation, docs = {}) {
   const findings = [];
-  const registry = new Map(attestation.projectRefRegistry.refs.map((e) => [e.ref, e]));
   const deployment = attestation.deploymentIdentity;
+  const refs = attestation.projectRefRegistry.refs;
+  const registry = new Map(refs.map((e) => [e.ref, e]));
+  const verified = deployment.verificationPerformed === true;
+  const productionEntries = refs.filter((e) => e.role === 'deployed_production');
 
-  const productionRoles = attestation.projectRefRegistry.refs.filter(
-    (e) => e.role === 'deployed_production',
-  );
-  if (productionRoles.length > 1) {
-    findings.push({
-      code: 'conflicting_production_refs',
-      message:
-        `The registry assigns role deployed_production to more than one project ref: ` +
-        `${productionRoles.map((e) => e.ref).join(', ')}. Exactly one project can be production.`,
-    });
-  }
-  if (productionRoles.length > 0 && deployment.verificationPerformed !== true) {
-    findings.push({
-      code: 'unverified_production_role',
-      message:
-        `${productionRoles.map((e) => e.ref).join(', ')} carries role deployed_production, but ` +
-        `deploymentIdentity.verificationPerformed is false. A project ref may only be called ` +
-        `production when deployment verification was actually performed against the deployed runtime.`,
-    });
-  }
-  if (deployment.canonicalProjectRef !== null) {
-    if (deployment.verificationPerformed !== true) {
-      findings.push({
-        code: 'unverified_canonical_ref',
-        message:
-          `deploymentIdentity.canonicalProjectRef is set to ${deployment.canonicalProjectRef} while ` +
-          `verificationPerformed is false. Leave it null until the deployed runtime is actually read.`,
-      });
-    }
-    const entry = registry.get(deployment.canonicalProjectRef);
-    if (!entry || entry.role !== 'deployed_production') {
-      findings.push({
-        code: 'canonical_ref_not_registered',
-        message:
-          `deploymentIdentity.canonicalProjectRef ${deployment.canonicalProjectRef} is not registered ` +
-          `with role deployed_production in projectRefRegistry.`,
-      });
-    }
-  }
-
-  // Refs asserted as production inside the canonical documents themselves.
+  // --- refs asserted as production inside canonical documents ---
   const assertedInDocs = new Map();
   for (const [path, text] of Object.entries(docs)) {
     for (const [ref, hits] of findProjectRefs(text)) {
@@ -349,7 +432,6 @@ export function checkProjectRefs(attestation, docs) {
       }
     }
   }
-
   if (assertedInDocs.size > 1) {
     findings.push({
       code: 'conflicting_production_refs',
@@ -359,8 +441,34 @@ export function checkProjectRefs(attestation, docs) {
         `. Production identity must be single-valued.`,
     });
   }
-  for (const [ref, at] of assertedInDocs) {
-    if (deployment.verificationPerformed !== true) {
+
+  if (!verified) {
+    // ---------------- UNVERIFIED state ----------------
+    if (deployment.canonicalProjectRef !== null) {
+      findings.push({
+        code: 'unverified_canonical_ref',
+        message:
+          `deploymentIdentity.canonicalProjectRef is ${JSON.stringify(deployment.canonicalProjectRef)} ` +
+          `while verificationPerformed is false. In the UNVERIFIED state it must be null.`,
+      });
+    }
+    if (productionEntries.length > 0) {
+      findings.push({
+        code: 'unverified_production_role',
+        message:
+          `${productionEntries.map((e) => e.ref).join(', ')} carries role deployed_production while ` +
+          `verificationPerformed is false. In the UNVERIFIED state no registry entry may hold that role.`,
+      });
+    }
+    if (typeof deployment.blocker !== 'string' || deployment.blocker.trim() === '') {
+      findings.push({
+        code: 'unverified_missing_blocker',
+        message:
+          `deploymentIdentity.blocker must be a nonempty explanation of why deployment verification ` +
+          `is unavailable whenever verificationPerformed is false.`,
+      });
+    }
+    for (const [ref, at] of assertedInDocs) {
       findings.push({
         code: 'unverified_production_assertion',
         message:
@@ -368,16 +476,112 @@ export function checkProjectRefs(attestation, docs) {
           `deployment verification was not performed. Documents must defer to the deployed runtime ` +
           `instead of asserting an unverified identity.`,
       });
-    } else if (deployment.canonicalProjectRef !== null && ref !== deployment.canonicalProjectRef) {
+    }
+    return findings;
+  }
+
+  // ---------------- VERIFIED state ----------------
+  const canonical = deployment.canonicalProjectRef;
+  if (typeof canonical !== 'string' || !REF_EXACT_RE.test(canonical)) {
+    findings.push({
+      code: 'verified_missing_canonical_ref',
+      message:
+        `verificationPerformed is true, so deploymentIdentity.canonicalProjectRef must be one valid ` +
+        `20-character project ref. Found ${JSON.stringify(canonical)}.`,
+    });
+  }
+  if (productionEntries.length === 0) {
+    findings.push({
+      code: 'verified_missing_production_entry',
+      message:
+        `verificationPerformed is true, so exactly one projectRefRegistry entry must carry role ` +
+        `deployed_production. None does.`,
+    });
+  } else if (productionEntries.length > 1) {
+    findings.push({
+      code: 'conflicting_production_refs',
+      message:
+        `The registry assigns role deployed_production to more than one project ref: ` +
+        `${productionEntries.map((e) => e.ref).join(', ')}. Exactly one project can be production.`,
+    });
+  } else {
+    const entry = productionEntries[0];
+    if (typeof canonical === 'string' && entry.ref !== canonical) {
+      findings.push({
+        code: 'verified_production_entry_mismatch',
+        message:
+          `The deployed_production registry entry is ${entry.ref} but ` +
+          `deploymentIdentity.canonicalProjectRef is ${canonical}. They must be the same ref.`,
+      });
+    }
+    if (entry.evidenceClass !== 'deployed_config') {
+      findings.push({
+        code: 'verified_production_evidence_class',
+        message:
+          `The deployed_production registry entry ${entry.ref} has evidenceClass ` +
+          `${JSON.stringify(entry.evidenceClass)}. Production identity may only rest on ` +
+          `deployed_config evidence — a live_schema ledger match is not deployment verification.`,
+      });
+    }
+  }
+  if (typeof deployment.verifiedAtUtc !== 'string' ||
+      Number.isNaN(Date.parse(deployment.verifiedAtUtc))) {
+    findings.push({
+      code: 'verified_missing_timestamp',
+      message:
+        `verificationPerformed is true, so deploymentIdentity.verifiedAtUtc must be its own ` +
+        `ISO-8601 UTC timestamp for when the deployed runtime was actually read.`,
+    });
+  }
+  if (typeof deployment.verificationMethod !== 'string' ||
+      deployment.verificationMethod.trim() === '') {
+    findings.push({
+      code: 'verified_missing_method',
+      message:
+        `verificationPerformed is true, so deploymentIdentity.verificationMethod must record how the ` +
+        `deployed runtime was read (for example: read VITE_SUPABASE_URL from the Railway service).`,
+    });
+  }
+  if (typeof deployment.authoritativeSource !== 'string' ||
+      deployment.authoritativeSource.trim() === '') {
+    findings.push({
+      code: 'verified_missing_source',
+      message:
+        `verificationPerformed is true, so deploymentIdentity.authoritativeSource must name the ` +
+        `deployed source the identity was read from.`,
+    });
+  }
+  // A document may only assert the one canonical ref.
+  for (const [ref, at] of assertedInDocs) {
+    if (typeof canonical === 'string' && ref !== canonical) {
       findings.push({
         code: 'conflicting_production_refs',
         message:
           `${at.join(', ')} presents ${ref} as production, but the attested canonical production ref ` +
-          `is ${deployment.canonicalProjectRef}.`,
+          `is ${canonical}.`,
       });
+      const entry = registry.get(ref);
+      if (entry && entry.role !== 'deployed_production') {
+        findings.push({
+          code: 'misclassified_production_assertion',
+          message:
+            `${at.join(', ')} presents ${ref} as production while its registry role is ` +
+            `${JSON.stringify(entry.role)}. A differently classified ref must not be presented as production.`,
+        });
+      }
     }
   }
   return findings;
+}
+
+// Retained as the documented entry point for ref/identity checking.
+export const checkProjectRefs = checkDeploymentIdentity;
+
+// True when the line actually ASSERTS that CI never failed.
+export function assertsNeverFailed(line) {
+  const text = String(line ?? '');
+  if (PROHIBITION_RE.test(text)) return false;
+  return NEVER_FAILED_RE.test(text.replace(QUOTED_SPAN_RE, ' '));
 }
 
 export function checkCiClaim(attestation, docs = {}) {
@@ -472,7 +676,7 @@ export function evaluate({ attestation, migrationNames, docs = {}, derivedDoc = 
   const findings = [
     ...checkMigrationLedger(attestation, migrationNames),
     ...checkDerivedDocumentation(attestation, derivedDoc),
-    ...checkProjectRefs(attestation, docs),
+    ...checkDeploymentIdentity(attestation, docs),
     ...checkCiClaim(attestation, docs),
   ];
   return { ok: findings.length === 0, findings };
