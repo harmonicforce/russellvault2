@@ -1,5 +1,10 @@
 # Daily Workbench independent audit — 2026-08-01
 
+> **HISTORICAL — POINT-IN-TIME AUDIT.** Preserved as written, dated 2026-08-01
+> against commit `6be9955621d013699aeac0a39e0be6cf60b55ee7` (PR #30). It is not a
+> statement of current state. Use `docs/ai/CURRENT_STATE.md` and
+> `docs/ai/CURRENT_STATE.attestation.json` for present state.
+
 ## Scope and repository identity
 
 The audited checkout was the clean merge commit `6be9955621d013699aeac0a39e0be6cf60b55ee7` (PR #30). Its first parent is PR #29, and its history contains merges #27–#30. There is no later commit in the supplied object database. Fetching `origin/main` was attempted with both the public GitHub URL and the repository-metadata proxy URL; the former was blocked by HTTP CONNECT 403 and the latter was unavailable. Therefore “no later remote commit” is **not independently verifiable** from this environment.

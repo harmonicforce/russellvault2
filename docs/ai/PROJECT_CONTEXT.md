@@ -80,11 +80,21 @@ The application includes or has foundations for:
 - lot quantity adjustment, recount, split, and merge;
 - governed corrections and supersession;
 - governed Cycle Count with blind rounds, recounts, resolutions, and audit;
-- Daily Workbench;
-- provenance and acquisition foundations;
-- legacy SQLite operational surfaces retained during transition.
+- governed UI/design-system primitives and responsive browser quality gates;
+- customizable Daily Workbench;
+- governed acquisition classification, list/detail, payment, shipment, and exclusion flows;
+- governed receiving from acquisition evidence into inventory provenance;
+- governed cost allocation, withdrawal/recovery, derived inventory cost basis, and unresolved-cost triage;
+- append-only reconciliation ledger and deterministic offline reconciliation runner;
+- legacy SQLite operational surfaces retained only during transition and never to be conflated with governed truth.
 
-Consult `CURRENT_STATE.md` for reviewed shipped state and `PROJECT_ROADMAP.md` for next-stage options.
+The next owner-facing reconciliation surface is S3.3. Historical data import has not been executed.
+
+Consult `CURRENT_STATE.md` for reviewed shipped state and blockers, and `PROJECT_ROADMAP.md` for the approved continuation sequence.
+
+## Deployment identity
+
+This repository does not name the production Supabase project. The deployed Railway environment is the only authority for that identity, and it must be re-read immediately before any consequential live work. See `docs/ai/CURRENT_STATE.attestation.json` for what each known project ref actually is and for the current verification status.
 
 ## Out of scope unless explicitly added
 

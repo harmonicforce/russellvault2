@@ -1,6 +1,8 @@
 # Russell Vault Project Roadmap
 
-This roadmap orders major owner-facing product slices. It is not permission to begin or release a slice without a work order.
+This roadmap orders major owner-facing product slices. It is not permission to begin, merge, migrate, deploy, or release a slice without the required work-order authority and gates.
+
+Consult `CURRENT_STATE.md` and `CURRENT_STATE.attestation.json` for the reviewed SHA, CI state, deployment-identity status, and live migration parity. This file describes sequence, not moment-to-moment release health.
 
 ## Completed foundation
 
@@ -16,36 +18,60 @@ This roadmap orders major owner-facing product slices. It is not permission to b
 - correction, supersession, and duplicate-void workflows
 - Daily Workbench foundation
 - governed Cycle Count with blind rounds, recounts, resolutions, audit, CI, deployment, and hosted smoke acceptance
+- S1.6 governed UI/design-system foundation and browser quality gate
+- customizable governed Workbench
 
-## Next-stage options
+## Completed Commercial Core slices
 
-### A. Acquisition Receiving and Landed Cost
+Re-proved from executable code at the reviewed SHA. Earlier revisions of this file still listed Acquisition Receiving and Landed Cost as an unstarted "next-stage option" long after it shipped.
 
-Complete the owner path from purchase/order through receiving, shared-cost allocation, unknown-cost review, and inventory cost-basis read models.
+### S1 — Acquisition foundation
 
-### B. Listing Prep Command Center
+Complete for the approved scope: governed classification and rules, list/detail read surfaces, payments and shipments, exclusion/restoration semantics, owner/operator/viewer authority boundaries, and NULL-safe fail-closed acquisition mutation guards.
 
-Create category-aware preparation requirements, readiness blockers, photos/condition/pricing/package workspaces, Ready to List queues, and audit history. Automated marketplace publishing remains out of scope unless separately authorized.
+### S2 — Receiving, landed cost, and inventory cost basis
 
-### C. Media and Photography Hardening
+Complete through S2.6: receiving schema, receiving functions and acceptance hardening, governed receiving UI, governed inventory cost basis and recompute, cost-basis truth hardening and allocation withdrawal, cost allocation owner surface, and the unresolved cost queue. The cost machinery exists before historical import, as the dependency plan requires.
 
-Add reliable multi-file uploads, per-file progress/retry, ordering, atomic primary selection, rotation, recovery, orphan reconciliation, and category-aware required-photo sets.
+### S3 — Historical reconciliation and import
 
-### D. Sales, Fulfillment, and Inventory Exit
+Completed so far: S3.1 append-only reconciliation ledger, the deterministic reconciliation ordering repair, and S3.2 deterministic offline reconciliation runner with its governed ledger adapter.
 
-Connect sales to governed inventory exit, fulfillment, tracking, fees, refunds, returns, and profit after known costs.
+Historical production data has **not** been imported.
 
-### E. Operational Dashboard and Inventory Intelligence
+## Next approved owner-facing slice
 
-Build explainable priority queues, inventory health, aging, saved views, recent governed activity, and drill-down metrics.
+### S3.3 — Reconciliation Review UI
 
-## Recommended commercial sequence
+Turn the S3.1/S3.2 evidence machinery into an owner-usable review workflow:
 
-1. Acquisition Receiving and Landed Cost
-2. Listing Prep Command Center
-3. Media and Photography Hardening
-4. Sales, Fulfillment, and Inventory Exit
-5. Operational Dashboard and Inventory Intelligence
+- reconciliation run list and detail;
+- L1 aggregate evidence shown as context, never as proof of record-level parity;
+- complete L2 per-key findings across the union of keys;
+- exact field differences and materiality;
+- append-only adjudication history and governed owner actions;
+- authoritative cutover eligibility and blocker reasons read from the database;
+- loading, empty, partial, unavailable, unauthorized, and error truth states;
+- no historical import or cutover performed by the review UI.
+
+## Remaining S3 execution order
+
+After S3.3 and only after its gates pass:
+
+4. **S3.4** inventory import functions and duplicate scan
+5. **S3.5** inventory import execution and owner adjudication
+6. **S3.6** acquisition import execution
+7. **S3.7** cost allocation import with conservation proof
+8. **S3.8** governed cutover and retirement of legacy write handlers
+
+Historical reconciliation must answer the repository 2,149 acquisition-line set against the owner-attested 2,119 production-backup count record-by-record. Do not assume the 30-row difference is the known food subset without key-level evidence.
+
+## Post-S3 commercial sequence
+
+1. Listing Prep Command Center
+2. Media and Photography Hardening
+3. Sales, Fulfillment, and Inventory Exit
+4. Operational Dashboard and Inventory Intelligence
 
 Media may precede Listing Prep when photography is the immediate operational bottleneck. Dashboard should consume established workflow facts rather than invent provisional status models.
 

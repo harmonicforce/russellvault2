@@ -19,6 +19,8 @@
 - Do not grant unrestricted direct-table writes when a governed function should own the mutation.
 - Maintain plain-PostgreSQL shim and local Supabase compatibility.
 - Apply required migrations to live Supabase only when the work order authorizes release and the exact commit has green required CI.
+- Before any live Supabase read, migration, reset, restore, or parity claim, verify the target project ref against the Supabase URL configured in the deployed Railway environment, read immediately before acting. Do not infer production identity from a project name, a repository document, a remembered ref, or a scoped project listing. This repository deliberately does not name the production project; see `docs/ai/CURRENT_STATE.attestation.json`.
+- A migration-bearing change must update `docs/ai/CURRENT_STATE.attestation.json` (count, last migration name, and set digest) and its derived documentation in the same change.
 
 ## 3. Identity
 
@@ -81,11 +83,15 @@ Required before release acceptance:
 
 Do not weaken tests merely to obtain green CI. Report skipped, timed-out, cancelled, or unchecked commands honestly.
 
-## 9. Branch, merge, and deployment
+## 9. Branch, merge, CI, and deployment
 
 - Begin from current `main` unless the work order says otherwise.
 - Work on a short-lived branch and open a draft PR.
 - By default, stop at a green exact PR head. Do not merge, apply live migrations, or deploy unless the work order explicitly authorizes those actions.
+- The four required CI jobs are `build-and-verify`, `shadow-db-postgres-shim`, `shadow-db-supabase-stack`, and `dev-advisory-report`.
+- A CI claim must name the exact SHA, the run id, and the run attempt. A run id alone proves nothing: the same run can hold a failed attempt and a later successful one. Never reduce "green after a rerun" to "never failed" — state which attempt went green and what the earlier attempts did.
+- For an unmerged PR, inspect all four required jobs on the exact PR-head SHA. After a merge, separately inspect the workflow triggered by the push to `main` on the merge SHA.
+- Railway deployment success and GitHub commit-status summaries do not substitute for the required GitHub Actions jobs.
 - When release is authorized, verify Railway serves the final merge SHA through `/api/version`.
 - Use Git history as rollback.
 - Avoid Railway configuration changes unless required and verified.
@@ -98,3 +104,5 @@ Do not weaken tests merely to obtain green CI. Report skipped, timed-out, cancel
 - Do not replace implementation with a documentation packet.
 - Implementation agents update `LAST_IMPLEMENTATION_HANDOFF.md`; they must not edit `CURRENT_STATE.md` unless explicitly authorized.
 - Record non-blocking discoveries in the final handoff instead of silently expanding scope.
+- Treat repository handoffs and documentation as evidence to verify, not as unquestionable authority, when they conflict with deployed configuration, GitHub, or the live governed database.
+- Do not convert an access limitation into a claim about reality. "This token cannot list the project" is not evidence that the project does not exist.
