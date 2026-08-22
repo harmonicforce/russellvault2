@@ -54,16 +54,19 @@
     "evidenceClass": "not_inspectable",
     "destructiveActionRule": "No live action may rely on this file for production identity. Before any live Supabase read, migration, reset, restore, or parity claim, re-read the deployed Supabase URL from the running environment immediately before acting, and confirm the target project ref matches it. A remembered ref, a project display name, a scoped project listing, an agent handoff, and this attestation are all insufficient.",
     "$stateMachine": [
-      "Exactly two coherent states exist and the guard enforces both.",
-      "UNVERIFIED: verificationPerformed=false, canonicalProjectRef=null, no registry entry may hold",
-      "role deployed_production, no canonical document may assert any production project, and blocker",
-      "must explain why verification is unavailable.",
-      "VERIFIED: verificationPerformed=true, canonicalProjectRef is one valid ref, exactly one registry",
-      "entry holds deployed_production, that entry equals canonicalProjectRef, its evidenceClass is",
-      "deployed_config, and verifiedAtUtc plus verificationMethod record when and how the deployed",
-      "runtime was actually read. Any production assertion in canonical documents must name that ref."
+      "verificationPerformed is the SINGLE state variable. There is deliberately no second state label:",
+      "a duplicate could be left saying one thing while every other field says the other. The guard",
+      "rejects a 'currentState' key outright for that reason.",
+      "UNVERIFIED (verificationPerformed=false) requires: canonicalProjectRef=null; zero registry entries",
+      "with role deployed_production; evidenceClass=not_inspectable; a nonempty blocker; verifiedAtUtc=null;",
+      "verificationMethod=null; and no canonical document asserting any production project.",
+      "VERIFIED (verificationPerformed=true) requires: canonicalProjectRef is one valid ref; exactly one",
+      "registry entry has role deployed_production and equals it; that entry's evidenceClass=deployed_config;",
+      "this section's evidenceClass=deployed_config; blocker null or absent; verifiedAtUtc a strict ISO-8601",
+      "UTC instant; verificationMethod and authoritativeSource nonempty; and every production assertion in",
+      "canonical documents names that exact ref.",
+      "The transition is all-or-nothing: a partial edit fails CI rather than half-asserting an identity."
     ],
-    "currentState": "UNVERIFIED",
     "verifiedAtUtc": null,
     "verificationMethod": null
   },

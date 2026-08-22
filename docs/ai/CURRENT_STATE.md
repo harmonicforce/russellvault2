@@ -48,7 +48,7 @@ Evidence classes for the block: SHA **[github]**, count and last migration **[re
 
 ## Production identity: UNVERIFIED
 
-**This document does not name the production Supabase project, and must not.**
+**This document does not name the production Supabase project, and ordinary prose here must not.** A verified ref belongs in `CURRENT_STATE.attestation.json` alone, as historical verification evidence — never as authority for a live action.
 
 The deployed Railway environment is the sole authority for production identity. Verification could not be performed from the environment that produced this review: the egress policy answered `403` to `CONNECT` for `russellvault2-production.up.railway.app:443`, and Railway environment variables are not stored in this repository. **[not-inspectable]**
 
@@ -151,17 +151,15 @@ Unmerged work is never an executable baseline. **[unmerged]**
 
 ## Active program position
 
-Two sequences run in parallel and must not be confused. `docs/ai/GENOME_PROGRAM_REGISTRY.md` is authoritative for the reliability track; `PROJECT_ROADMAP.md` for the product track.
+Two sequences run in parallel and must not be confused. `docs/ai/GENOME_PROGRAM_REGISTRY.md` is authoritative for the reliability track and carries the full ordered list of 17 work orders with their prerequisites; `PROJECT_ROADMAP.md` for the product track.
 
-- **Active slice:** Genome Repair Work Order 1 — Production Identity, Current-State Truth, and Freshness Guards, delivered as **PR #79** (draft, not merged).
-- **Next after PR #79 merges:** **Work Order 2 — Legacy Confidentiality Membrane.**
-- **S3.3 — Reconciliation Review UI** remains planned but is **not** the next slice. It maps to **Work Order 13**, after prerequisite hardening. Its scope is unchanged and recorded in `PROJECT_ROADMAP.md`.
+- **Active slice:** WO1 — Production Identity and Control-Plane Truth, delivered as **PR #79** (draft, not merged).
+- **Next after PR #79 merges:** **WO2 — Legacy Confidentiality Membrane.**
+- **S3.3 — Reconciliation Review UI** remains planned but is **not** the next slice. It is carried by **WO13 — Reconciliation Review and Cutover Safety Loop**, gated on WO4, WO5, WO7, WO9 and WO11. Its product scope is unchanged and recorded in `PROJECT_ROADMAP.md`.
 
 An earlier revision of this file named S3.3 as the immediate next slice. That predated the Genome Repair sequencing and is corrected here.
 
 The product continuation after S3.3, when reached, remains S3.4 → S3.5 → S3.6 → S3.7 → S3.8.
-
-Historical reconciliation must answer the repository 2,149 acquisition-line set against the owner-attested 2,119 production-backup count record-by-record. Do not assume the 30-row difference is the known food subset without key-level evidence.
 
 ## Stewardship note
 

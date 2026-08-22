@@ -118,6 +118,18 @@ export const VALID_EVIDENCE_CLASSES = new Set([
   'not_inspectable',
 ]);
 
+// Strict ISO-8601 instant in UTC. Date.parse alone is far too permissive — it
+// accepts "2026-08-22", bare local times, and assorted junk.
+const STRICT_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|\+00:00)$/;
+
+export function isStrictUtcTimestamp(value) {
+  return typeof value === 'string' && STRICT_UTC_RE.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+// "Absent" for a field that must not carry a value in a given state.
+const isAbsent = (v) => v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+const isPresentString = (v) => typeof v === 'string' && v.trim() !== '';
+
 // The machine-owned block inside the derived document. Only this block and the
 // attestation are auto-authorized for migration-bearing work; everything else in
 // CURRENT_STATE.md stays steward-controlled.
@@ -200,6 +212,21 @@ export function parseAttestation(text) {
       deployment.destructiveActionRule.trim() === '') {
     throw new Error(
       'deploymentIdentity.destructiveActionRule must state that live work re-reads deployment identity immediately before acting',
+    );
+  }
+  // There is exactly one state variable. A second, independently editable state
+  // label is the defect class this whole attestation exists to eliminate: it can
+  // be left behind saying UNVERIFIED while every other field says VERIFIED.
+  if ('currentState' in deployment) {
+    throw new Error(
+      'deploymentIdentity.currentState is not allowed: it duplicates verificationPerformed and can ' +
+      'silently disagree with it. Remove the field; verificationPerformed is the single state variable.',
+    );
+  }
+  if (!VALID_EVIDENCE_CLASSES.has(deployment?.evidenceClass)) {
+    throw new Error(
+      `deploymentIdentity.evidenceClass is unknown: ${JSON.stringify(deployment?.evidenceClass)}. ` +
+      `Expected one of: ${[...VALID_EVIDENCE_CLASSES].join(', ')}.`,
     );
   }
   if (!Array.isArray(obj.projectRefRegistry?.refs)) {
@@ -460,12 +487,38 @@ export function checkDeploymentIdentity(attestation, docs = {}) {
           `verificationPerformed is false. In the UNVERIFIED state no registry entry may hold that role.`,
       });
     }
-    if (typeof deployment.blocker !== 'string' || deployment.blocker.trim() === '') {
+    if (!isPresentString(deployment.blocker)) {
       findings.push({
         code: 'unverified_missing_blocker',
         message:
           `deploymentIdentity.blocker must be a nonempty explanation of why deployment verification ` +
           `is unavailable whenever verificationPerformed is false.`,
+      });
+    }
+    if (deployment.evidenceClass !== 'not_inspectable') {
+      findings.push({
+        code: 'unverified_evidence_class',
+        message:
+          `deploymentIdentity.evidenceClass is ${JSON.stringify(deployment.evidenceClass)} while ` +
+          `verificationPerformed is false. In the UNVERIFIED state it must be not_inspectable — the ` +
+          `identity was not read from anywhere, so no stronger class can describe it.`,
+      });
+    }
+    if (!isAbsent(deployment.verifiedAtUtc)) {
+      findings.push({
+        code: 'unverified_stale_verification_field',
+        message:
+          `deploymentIdentity.verifiedAtUtc is ${JSON.stringify(deployment.verifiedAtUtc)} while ` +
+          `verificationPerformed is false. In the UNVERIFIED state it must be null: there is no ` +
+          `verification for it to timestamp.`,
+      });
+    }
+    if (!isAbsent(deployment.verificationMethod)) {
+      findings.push({
+        code: 'unverified_stale_verification_field',
+        message:
+          `deploymentIdentity.verificationMethod is ${JSON.stringify(deployment.verificationMethod)} ` +
+          `while verificationPerformed is false. In the UNVERIFIED state it must be null.`,
       });
     }
     for (const [ref, at] of assertedInDocs) {
@@ -524,17 +577,16 @@ export function checkDeploymentIdentity(attestation, docs = {}) {
       });
     }
   }
-  if (typeof deployment.verifiedAtUtc !== 'string' ||
-      Number.isNaN(Date.parse(deployment.verifiedAtUtc))) {
+  if (!isStrictUtcTimestamp(deployment.verifiedAtUtc)) {
     findings.push({
       code: 'verified_missing_timestamp',
       message:
-        `verificationPerformed is true, so deploymentIdentity.verifiedAtUtc must be its own ` +
-        `ISO-8601 UTC timestamp for when the deployed runtime was actually read.`,
+        `verificationPerformed is true, so deploymentIdentity.verifiedAtUtc must be a strict ISO-8601 ` +
+        `UTC instant (YYYY-MM-DDTHH:MM:SSZ) for when the deployed runtime was actually read. ` +
+        `Found ${JSON.stringify(deployment.verifiedAtUtc)}.`,
     });
   }
-  if (typeof deployment.verificationMethod !== 'string' ||
-      deployment.verificationMethod.trim() === '') {
+  if (!isPresentString(deployment.verificationMethod)) {
     findings.push({
       code: 'verified_missing_method',
       message:
@@ -542,13 +594,30 @@ export function checkDeploymentIdentity(attestation, docs = {}) {
         `deployed runtime was read (for example: read VITE_SUPABASE_URL from the Railway service).`,
     });
   }
-  if (typeof deployment.authoritativeSource !== 'string' ||
-      deployment.authoritativeSource.trim() === '') {
+  if (!isPresentString(deployment.authoritativeSource)) {
     findings.push({
       code: 'verified_missing_source',
       message:
         `verificationPerformed is true, so deploymentIdentity.authoritativeSource must name the ` +
         `deployed source the identity was read from.`,
+    });
+  }
+  if (deployment.evidenceClass !== 'deployed_config') {
+    findings.push({
+      code: 'verified_evidence_class',
+      message:
+        `deploymentIdentity.evidenceClass is ${JSON.stringify(deployment.evidenceClass)} while ` +
+        `verificationPerformed is true. In the VERIFIED state it must be deployed_config: identity ` +
+        `read from the deployed runtime cannot be described as not_inspectable or as a schema reading.`,
+    });
+  }
+  if (!isAbsent(deployment.blocker)) {
+    findings.push({
+      code: 'verified_stale_blocker',
+      message:
+        `deploymentIdentity.blocker is still populated while verificationPerformed is true. A blocker ` +
+        `explains why verification could not happen; it must be cleared once it has. Found ` +
+        `${JSON.stringify(String(deployment.blocker).slice(0, 80))}…`,
     });
   }
   // A document may only assert the one canonical ref.

@@ -94,6 +94,53 @@ Independent adversarial review found two blocking holes in the guard and three c
    hardening. WO3–WO12 are explicitly left unenumerated rather than invented. The commercial roadmap is
    preserved and marked as the separate product track.
 
+### Second review repair (third commit on this branch)
+
+A further review found one remaining state-coherence bypass and two consistency gaps.
+
+**The bypass.** Setting `verificationPerformed:true`, a canonical ref, `verifiedAtUtc`, `verificationMethod`, and a
+`deployed_production` / `deployed_config` registry entry — while leaving `currentState: UNVERIFIED`,
+`evidenceClass: not_inspectable`, and the Railway-unreachable `blocker` in place — returned **zero findings**. The
+attestation simultaneously claimed VERIFIED, UNVERIFIED, deployed evidence, not-inspectable evidence, and an active
+verification blocker.
+
+`deploymentIdentity.currentState` was introduced by the previous repair and was the root cause: a second,
+independently editable state label that can disagree with `verificationPerformed`. It is **removed**, and the guard
+now **rejects the key at parse time** so it cannot return — including when it happens to agree. `verificationPerformed`
+is the single state variable.
+
+**Both tuples are now complete and all-or-nothing:**
+
+| Field | UNVERIFIED | VERIFIED |
+| --- | --- | --- |
+| `verificationPerformed` | `false` | `true` |
+| `canonicalProjectRef` | `null` | one valid 20-char ref |
+| registry `deployed_production` entries | zero | exactly one, equal to `canonicalProjectRef` |
+| that entry's `evidenceClass` | n/a | `deployed_config` |
+| `deploymentIdentity.evidenceClass` | `not_inspectable` | `deployed_config` |
+| `blocker` | nonempty | `null` or absent |
+| `verifiedAtUtc` | `null` | strict ISO-8601 UTC instant |
+| `verificationMethod` | `null` | nonempty |
+| `authoritativeSource` | — | nonempty |
+| production assertions in canonical docs | none | must name the canonical ref |
+
+`deploymentIdentity.evidenceClass` is validated against the known evidence-class set at parse time, alongside registry
+entries. `verifiedAtUtc` uses a strict `YYYY-MM-DDTHH:MM:SS(.sss)?(Z|+00:00)` check — `Date.parse` alone accepted
+`2026-08-22` and other junk. A test walks every strict prefix of the seven-step transition and asserts each one fails,
+then asserts the complete tuple passes: the owner transition cannot be applied halfway.
+
+**Production-identity wording contradiction resolved.** `CLAUDE.md` said no repository document may name the production
+project, while the owner transition requires recording the verified ref in the attestation. One rule now, applied in
+`CLAUDE.md`, `AGENTS.md`, `PROJECT_CONTEXT.md`, and `CURRENT_STATE.md`: the attestation **may** record the last
+deployment-verified ref with its evidence; ordinary prose must **not** replicate it; the attestation is historical
+verification evidence, **not** live-action authority; every live action re-reads the deployed environment immediately
+before acting.
+
+**Program registry completed.** WO1–WO17 with titles and prerequisites, supplied by the program owner. Prompts remain
+owner-held. The prerequisite graph is not linear — WO11 gates on `main` being green, and WO10/12/15/16 fan in from
+several predecessors — so the registry says to read the prerequisite column rather than the numbering. S3.3 is carried
+by WO13, gated on WO4, WO5, WO7, WO9, WO11.
+
 ### Guard behaviour, demonstrated against the real repository
 
 | Case | Result |

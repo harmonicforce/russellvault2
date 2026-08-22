@@ -59,7 +59,12 @@ Machine-readable current state lives in `docs/ai/CURRENT_STATE.attestation.json`
 
 ### Deployment identity rule
 
-**This repository does not name the production Supabase project, and no document here may.** The deployed runtime is the only authority for production identity.
+**The attestation is the only place a verified production project ref may be recorded, and ordinary prose must not replicate it.** The precise rule:
+
+- `docs/ai/CURRENT_STATE.attestation.json` **may** record the last deployment-verified project ref together with the evidence, timestamp, and method behind it.
+- Ordinary canonical prose — this file, `AGENTS.md`, roadmaps, runbooks — should **not** repeat that ref. Copies go stale; the attestation is verified as a whole by CI.
+- The attestation is **historical verification evidence, not live-action authority**. It records what was true when it was read.
+- Every live action must still re-read the deployed environment **immediately before acting**, regardless of what the attestation says.
 
 Before any live Supabase read, migration, reset, restore, or parity claim, read the Supabase URL configured in the deployed Railway service (`VITE_SUPABASE_URL`, or the Supabase host embedded in the bundle the live app serves) **immediately before acting**, and confirm the project ref you are about to touch matches it. A remembered ref, a project display name, a scoped Supabase project listing, an agent handoff, a repository document, and the attestation itself are each insufficient on their own.
 

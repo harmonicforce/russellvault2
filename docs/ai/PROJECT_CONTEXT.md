@@ -88,13 +88,13 @@ The application includes or has foundations for:
 - append-only reconciliation ledger and deterministic offline reconciliation runner;
 - legacy SQLite operational surfaces retained only during transition and never to be conflated with governed truth.
 
-The next owner-facing reconciliation surface is S3.3. Historical data import has not been executed.
+The next owner-facing reconciliation surface is S3.3, which is sequenced as Genome Repair Work Order 13 and is not the immediate next slice; see `docs/ai/GENOME_PROGRAM_REGISTRY.md`. Historical data import has not been executed.
 
 Consult `CURRENT_STATE.md` for reviewed shipped state and blockers, and `PROJECT_ROADMAP.md` for the approved continuation sequence.
 
 ## Deployment identity
 
-This repository does not name the production Supabase project. The deployed Railway environment is the only authority for that identity, and it must be re-read immediately before any consequential live work. See `docs/ai/CURRENT_STATE.attestation.json` for what each known project ref actually is and for the current verification status.
+A verified production project ref is recorded only in `docs/ai/CURRENT_STATE.attestation.json`, and prose in this repository must not replicate it. That record is historical verification evidence: the deployed Railway environment remains the only authority for the identity, and it must be re-read immediately before any consequential live work. See the attestation for what each known project ref actually is and for the current verification status.
 
 ## Out of scope unless explicitly added
 

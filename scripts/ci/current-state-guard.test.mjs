@@ -42,6 +42,9 @@ function baseAttestation(overrides = {}) {
       verificationPerformed: false,
       canonicalProjectRef: null,
       blocker: 'Egress policy answered 403 to CONNECT for the Railway host.',
+      evidenceClass: 'not_inspectable',
+      verifiedAtUtc: null,
+      verificationMethod: null,
       authoritativeSource: 'VITE_SUPABASE_URL in the deployed Railway service',
       destructiveActionRule: 'Re-read the deployed Supabase URL immediately before acting.',
     },
@@ -73,6 +76,8 @@ function verifiedAttestation(mutate = () => {}) {
     verifiedAtUtc: '2026-08-22T05:00:00Z',
     verificationMethod: 'Read VITE_SUPABASE_URL from the deployed Railway service.',
     authoritativeSource: 'VITE_SUPABASE_URL in the deployed Railway service',
+    evidenceClass: 'deployed_config',
+    blocker: null,
     destructiveActionRule: 'Re-read the deployed Supabase URL immediately before acting.',
   };
   att.projectRefRegistry.refs = [
@@ -266,7 +271,7 @@ test('a coherent VERIFIED state passes', () => {
   }), []);
 });
 
-test('UNVERIFIED rejects every field that belongs only to VERIFIED', () => {
+test('UNVERIFIED rejects a canonical ref, a production role, and a missing blocker', () => {
   const withRef = baseAttestation();
   withRef.deploymentIdentity.canonicalProjectRef = PROD;
   assert.ok(codes(checkDeploymentIdentity(withRef, {})).includes('unverified_canonical_ref'));
@@ -303,6 +308,132 @@ test('VERIFIED rejects every incoherent combination', () => {
     const findings = checkDeploymentIdentity(verifiedAttestation(mutate), {});
     assert.ok(codes(findings).includes(expected), `expected ${expected}; got ${codes(findings).join(', ')}`);
   }
+});
+
+test('rejects a duplicate state label outright', () => {
+  const att = baseAttestation();
+  att.deploymentIdentity.currentState = 'UNVERIFIED';
+  assert.throws(() => parseAttestation(JSON.stringify(att)), /currentState is not allowed/);
+  // Even when it agrees, it is still a second editable source of truth.
+  const agreeing = verifiedAttestation((a) => { a.deploymentIdentity.currentState = 'VERIFIED'; });
+  assert.throws(() => parseAttestation(JSON.stringify(agreeing)), /currentState is not allowed/);
+});
+
+test('rejects an unknown deployment evidence class', () => {
+  for (const bad of ['vibes', '', null, undefined, 'deployed-config']) {
+    const att = baseAttestation();
+    att.deploymentIdentity.evidenceClass = bad;
+    assert.throws(
+      () => parseAttestation(JSON.stringify(att)),
+      /deploymentIdentity.evidenceClass is unknown/,
+      `expected rejection for ${JSON.stringify(bad)}`,
+    );
+  }
+});
+
+test('UNVERIFIED rejects every VERIFIED-only field', () => {
+  const cases = [
+    ['unverified_canonical_ref', (a) => { a.deploymentIdentity.canonicalProjectRef = PROD; }],
+    ['unverified_production_role', (a) => { a.projectRefRegistry.refs[0].role = 'deployed_production'; }],
+    ['unverified_missing_blocker', (a) => { a.deploymentIdentity.blocker = ''; }],
+    ['unverified_evidence_class', (a) => { a.deploymentIdentity.evidenceClass = 'deployed_config'; }],
+    ['unverified_evidence_class', (a) => { a.deploymentIdentity.evidenceClass = 'live_schema'; }],
+    ['unverified_stale_verification_field', (a) => { a.deploymentIdentity.verifiedAtUtc = '2026-08-22T05:00:00Z'; }],
+    ['unverified_stale_verification_field', (a) => { a.deploymentIdentity.verificationMethod = 'read the env'; }],
+  ];
+  for (const [expected, mutate] of cases) {
+    const att = baseAttestation();
+    mutate(att);
+    const findings = checkDeploymentIdentity(att, {});
+    assert.ok(codes(findings).includes(expected), `expected ${expected}; got ${codes(findings).join(', ')}`);
+  }
+});
+
+test('VERIFIED rejects a leftover blocker and a non-deployed evidence class', () => {
+  const withBlocker = verifiedAttestation((a) => {
+    a.deploymentIdentity.blocker = 'Railway was unreachable from the verifying environment.';
+  });
+  assert.ok(codes(checkDeploymentIdentity(withBlocker, {})).includes('verified_stale_blocker'));
+
+  for (const cls of ['not_inspectable', 'live_schema', 'repository']) {
+    const att = verifiedAttestation((a) => { a.deploymentIdentity.evidenceClass = cls; });
+    assert.ok(
+      codes(checkDeploymentIdentity(att, {})).includes('verified_evidence_class'),
+      `expected verified_evidence_class for ${cls}`,
+    );
+  }
+});
+
+test('VERIFIED requires a strict ISO-8601 UTC verification timestamp', () => {
+  for (const bad of ['2026-08-22', '2026-08-22 05:00:00', 'August 22 2026', '2026-08-22T05:00:00']) {
+    const att = verifiedAttestation((a) => { a.deploymentIdentity.verifiedAtUtc = bad; });
+    assert.ok(
+      codes(checkDeploymentIdentity(att, {})).includes('verified_missing_timestamp'),
+      `expected rejection of ${JSON.stringify(bad)}`,
+    );
+  }
+  for (const good of ['2026-08-22T05:00:00Z', '2026-08-22T05:00:00.123Z', '2026-08-22T05:00:00+00:00']) {
+    const att = verifiedAttestation((a) => { a.deploymentIdentity.verifiedAtUtc = good; });
+    assert.equal(
+      codes(checkDeploymentIdentity(att, {})).includes('verified_missing_timestamp'), false,
+      `expected acceptance of ${good}`,
+    );
+  }
+});
+
+// The exact contradictory state from the third review: every VERIFIED field set,
+// every UNVERIFIED-owned field left behind. It must not pass.
+test('the incomplete owner transition fails: VERIFIED fields set, UNVERIFIED evidence left behind', () => {
+  const att = baseAttestation();
+  const d = att.deploymentIdentity;
+  d.verificationPerformed = true;
+  d.canonicalProjectRef = PROD;
+  d.verifiedAtUtc = '2026-08-22T06:00:00Z';
+  d.verificationMethod = 'Read VITE_SUPABASE_URL from the deployed Railway service.';
+  const entry = att.projectRefRegistry.refs.find((r) => r.ref === PROD);
+  entry.role = 'deployed_production';
+  entry.evidenceClass = 'deployed_config';
+  // Deliberately NOT moved: evidenceClass and blocker.
+  const findings = checkDeploymentIdentity(att, {});
+  assert.notEqual(findings.length, 0, 'the contradictory state must not pass');
+  assert.ok(codes(findings).includes('verified_evidence_class'));
+  assert.ok(codes(findings).includes('verified_stale_blocker'));
+});
+
+// ...and the same transition, done completely, is the only way through.
+test('the complete UNVERIFIED to VERIFIED transition succeeds only when every field moves', () => {
+  const steps = [
+    (d, a) => { d.verificationPerformed = true; },
+    (d, a) => { d.canonicalProjectRef = PROD; },
+    (d, a) => {
+      const e = a.projectRefRegistry.refs.find((r) => r.ref === PROD);
+      e.role = 'deployed_production';
+      e.evidenceClass = 'deployed_config';
+    },
+    (d, a) => { d.verifiedAtUtc = '2026-08-22T06:00:00Z'; },
+    (d, a) => { d.verificationMethod = 'Read VITE_SUPABASE_URL from the deployed Railway service.'; },
+    (d, a) => { d.evidenceClass = 'deployed_config'; },
+    (d, a) => { d.blocker = null; },
+  ];
+  // Every strict prefix of the transition is incomplete and must fail.
+  for (let n = 1; n < steps.length; n += 1) {
+    const att = baseAttestation();
+    for (let i = 0; i < n; i += 1) steps[i](att.deploymentIdentity, att);
+    assert.notEqual(
+      checkDeploymentIdentity(att, {}).length, 0,
+      `transition stopped after step ${n} must fail`,
+    );
+  }
+  // The whole tuple, moved together, passes — and only then.
+  const complete = baseAttestation();
+  for (const step of steps) step(complete.deploymentIdentity, complete);
+  assert.deepEqual(checkDeploymentIdentity(complete, {}), []);
+  // And the attestation still parses, proving no forbidden field was needed.
+  assert.equal(parseAttestation(JSON.stringify(complete)).schemaVersion, 1);
+  // Once verified, a document may name that exact ref.
+  assert.deepEqual(checkDeploymentIdentity(complete, {
+    'CLAUDE.md': 'Canonical deployed Supabase project: `ncyqqitqtsyjrijieykd`',
+  }), []);
 });
 
 test('a live_schema ledger match can never stand in for deployment verification', () => {

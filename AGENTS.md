@@ -21,7 +21,7 @@ Read `CLAUDE.md` and every file in its required reading order before editing.
   part of that file needs an explicit work-order exception. Never rewrite unrelated CURRENT_STATE prose.
 - Update `docs/ai/LAST_IMPLEMENTATION_HANDOFF.md` before surrendering work.
 - Treat every factual claim in a repository document as a hypothesis to verify, not as authority, when it conflicts with deployed configuration, GitHub, or the live governed database.
-- This repository does not name the production Supabase project. Before touching live Supabase, read the target project ref from the deployed Railway environment immediately before acting. Do not infer production identity from a project name, a repository document, a remembered ref, or a scoped project listing.
+- Only `docs/ai/CURRENT_STATE.attestation.json` may record a verified production project ref; ordinary prose must not replicate it. That record is historical verification evidence, not live-action authority — before touching live Supabase, re-read the target ref from the deployed Railway environment immediately before acting. Do not infer production identity from a project name, a repository document, a remembered ref, or a scoped project listing.
 - A CI claim must name the exact SHA, run id, **and run attempt**. One run id can hold a failed attempt and a later successful one. Never reduce "green after a rerun" to "never failed".
 - A migration-bearing change must update `docs/ai/CURRENT_STATE.attestation.json` and its derived documentation in the same change. `scripts/ci/current-state-guard.mjs` enforces this.
 
