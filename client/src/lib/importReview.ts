@@ -25,7 +25,7 @@ import type {
   SourceCrosswalkRow,
   SourceRecordRow,
   WorkspaceRole,
-} from './database.types';
+} from '../../../shared/databaseAliases.js';
 
 export interface Capabilities {
   readonly canPreview: boolean;

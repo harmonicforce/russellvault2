@@ -6,8 +6,13 @@
     "esModuleInterop": true,
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "dist",
+    // The server runs through tsx and never emits: both `build` and
+    // `typecheck` are `tsc --noEmit`. `outDir` was vestigial, and with the
+    // shared database contract now in the program it actively got in the way —
+    // an inferred rootDir of `src` rejects ../shared as "not under rootDir".
+    "noEmit": true,
+    "rootDir": "..",
     "resolveJsonModule": true
   },
-  "include": ["src"]
+  "include": ["src", "../shared"]
 }

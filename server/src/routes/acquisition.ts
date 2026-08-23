@@ -21,6 +21,7 @@
 // SECURITY DEFINER functions are the single authorization model.
 
 import { Router } from 'express';
+import { singleParam } from './params.js';
 import {
   requireMember,
   requireOperator,
@@ -385,7 +386,11 @@ router.get(
   requireMember,
   asyncRoute(async (req, res) => {
     const { workspaceId, client } = caller(req);
-    const orderId = req.params.id;
+    // Express 5 types a route parameter as `string | string[]`. This value is
+    // used as a uuid in three separate `.eq(...)` filters below; an array would
+    // have reached all three.
+    const orderId = singleParam(req.params.id);
+    if (orderId === null) throw new SourceReadError('invalid_request', 400);
 
     const { data: order, error: oErr } = await client
       .from('acquisition_orders')

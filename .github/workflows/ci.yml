@@ -144,31 +144,20 @@ jobs:
         run: npx --yes supabase@${{ steps.cli.outputs.version }} start -x studio,imgproxy
       - name: Reset shadow DB from empty via pinned CLI
         run: SHADOW_DB_RUNNER=supabase-cli npm run db:reset
-      # TEMPORARY (Work Order 4 bootstrap): Docker is unavailable in the agent
-      # environment, so the canonical generated contract cannot be produced
-      # there. This step generates it here -- from the same replayed migrations
-      # CI will police it against -- and emits it so it can be committed. It is
-      # removed in the same PR once shared/database.types.ts is in the tree.
-      - name: 'TEMPORARY bootstrap: emit generated database types'
+      # The database-to-TypeScript contract guard. Regenerates types from the
+      # schema this job just replayed from empty and fails on any difference,
+      # so a migration that lands without regenerated types cannot merge.
+      #
+      # Runs BEFORE the pgTAP suite deliberately: it depends only on the reset,
+      # and a flaky suite should not be able to withhold a type-contract answer.
+      - name: Verify the generated database types match the replayed schema
         timeout-minutes: 8
         env:
           DB_TEST_STEP_BUDGET_MS: '480000'
           DB_TEST_JOB_BUDGET_MS: '1500000'
         run: |
           set -Eeuo pipefail
-          # Deliberately calls the CLI directly rather than through
-          # scripts/db/gen-types.mjs. The only job of this step is to hand back
-          # the generator's RAW output; routing it through this repository's own
-          # normalization and plausibility checks would mean a bug in those
-          # checks could withhold the very output needed to test them.
-          mkdir -p shared
-          npx --yes supabase@$(cat supabase/cli-version) gen types typescript --local > /tmp/raw.types.ts
-          echo "WO4_TYPES_SHA256 $(sha256sum /tmp/raw.types.ts | cut -d' ' -f1)"
-          echo "WO4_TYPES_LINES $(wc -l < /tmp/raw.types.ts)"
-          echo "WO4_TYPES_BYTES $(wc -c < /tmp/raw.types.ts)"
-          echo "WO4_TYPES_BEGIN"
-          gzip -9 -c /tmp/raw.types.ts | base64 -w 2000
-          echo "WO4_TYPES_END"
+          npm run db:types:check
       - name: Run pgTAP suite inside the local stack
         # The step bound is the OUTER limit; the runner holds a strictly smaller
         # one and must be the thing that fires first. Before 2026-08-23 the

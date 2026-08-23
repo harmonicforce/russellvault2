@@ -22,7 +22,7 @@ import {
 } from '../lib/importReview';
 import { STAGING_NOTICE, getProvenanceUiConfig } from '../lib/provenanceConfig';
 import { createShadowClient } from '../lib/supabaseShadow';
-import type { WorkspaceRole } from '../lib/database.types';
+import type { WorkspaceRole } from '../../../shared/databaseAliases.js';
 
 function StagingBanner() {
   return (

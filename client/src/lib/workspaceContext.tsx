@@ -12,7 +12,7 @@ import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode,
 } from 'react';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Database, WorkspaceRole } from './database.types';
+import type { Database, WorkspaceRole } from '../../../shared/databaseAliases.js';
 import type { Membership } from './authShell';
 
 const STORAGE_KEY = 'rv.activeWorkspaceId';

@@ -20,7 +20,7 @@ import type {
   ImportJobRow,
   SourceCrosswalkRow,
   SourceRecordRow,
-} from './database.types';
+} from '../../../shared/databaseAliases.js';
 import type {
   CommitOutcome,
   FixtureSummary,

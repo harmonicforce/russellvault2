@@ -22,6 +22,7 @@
 // so RLS and the governed SECURITY DEFINER functions are the single
 // authorization model — there is no second one here to drift from it.
 
+import { parseEnumList, singleParam, singleQuery } from './params.js';
 import { Router } from 'express';
 import {
   buildImportPlan,
@@ -52,6 +53,17 @@ router.use((_req, res, next) => {
 });
 
 const MAX_PAGE = 200;
+
+/**
+ * An import-job id from the path. Express 5 types a route parameter as
+ * `string | string[]`, so this is not a formality: without it a repeated
+ * parameter would reach `.eq('id', …)` as an array.
+ */
+function importJobId(req: { params: Record<string, string | string[] | undefined> }): string {
+  const id = singleParam(req.params.id);
+  if (id === null) throw new ProvenanceError('invalid_import_job_id', 400);
+  return id;
+}
 
 function readLimit(value: unknown, fallback = 50): number {
   const n = Number(value ?? fallback);
@@ -243,7 +255,7 @@ router.get(
       .from('import_jobs')
       .select('*')
       .eq('workspace_id', workspaceId)
-      .eq('id', req.params.id)
+      .eq('id', importJobId(req))
       .limit(1);
     if (error) throw new ProvenanceError(error.message, 400);
     if (!data || data.length === 0) {
@@ -265,7 +277,7 @@ router.get(
       .from('source_records')
       .select('*', { count: 'exact' })
       .eq('workspace_id', workspaceId)
-      .eq('import_job_id', req.params.id)
+      .eq('import_job_id', importJobId(req))
       .order('source_row_index', { ascending: true })
       .range(offset, offset + limit - 1);
     if (error) throw new ProvenanceError(error.message, 400);
@@ -288,7 +300,7 @@ router.get(
       .from('data_quality_issues')
       .select('*')
       .eq('workspace_id', workspaceId)
-      .eq('import_job_id', req.params.id)
+      .eq('import_job_id', importJobId(req))
       .order('created_at', { ascending: true });
     if (error) throw new ProvenanceError(error.message, 400);
     res.json({ staging: true, issues: data ?? [] });
@@ -300,10 +312,17 @@ router.get(
   requireMember,
   asyncRoute(async (req, res) => {
     const { workspaceId, client } = caller(req);
-    const states =
-      typeof req.query.states === 'string'
-        ? req.query.states.split(',').filter(Boolean)
-        : ['candidate', 'rejected', 'superseded'];
+    // Previously this split the query string and passed the pieces straight to
+    // `.in('review_state', …)`. Nothing checked they were crosswalk states, so
+    // `?states=nonsense` reached the database as a filter value. The permitted
+    // set now comes from the generated contract, and an unrecognised value is
+    // refused rather than quietly dropped — silently narrowing a filter answers
+    // a different question than the caller asked.
+    const requestedStates = singleQuery(req.query.states);
+    const states = requestedStates === null
+      ? (['candidate', 'rejected', 'superseded'] as const)
+      : parseEnumList('crosswalk_state', requestedStates.split(',').filter(Boolean));
+    if (states === null) throw new ProvenanceError('invalid_crosswalk_state', 400);
     const { data, error } = await client
       .from('source_crosswalks')
       .select('*')
