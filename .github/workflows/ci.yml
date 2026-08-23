@@ -58,7 +58,7 @@ jobs:
         run: npm run test --prefix client
       - name: Test (shadow-db connection guard)
         run: node --test scripts/db/guard.test.mjs
-      - name: Test (shadow-db runner: budgets, supervisor, progress, manifest)
+      - name: 'Test (shadow-db runner: budgets, supervisor, progress, manifest)'
         # These are the Work Order 11 self-tests. They spawn real processes to
         # prove a stalled child and its grandchildren are actually killed, and
         # they assert the timeout hierarchy in scripts/db/budgets.mjs still

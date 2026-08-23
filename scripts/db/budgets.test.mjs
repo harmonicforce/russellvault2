@@ -53,6 +53,22 @@ function dbTestStep(block) {
 
 const CI_JOBS = { 'supabase-cli': 'shadow-db-supabase-stack', psql: 'shadow-db-postgres-shim' };
 
+test('no step name carries an unquoted colon, which silently breaks the whole workflow', () => {
+  // A `- name: Test (runner: budgets)` line parses as a nested mapping, and
+  // GitHub rejects the entire file: the run completes as a failure with ZERO
+  // jobs, which looks nothing like a test failure. Caught here because these
+  // tests read ci.yml anyway, and adding a YAML parser as a dependency to
+  // catch one syntax class is not worth it.
+  const offenders = CI.split('\n')
+    .map((line, index) => ({ line, number: index + 1 }))
+    .filter(({ line }) => {
+      const match = /^\s*- name: (?!['"])(.*)$/.exec(line);
+      return match !== null && match[1].includes(': ');
+    });
+  assert.deepEqual(offenders, [],
+    `quote these step names in ci.yml: ${offenders.map((o) => `line ${o.number}`).join(', ')}`);
+});
+
 test('every lane satisfies the hierarchy with its shipped defaults', () => {
   for (const lane of LANES) {
     const result = checkHierarchy(resolveBudgets(lane, {}));
