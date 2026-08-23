@@ -60,7 +60,14 @@ function laneStep(block, commandPattern) {
 const CI_LANES = {
   'supabase-cli': { job: 'shadow-db-supabase-stack', command: /^\s*\S*\s*npm run db:test\s*$/m },
   psql: { job: 'shadow-db-postgres-shim', command: /^\s*\S*\s*npm run db:test\s*$/m },
-  'gen-types': { job: 'shadow-db-supabase-stack', command: /npm run db:types:(check|write)\s*$/m },
+  // Matched by what the step DOES rather than by one exact command line: the
+  // type-generation step is invoked as `npm run db:types:*` in steady state
+  // and as a direct CLI call during the Work Order 4 bootstrap, and both are
+  // the step whose budgets this lane describes.
+  'gen-types': {
+    job: 'shadow-db-supabase-stack',
+    command: /npm run db:types:(check|write)\b|gen types typescript --local/,
+  },
 };
 
 test('no step name carries an unquoted colon, which silently breaks the whole workflow', () => {
