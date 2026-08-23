@@ -60,9 +60,26 @@ describe('legacyWriteGuard', () => {
     });
   });
 
-  it('leaves writes enabled outside production regardless of ALLOW_LEGACY_WRITES', () => {
-    return loadGuard({ NODE_ENV: 'test' }).then(({ legacyWritesEnabled }) => {
-      expect(legacyWritesEnabled).toBe(true);
+  // CHANGED by Genome Repair Work Order 2. This test previously asserted that
+  // writes stayed ENABLED outside production regardless of the flag. That was
+  // the defect: the dangerous behaviour was the default everywhere except
+  // production, and local/CI runs never exercised the production path.
+  it('blocks writes outside production too, unless the flag is explicitly true', () => {
+    return loadGuard({ NODE_ENV: 'test' }).then(({ legacyWritesEnabled, legacyWriteGuard }) => {
+      expect(legacyWritesEnabled).toBe(false);
+      const { res, calls } = fakeRes();
+      let nextCalled = false;
+      legacyWriteGuard({ method: 'POST' } as any, res, () => { nextCalled = true; });
+      expect(nextCalled).toBe(false);
+      expect(calls.status).toBe(403);
     });
+  });
+
+  it('allows an explicit opt-in outside production', () => {
+    return loadGuard({ NODE_ENV: 'development', ALLOW_LEGACY_WRITES: 'true' }).then(
+      ({ legacyWritesEnabled }) => {
+        expect(legacyWritesEnabled).toBe(true);
+      },
+    );
   });
 });

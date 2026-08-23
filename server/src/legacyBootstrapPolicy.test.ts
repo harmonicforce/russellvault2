@@ -57,11 +57,17 @@ describe('the two permissions are independent', () => {
     expect(resolveLegacyWritesEnabled(env)).toBe(false);
   });
 
-  it('leaves the existing ALLOW_LEGACY_WRITES semantics untouched', () => {
+  it('requires the exact ALLOW_LEGACY_WRITES flag in EVERY environment', () => {
     expect(resolveLegacyWritesEnabled({ ...PROD })).toBe(false);
     expect(resolveLegacyWritesEnabled({ ...PROD, ALLOW_LEGACY_WRITES: 'true' })).toBe(true);
     expect(resolveLegacyWritesEnabled({ ...PROD, ALLOW_LEGACY_WRITES: '1' })).toBe(false);
-    expect(resolveLegacyWritesEnabled({ NODE_ENV: 'test' })).toBe(true);
+    // CHANGED by Genome Repair Work Order 2. This previously expected `true`:
+    // outside production writes were on by default, so development and test
+    // exercised a path production never takes. Non-production now fails closed
+    // exactly like production and needs the same explicit opt-in.
+    expect(resolveLegacyWritesEnabled({ NODE_ENV: 'test' })).toBe(false);
+    expect(resolveLegacyWritesEnabled({ NODE_ENV: 'development' })).toBe(false);
+    expect(resolveLegacyWritesEnabled({ NODE_ENV: 'test', ALLOW_LEGACY_WRITES: 'true' })).toBe(true);
   });
 });
 

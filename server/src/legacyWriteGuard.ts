@@ -10,18 +10,21 @@
 // controlled separately by SEED_LEGACY_ON_EMPTY (see legacyBootstrapPolicy.ts).
 // Neither flag implies the other.
 import type { NextFunction, Request, Response } from 'express';
-import type { EnvLike } from './legacyBootstrapPolicy.js';
+import { resolveLegacyWritesEnabled } from './legacy/accessConfig.js';
 
 /**
- * The rule, extracted as a pure function so other modules can evaluate it
- * against an explicit environment instead of importing a value that was frozen
- * at this module's load time. The semantics are unchanged: outside production
- * writes are always on; in production only the exact string 'true' enables them.
+ * The rule now lives in legacy/accessConfig.ts and is re-exported here so the
+ * existing import sites keep working.
+ *
+ * The semantics CHANGED in Genome Repair Work Order 2. It used to read
+ * `!isProduction || flag === 'true'`, so development and test were always
+ * writable and only production was protected. Every environment now requires
+ * the explicit flag. "Only production is guarded" is the wrong default for an
+ * unauthoritative store: it makes the dangerous behaviour the one you get
+ * without thinking, and it means local and CI runs exercise a path production
+ * never takes.
  */
-export function resolveLegacyWritesEnabled(env: EnvLike = process.env): boolean {
-  const isProduction = env.NODE_ENV === 'production';
-  return !isProduction || env.ALLOW_LEGACY_WRITES === 'true';
-}
+export { resolveLegacyWritesEnabled };
 
 export const legacyWritesEnabled = resolveLegacyWritesEnabled(process.env);
 
@@ -31,9 +34,8 @@ export function legacyWriteGuard(req: Request, res: Response, next: NextFunction
   if (legacyWritesEnabled || SAFE_METHODS.has(req.method)) return next();
   res.status(403).json({
     error:
-      'This app is running read-only in production. Legacy direct-SQLite writes are disabled pending the ' +
-      'relational shadow system (see docs/architecture.md). An owner-admin can set ALLOW_LEGACY_WRITES=true ' +
-      'on the server to re-enable them.',
+      'This app is running read-only. Legacy direct-SQLite writes are disabled in every environment unless ' +
+      'ALLOW_LEGACY_WRITES=true is explicitly set on the server (see docs/architecture.md).',
     readOnly: true,
   });
 }

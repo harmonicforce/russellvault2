@@ -1,5 +1,94 @@
 # Last Implementation Handoff
 
+## Genome Repair Work Order 2 — authenticate and quarantine every legacy HTTP surface
+
+- Repository: `harmonicforce/russellvault2`; canonical branch: `main`.
+- Branch: `claude/russell-vault-genome-repair-hjt51c` (restarted from merged `main`; WO1 shipped as PR #79).
+- Base SHA: `fac90b3b4a821985efc8f68bb0b901353e9463aa` (merge of PR #79).
+- Release authority: branch and draft PR only. No merge, deploy, Railway change, or Supabase mutation.
+- Status: **implemented** and **validated**. Not merged, not deployed, not hosted-accepted.
+
+### Baseline re-proved at fac90b3
+
+- All eight legacy routers had **no** authentication or workspace middleware: `grep` for
+  `authorization|Bearer|requireMember|requireOperator|resolveCaller` across
+  `routes/{inventory,purchases,costLinks,listings,sales,dashboard,checks,lookups}.ts` returned nothing.
+- `app.use(cors())` at `index.ts:40` reflected every origin.
+- `resolveLegacyWritesEnabled` read `!isProduction || flag === 'true'`, so development and test were
+  writable by default.
+- 24 legacy route declarations across 8 routers.
+
+### What changed
+
+New: `server/src/legacy/accessConfig.ts`, `server/src/legacy/accessGuard.ts`,
+`server/src/legacy/routeInventory.ts`, `server/src/corsPolicy.ts`, plus tests for each and
+`docs/runbooks/legacy-surface-quarantine.md`.
+
+Changed: `server/src/index.ts` (CORS policy; legacy prefixes mounted through one guarded loop),
+`server/src/legacyWriteGuard.ts` (rule moved and semantics changed), `server/.env.example`, and three
+existing tests whose assertions encoded the old permissive default.
+
+**No SQL, no migration, no client code.** `git status --short -- supabase/ client/` is empty.
+
+### Security model as implemented
+
+- Quarantine, not authority: `LEGACY_WORKSPACE_ID` names the one governed workspace whose members may
+  reach the global legacy dataset. It does not make legacy rows workspace-scoped or authoritative.
+- No `LEGACY_WORKSPACE_ID` (or malformed, or missing Supabase config) → every legacy route returns
+  `503 legacy_surface_not_configured`. No "first workspace" inference exists.
+- Bearer token verified by Supabase Auth (`auth.getUser`); membership read from `workspace_members`
+  under the caller's own JWT. **No service-role key anywhere in this path.**
+- A client-supplied `workspaceId` is **ignored**. Only the configured workspace is checked — otherwise
+  a member of any workspace could name their own and read the global legacy data.
+- Read: any member (owner/operator/viewer). Write: owner or operator **and** `ALLOW_LEGACY_WRITES=true`.
+  Read/write split matches `ENGINEERING_RULES.md` §1, so legacy authority is never broader than governed.
+- Writes fail closed in **every** environment. The old non-production exemption is gone.
+- CORS: production emits no headers at all (same-origin); non-production uses a bounded allowlist
+  defaulting to the two standard Vite origins, overridable via `DEV_CORS_ORIGINS`; empty means
+  same-origin. `credentials: false`. CORS grants no access on its own.
+- Refusals are bounded codes carrying no path, SQL, token, workspace id, or provider message.
+
+### Coverage boundary
+
+The guard is mounted per legacy prefix, **not** at `/api`, so `/api/health` and `/api/version` stay
+public. Health semantics are untouched — that is Work Order 3. Governed prefixes are mounted plainly
+and never consult `ALLOW_LEGACY_WRITES`; `routeInventory.test.ts` asserts all of this structurally,
+including that no legacy prefix is ever mounted directly instead of through the guarded loop.
+
+### Validation, all exit codes checked
+
+- `npm test`: exit 0 — server **1057** (37 files), client **1626** (68 files), Node guards **84**.
+- New tests: 84 in `legacy/accessGuard.test.ts` (the acceptance matrix runs against all 8 route
+  families), plus `corsPolicy.test.ts` and `legacy/routeInventory.test.ts`.
+- `npm run lint`, `npm run typecheck`, `npm run build:ci`: exit 0.
+- `node scripts/ci/current-state-guard.mjs`: OK.
+- `git diff --check`: exit 0.
+- Not run: database suites (this change contains no SQL) and hosted acceptance (not authorized).
+
+### Compatibility impact on the current UI
+
+`client/src/lib/api.ts` sends no `Authorization` header. Once the surface is configured, the legacy
+pages (`/inventory`, `/purchases`, `/cost-links`, `/listings`, `/sales`, `/checks`, legacy dashboard)
+receive `401`; before it is configured they receive `503`. That is the intended quarantine effect.
+Attaching a session token to legacy requests is deliberately **not** done here — whether those pages
+should keep existing is the legacy retirement question, and this work order's scope is to stop
+anonymous access, not to re-enable the pages under a new mechanism.
+
+Governed pages are unaffected.
+
+### Owner deployment variables required later
+
+`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `LEGACY_WORKSPACE_ID` to enable legacy reads;
+`ALLOW_LEGACY_WRITES=true` only when legacy writing is actually needed; optional `DEV_CORS_ORIGINS`
+for non-standard dev servers. See `docs/runbooks/legacy-surface-quarantine.md`. None were set by this
+work order.
+
+### Rollback
+
+Revert the WO2 commit. Nothing was merged, deployed, or changed in any live system.
+
+---
+
 ## Genome Repair Work Order 1 — production identity, current-state truth, and freshness guards
 
 - Repository: `harmonicforce/russellvault2`; canonical branch: `main`.

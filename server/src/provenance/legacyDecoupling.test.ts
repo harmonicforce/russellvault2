@@ -1,8 +1,9 @@
 // Phase 3 — the provenance surface is decoupled from the legacy SQLite write
 // guard, without weakening that guard.
 //
-// The guard blocks direct writes to the legacy SQLite database in production
-// unless an operator sets ALLOW_LEGACY_WRITES=true. Provenance routes never
+// The guard blocks direct writes to the legacy SQLite database in EVERY
+// environment unless an operator sets ALLOW_LEGACY_WRITES=true (Genome Repair
+// Work Order 2 removed the old non-production exemption). Provenance routes never
 // touch SQLite, so requiring that flag would force an operator to re-enable
 // legacy writes merely to review an import — the exact coupling the guard
 // exists to prevent.
@@ -33,8 +34,13 @@ beforeAll(async () => {
   const app = express();
   app.use(express.json());
 
-  // The SAME middleware order as server/src/index.ts: provenance is mounted
-  // ahead of the legacy guard, and the guard still covers everything else.
+  // This app reproduces the WRITE-GUARD relationship only: provenance mounted
+  // ahead of the legacy write guard, legacy behind it. It is deliberately not a
+  // full mirror of server/src/index.ts, which since Work Order 2 also puts
+  // legacyAccessGuard in front of each legacy prefix. That authentication
+  // boundary has its own coverage in legacy/accessGuard.test.ts and
+  // legacy/routeInventory.test.ts; duplicating it here would obscure the single
+  // contract this file exists to pin.
   app.use('/api/provenance', provenanceRouter);
   app.use('/api', legacyWriteGuard);
   app.post('/api/inventory', (_req, res) => res.json({ wrote: true }));
@@ -103,7 +109,9 @@ describe('the legacy write guard is unchanged', () => {
     expect(res.status).toBe(403);
     const json = await res.json();
     expect(json.readOnly).toBe(true);
-    expect(json.error).toMatch(/read-only in production/i);
+    // Copy changed with the rule: the refusal is no longer production-specific.
+    expect(json.error).toMatch(/read-only/i);
+    expect(json.error).toMatch(/ALLOW_LEGACY_WRITES/);
   });
 
   it('still allows legacy reads', async () => {
