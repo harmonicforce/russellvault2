@@ -122,16 +122,76 @@ export function assertPlausiblyGenerated(text) {
 }
 
 /**
- * Count the members of a top-level section (Tables/Views/Functions/Enums) in
- * generated output. Used for the coverage report and the plausibility floor.
+ * Count the members of a section (Tables/Views/Functions/Enums) inside a
+ * schema block of generated output.
+ *
+ * Brace-aware rather than indentation-aware on purpose. The previous
+ * hand-written snapshot and the CLI's real output nest `Database` differently
+ * (`export interface Database {` vs `export type Database = {`), and the CLI
+ * also emits sibling schemas such as `graphql_public`. Counting by a fixed
+ * column would silently return 0 for the real generator, and a zero count fed
+ * into the plausibility floor reads as "the schema is empty" — a false alarm
+ * that would train everyone to bypass the guard.
  */
-export function countMembers(text, section) {
-  const start = text.indexOf(`      ${section}: {`);
-  if (start < 0) return 0;
-  const body = text.slice(start);
-  const end = body.indexOf('\n      }');
-  if (end < 0) return 0;
-  return [...body.slice(0, end).matchAll(/^        ([A-Za-z_][A-Za-z0-9_]*): \{/gm)].length;
+export function countMembers(text, section, schema = 'public') {
+  const body = sectionBody(text, section, schema);
+  if (body === null) return 0;
+  return topLevelKeys(body).length;
+}
+
+export function memberNames(text, section, schema = 'public') {
+  const body = sectionBody(text, section, schema);
+  return body === null ? [] : topLevelKeys(body);
+}
+
+/** Text between the braces of `<schema>: { ... <section>: { HERE } ... }`. */
+function sectionBody(text, section, schema) {
+  const schemaBody = blockAfter(text, new RegExp(`^\\s*${schema}:\\s*\\{`, 'm'));
+  if (schemaBody === null) return null;
+  return blockAfter(schemaBody, new RegExp(`^\\s*${section}:\\s*\\{`, 'm'));
+}
+
+/**
+ * Given a regex matching a line that opens a brace, return the text inside
+ * that brace, matched by depth rather than by indentation.
+ */
+function blockAfter(text, opener) {
+  const match = opener.exec(text);
+  if (!match) return null;
+  const open = text.indexOf('{', match.index);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(open + 1, i);
+    }
+  }
+  return null;
+}
+
+/** Keys declared at depth 0 of a block body, in source order. */
+function topLevelKeys(body) {
+  const keys = [];
+  let depth = 0;
+  let lineStart = true;
+  let current = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch === '\n') { lineStart = true; current = ''; continue; }
+    if (depth === 0 && lineStart) {
+      const rest = body.slice(i);
+      const key = /^[ \t]*(?:"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*)):/.exec(rest);
+      if (key) keys.push(key[1] ?? key[2]);
+      lineStart = false;
+    }
+    if (ch === '{' || ch === '[') depth += 1;
+    else if (ch === '}' || ch === ']') depth -= 1;
+    void current;
+  }
+  return keys;
 }
 
 /** Section counts for the CI coverage line. */
@@ -140,17 +200,8 @@ export function summarize(text) {
     tables: countMembers(text, 'Tables'),
     views: countMembers(text, 'Views'),
     functions: countMembers(text, 'Functions'),
-    enums: countEnums(text),
+    enums: countMembers(text, 'Enums'),
   };
-}
-
-function countEnums(text) {
-  const start = text.indexOf('      Enums: {');
-  if (start < 0) return 0;
-  const body = text.slice(start);
-  const end = body.indexOf('\n      }');
-  if (end < 0) return 0;
-  return [...body.slice(0, end).matchAll(/^        ([A-Za-z_][A-Za-z0-9_]*):/gm)].length;
 }
 
 export function readCommittedTypes(path = TYPES_PATH) {

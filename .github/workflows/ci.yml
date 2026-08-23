@@ -172,12 +172,18 @@ jobs:
           DB_TEST_JOB_BUDGET_MS: '1500000'
         run: |
           set -Eeuo pipefail
-          npm run db:types:write
-          echo "WO4_TYPES_SHA256 $(sha256sum shared/database.types.ts | cut -d' ' -f1)"
-          echo "WO4_TYPES_LINES $(wc -l < shared/database.types.ts)"
-          echo "WO4_TYPES_BYTES $(wc -c < shared/database.types.ts)"
+          # Deliberately calls the CLI directly rather than through
+          # scripts/db/gen-types.mjs. The only job of this step is to hand back
+          # the generator's RAW output; routing it through this repository's own
+          # normalization and plausibility checks would mean a bug in those
+          # checks could withhold the very output needed to test them.
+          mkdir -p shared
+          npx --yes supabase@$(cat supabase/cli-version) gen types typescript --local > /tmp/raw.types.ts
+          echo "WO4_TYPES_SHA256 $(sha256sum /tmp/raw.types.ts | cut -d' ' -f1)"
+          echo "WO4_TYPES_LINES $(wc -l < /tmp/raw.types.ts)"
+          echo "WO4_TYPES_BYTES $(wc -c < /tmp/raw.types.ts)"
           echo "WO4_TYPES_BEGIN"
-          gzip -9 -c shared/database.types.ts | base64 -w 2000
+          gzip -9 -c /tmp/raw.types.ts | base64 -w 2000
           echo "WO4_TYPES_END"
       - name: Diagnostics if the stack lane failed
         # Backstop for the one case the runner cannot report on: being killed
