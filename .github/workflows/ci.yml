@@ -160,6 +160,25 @@ jobs:
         run: |
           set -Eeuo pipefail
           SHADOW_DB_RUNNER=supabase-cli npm run db:test
+      # TEMPORARY (Work Order 4 bootstrap): Docker is unavailable in the agent
+      # environment, so the canonical generated contract cannot be produced
+      # there. This step generates it here -- from the same replayed migrations
+      # CI will police it against -- and emits it so it can be committed. It is
+      # removed in the same PR once shared/database.types.ts is in the tree.
+      - name: 'TEMPORARY bootstrap: emit generated database types'
+        timeout-minutes: 8
+        env:
+          DB_TEST_STEP_BUDGET_MS: '480000'
+          DB_TEST_JOB_BUDGET_MS: '1500000'
+        run: |
+          set -Eeuo pipefail
+          npm run db:types:write
+          echo "WO4_TYPES_SHA256 $(sha256sum shared/database.types.ts | cut -d' ' -f1)"
+          echo "WO4_TYPES_LINES $(wc -l < shared/database.types.ts)"
+          echo "WO4_TYPES_BYTES $(wc -c < shared/database.types.ts)"
+          echo "WO4_TYPES_BEGIN"
+          gzip -9 -c shared/database.types.ts | base64 -w 2000
+          echo "WO4_TYPES_END"
       - name: Diagnostics if the stack lane failed
         # Backstop for the one case the runner cannot report on: being killed
         # from outside before it reacted. Never fails the job on its own.

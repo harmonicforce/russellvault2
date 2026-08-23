@@ -26,7 +26,7 @@
 // scripts/db/budgets.test.mjs asserts those match .github/workflows/ci.yml, so
 // the numbers here cannot drift away from the numbers that actually apply.
 
-export const LANES = ['supabase-cli', 'psql'];
+export const LANES = ['supabase-cli', 'psql', 'gen-types'];
 
 /**
  * stepMinutes/jobMinutes mirror .github/workflows/ci.yml. They are the
@@ -46,6 +46,19 @@ export const LANE_BUDGETS = Object.freeze({
     reserveMs: 240_000, //  4 min for diagnostics + group kill + stack stop. Sized
                         //  against the WORST case where every probe times out.
     stepMinutes: 12,
+    jobMinutes: 25,
+  }),
+  // Type generation runs in the same job as the Supabase lane, against the same
+  // already-started stack, but as its own step with its own budget.
+  'gen-types': Object.freeze({
+    lane: 'gen-types',
+    fileMs: null,
+    suiteMs: 240_000,   //  4 min for `supabase gen types typescript --local`.
+    resetMs: 0,         //  the stack has already been reset by the step before.
+    silenceMs: 60_000,
+    graceMs: 15_000,
+    reserveMs: 120_000, //  2 min for diagnostics + group kill.
+    stepMinutes: 8,
     jobMinutes: 25,
   }),
   psql: Object.freeze({

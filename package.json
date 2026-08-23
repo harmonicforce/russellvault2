@@ -24,7 +24,9 @@
     "seed": "npm run seed --prefix server",
     "db:manifest": "node scripts/db/test.mjs --write-manifest",
     "db:diagnose": "node scripts/db/diagnose.mjs",
-    "db:proof": "node scripts/db/runner-proof.mjs"
+    "db:proof": "node scripts/db/runner-proof.mjs",
+    "db:types:check": "node scripts/db/gen-types.mjs --check",
+    "db:types:write": "node scripts/db/gen-types.mjs --write"
   },
   "repository": {
     "type": "git",
