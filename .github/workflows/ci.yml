@@ -144,22 +144,6 @@ jobs:
         run: npx --yes supabase@${{ steps.cli.outputs.version }} start -x studio,imgproxy
       - name: Reset shadow DB from empty via pinned CLI
         run: SHADOW_DB_RUNNER=supabase-cli npm run db:reset
-      - name: Run pgTAP suite inside the local stack
-        # The step bound is the OUTER limit; the runner holds a strictly smaller
-        # one and must be the thing that fires first. Before 2026-08-23 the
-        # runner's own bound was 15 minutes under this 12-minute step, so the
-        # step was always killed by GitHub with no attribution, no exit status
-        # and eight orphaned processes. The two budgets below are passed in so
-        # scripts/db/budgets.mjs can verify the hierarchy before running a
-        # single test, and scripts/db/budgets.test.mjs asserts they still match
-        # the timeout-minutes on this step and this job.
-        timeout-minutes: 12
-        env:
-          DB_TEST_STEP_BUDGET_MS: '720000'
-          DB_TEST_JOB_BUDGET_MS: '1500000'
-        run: |
-          set -Eeuo pipefail
-          SHADOW_DB_RUNNER=supabase-cli npm run db:test
       # TEMPORARY (Work Order 4 bootstrap): Docker is unavailable in the agent
       # environment, so the canonical generated contract cannot be produced
       # there. This step generates it here -- from the same replayed migrations
@@ -185,6 +169,22 @@ jobs:
           echo "WO4_TYPES_BEGIN"
           gzip -9 -c /tmp/raw.types.ts | base64 -w 2000
           echo "WO4_TYPES_END"
+      - name: Run pgTAP suite inside the local stack
+        # The step bound is the OUTER limit; the runner holds a strictly smaller
+        # one and must be the thing that fires first. Before 2026-08-23 the
+        # runner's own bound was 15 minutes under this 12-minute step, so the
+        # step was always killed by GitHub with no attribution, no exit status
+        # and eight orphaned processes. The two budgets below are passed in so
+        # scripts/db/budgets.mjs can verify the hierarchy before running a
+        # single test, and scripts/db/budgets.test.mjs asserts they still match
+        # the timeout-minutes on this step and this job.
+        timeout-minutes: 12
+        env:
+          DB_TEST_STEP_BUDGET_MS: '720000'
+          DB_TEST_JOB_BUDGET_MS: '1500000'
+        run: |
+          set -Eeuo pipefail
+          SHADOW_DB_RUNNER=supabase-cli npm run db:test
       - name: Diagnostics if the stack lane failed
         # Backstop for the one case the runner cannot report on: being killed
         # from outside before it reacted. Never fails the job on its own.
@@ -201,8 +201,15 @@ jobs:
           # whatever it left behind by label so the runner is not handed to the
           # next job with containers still holding ports and disk.
           leftover=$(docker ps -aq --filter label=com.supabase.cli.project || true)
-          if [ -n "$leftover" ]; then
-            echo "stop did not remove every container; forcing removal"
+          # The pg_prove container the CLI runs the suite in carries NO
+          # com.supabase.cli.project label, so neither `supabase stop` nor a
+          # label-filtered removal reaches it. Run 32655303716 ended with it
+          # still up after everything else had been torn down. Match it by
+          # image as well.
+          orphaned_prove=$(docker ps -aq --filter ancestor=public.ecr.aws/supabase/pg_prove:3.36 || true)
+          leftover="$leftover $orphaned_prove"
+          if [ -n "${leftover// /}" ]; then
+            echo "forcing removal of containers left behind: $leftover"
             docker rm -f $leftover || true
           fi
 

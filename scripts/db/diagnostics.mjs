@@ -53,7 +53,7 @@ export function clamp(text, limit = MAX_PROBE_CHARS) {
  * A missing binary is reported as such rather than being silently skipped --
  * "docker is not installed" is itself a useful diagnostic.
  */
-export function runProbe(title, command, args, { timeoutMs = PROBE_TIMEOUT_MS, env, input } = {}) {
+export function runProbe(title, command, args, { timeoutMs = PROBE_TIMEOUT_MS, env, input, keepLine } = {}) {
   let result;
   try {
     result = spawnSync(command, args, {
@@ -72,7 +72,12 @@ export function runProbe(title, command, args, { timeoutMs = PROBE_TIMEOUT_MS, e
         : `probe could not run: ${result.error.code ?? result.error.message}`,
     };
   }
-  const body = `${result.stdout ?? ''}${result.stderr ?? ''}`.trimEnd();
+  let body = `${result.stdout ?? ''}${result.stderr ?? ''}`.trimEnd();
+  if (keepLine) {
+    const lines = body.split('\n');
+    // Always keep the header row, then whatever the caller wants.
+    body = [lines[0], ...lines.slice(1).filter(keepLine)].join('\n');
+  }
   return { title, ok: result.status === 0, output: clamp(redact(body)) || '(no output)' };
 }
 
@@ -142,10 +147,18 @@ export function collectDiagnostics({
 
   // Process tree. `-o` keeps the columns predictable across ps builds; args are
   // last so truncation never eats the structural columns.
+  //
+  // Kernel threads are filtered out here rather than by a ps selection flag,
+  // because `--deselect` is not portable across ps builds (it returned an empty
+  // list on one of ours). A kernel thread's args column is its name in square
+  // brackets, which is a stable marker. On a GitHub runner they are roughly 150
+  // of ~200 rows, and in run 32655303716 they pushed the userspace processes
+  // past the output clamp — a bundle that truncates away the thing you are
+  // diagnosing is worse than a short one.
   sections.push(probe(
-    'process tree (sanitized)',
+    'process tree (sanitized, kernel threads omitted)',
     'ps', ['-eo', 'pid,ppid,pgid,etimes,stat,rss,comm,args'],
-    { timeoutMs: 10_000 },
+    { timeoutMs: 10_000, keepLine: (line) => !/\s\[[^\]]+\]\s*$/.test(line) },
   ));
 
   sections.push(probe('resource pressure — disk', 'df', ['-h'], { timeoutMs: 10_000 }));
