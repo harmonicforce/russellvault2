@@ -4,7 +4,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { prepareLegacyDatabase } from './legacyBootstrap.js';
-import { buildHealthResponse, checkLegacyDatabaseHealth } from './legacyDatabaseHealth.js';
+import { buildDiagnosticsResponse, buildHealthResponse, buildLivenessResponse } from './health/healthContract.js';
+import { describeGovernedReadiness, resolveGovernedReadiness } from './health/governedReadiness.js';
+import { createLegacyProbe } from './health/legacyProbeCache.js';
+import { diagnosticsGuard } from './health/diagnosticsAuth.js';
 import { legacyWriteGuard, legacyWritesEnabled } from './legacyWriteGuard.js';
 import { legacyAccessGuard } from './legacy/accessGuard.js';
 import { LEGACY_ROUTE_PREFIXES, type LegacyRoutePrefix } from './legacy/routeInventory.js';
@@ -153,32 +156,65 @@ for (const prefix of LEGACY_ROUTE_PREFIXES) {
   app.use(prefix, legacyAccessGuard, legacyWriteGuard, legacyRouters[prefix]);
 }
 
-// `ok` and `readOnly` are unchanged and still carry what the client reads:
-// `readOnly` reflects the legacy-write guard's live state and is never a secret.
+// ---------------------------------------------------------------------------
+// Health, in three separate states (Genome Repair Work Order 3).
 //
-// The legacy-database fields are new. Before S0.1 this endpoint answered
-// `{ ok: true }` even when the legacy volume was missing, because startup had
-// already rebuilt the database from repository fixtures and made the failure
-// invisible. Startup no longer does that, so the failure has to be reported
-// here instead — and reported as a failure, not as a reassuring 200.
+// Previously ONE endpoint conflated all three and returned 503 whenever the
+// legacy SQLite database was missing, unreadable, structurally incomplete or
+// empty. Railway health-checks that path, so a store that is authoritative for
+// no current business fact could veto a governed deployment. That is R-003.
 //
-// A genuinely unusable legacy database returns 503. That is deliberate: Railway
-// health-checks this path, so an unusable database stops a bad deployment from
-// being promoted and leaves the previous good one serving. `reason` is a bounded
-// code (see legacyDatabaseHealth.ts) and never carries a path, SQL, a driver
-// message or a stack trace.
+// Legacy state is still reported in full — nothing was concealed — but it no
+// longer decides readiness.
+const startedAtUtc = new Date().toISOString();
+const legacyProbe = createLegacyProbe();
+console.log(describeGovernedReadiness(resolveGovernedReadiness(process.env)));
+
+// Pure liveness: is this process up? No configuration, no storage, no I/O, so
+// nothing can veto it. Available as an alternative Railway probe target.
+app.get('/api/live', (_req, res) => {
+  const { status, body } = buildLivenessResponse(startedAtUtc);
+  res.status(status).json(body);
+});
+
+// Governed readiness — the Railway probe. Bounded and fast: governed readiness
+// is a pure configuration check with no network call (probing Supabase on every
+// request would turn a dependency blip into a self-inflicted outage), and the
+// legacy read is served from a short TTL cache.
+//
+// Status is decided by governed readiness ALONE. 503 only when the governed
+// configuration is present but incomplete — an operator error that must not be
+// promoted. A legacy-only deployment returns 200 with `governedReady: false`
+// and `mode: 'legacy_only'`, so it is explicitly defined and never mistaken for
+// a governed deployment.
 app.get('/api/health', (_req, res) => {
   const { status, body } = buildHealthResponse({
-    legacy: checkLegacyDatabaseHealth(),
+    legacy: legacyProbe.read(),
+    readiness: resolveGovernedReadiness(process.env),
     readOnly: !legacyWritesEnabled,
   });
   res.status(status).json(body);
 });
 
+// Detailed component diagnostics — OWNER ONLY, and never part of the probe.
+// Carries strictly more detail about the same bounded facts: no filesystem
+// path, SQL text, driver message, credential, project ref, or stack trace.
+app.get('/api/diagnostics', diagnosticsGuard, (_req, res) => {
+  res.status(200).json(
+    buildDiagnosticsResponse({
+      legacy: legacyProbe.readFresh(),
+      readiness: resolveGovernedReadiness(process.env),
+      legacyWritesEnabled,
+      startedAtUtc,
+      checkedAtUtc: new Date().toISOString(),
+    }),
+  );
+});
+
 // Read-only build/version info to confirm which commit is actually deployed.
 // Reports only a git SHA + Node version — never any secret. Railway provides
 // RAILWAY_GIT_COMMIT_SHA automatically; GIT_COMMIT_SHA is a manual override.
-const startedAtUtc = new Date().toISOString();
+// UNCHANGED by Work Order 3: this remains the exact deployment diagnostic.
 app.get('/api/version', (_req, res) => {
   res.json({
     sha: process.env.GIT_COMMIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',

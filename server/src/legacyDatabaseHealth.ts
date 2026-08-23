@@ -214,27 +214,14 @@ export function isLegacyDatabaseHealthy(health: LegacyDatabaseHealth): boolean {
   return health.legacyDatabaseAvailable && health.legacySchemaPresent && health.legacySeeded;
 }
 
-export interface HealthResponse extends LegacyDatabaseHealth {
-  ok: boolean;
-  readOnly: boolean;
-}
-
-/**
- * The exact `GET /api/health` body and status, built as a pure function so the
- * contract can be tested without starting a listening server.
- *
- * `ok` and `readOnly` keep their existing meaning and position for the client's
- * read-only banner. `status` is 503 when the legacy database is unusable: a
- * reassuring 200 over a missing database is precisely the counterfeit signal
- * this slice removes.
- */
-export function buildHealthResponse(params: {
-  legacy: LegacyDatabaseHealth;
-  readOnly: boolean;
-}): { status: number; body: HealthResponse } {
-  const healthy = isLegacyDatabaseHealthy(params.legacy);
-  return {
-    status: healthy ? 200 : 503,
-    body: { ok: healthy, readOnly: params.readOnly, ...params.legacy },
-  };
-}
+// The `GET /api/health` response builder used to live here, and it returned 503
+// whenever this legacy database was unusable. Genome Repair Work Order 3 moved
+// it to health/healthContract.ts and removed that veto: Railway probes health,
+// so a store that is authoritative for no current business fact could stop a
+// governed deployment from being promoted.
+//
+// It is DELETED rather than deprecated in place. Two functions with the same
+// name and different semantics is exactly the duplicate-source-of-truth pattern
+// this program exists to remove — one import of the wrong one would silently
+// restore the veto. This module now answers only "what is true of the legacy
+// database", and something else decides what that means for readiness.

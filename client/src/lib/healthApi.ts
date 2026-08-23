@@ -23,6 +23,24 @@ export const LEGACY_HEALTH_REASONS = [
 
 export type LegacyHealthReason = (typeof LEGACY_HEALTH_REASONS)[number];
 
+/**
+ * Component vocabulary added by Genome Repair Work Order 3. `unavailable` means
+ * the legacy database could not be opened; `degraded` means it opened but its
+ * schema or baseline is untrustworthy. There is deliberately no value meaning
+ * "empty but fine".
+ */
+export const LEGACY_COMPONENT_STATUSES = ['ready', 'degraded', 'unavailable'] as const;
+export type LegacyComponentStatus = (typeof LEGACY_COMPONENT_STATUSES)[number];
+
+export const APPLICATION_MODES = ['governed', 'legacy_only', 'misconfigured'] as const;
+export type ApplicationMode = (typeof APPLICATION_MODES)[number];
+
+export const GOVERNED_READINESS_REASONS = [
+  'governed_configuration_absent',
+  'governed_configuration_incomplete',
+] as const;
+export type GovernedReadinessReason = (typeof GOVERNED_READINESS_REASONS)[number];
+
 export interface SystemHealth {
   readonly ok: boolean;
   readonly readOnly: boolean;
@@ -37,6 +55,27 @@ export interface SystemHealth {
    * explanation. The unhealthy state itself is still reported.
    */
   readonly reason?: LegacyHealthReason;
+  /**
+   * WO3 fields. Optional so a client running against an older server — or a
+   * server running against an older client — still parses. When the server does
+   * not send `legacyStatus`, it is derived from the three legacy booleans, so
+   * every consumer can rely on it being present.
+   */
+  readonly legacyStatus: LegacyComponentStatus;
+  readonly mode?: ApplicationMode;
+  readonly governedReady?: boolean;
+  readonly governedReason?: GovernedReadinessReason;
+}
+
+/**
+ * Whether the legacy database can be trusted to answer.
+ *
+ * Read this — never the overall result status — when deciding whether to warn
+ * about legacy data. Since WO3 the overall status reports GOVERNED readiness,
+ * so a deployment can be perfectly healthy while legacy is unusable.
+ */
+export function legacyIsUsable(health: SystemHealth): boolean {
+  return health.legacyStatus === 'ready';
 }
 
 export type SystemHealthResult =
@@ -71,6 +110,16 @@ function isKnownReason(value: unknown): value is LegacyHealthReason {
   return typeof value === 'string' && (LEGACY_HEALTH_REASONS as readonly string[]).includes(value);
 }
 
+function isKnownMember<T extends string>(allowed: readonly T[], value: unknown): value is T {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value);
+}
+
+/** The pre-WO3 fallback: derive the component status from the legacy booleans. */
+function deriveLegacyStatus(record: Record<string, unknown>): LegacyComponentStatus {
+  if (record.legacyDatabaseAvailable !== true) return 'unavailable';
+  return record.legacySchemaPresent === true && record.legacySeeded === true ? 'ready' : 'degraded';
+}
+
 /**
  * Narrows an unknown payload to `SystemHealth`, or returns null. Every declared
  * boolean must actually be a boolean — a 503 that is really an HTML proxy page
@@ -93,6 +142,14 @@ export function parseSystemHealth(payload: unknown): SystemHealth | null {
     legacySeeded: record.legacySeeded as boolean,
     legacyBootWritesEnabled: record.legacyBootWritesEnabled as boolean,
     ...(isKnownReason(reason) ? { reason } : {}),
+    legacyStatus: isKnownMember(LEGACY_COMPONENT_STATUSES, record.legacyStatus)
+      ? record.legacyStatus
+      : deriveLegacyStatus(record),
+    ...(isKnownMember(APPLICATION_MODES, record.mode) ? { mode: record.mode } : {}),
+    ...(typeof record.governedReady === 'boolean' ? { governedReady: record.governedReady } : {}),
+    ...(isKnownMember(GOVERNED_READINESS_REASONS, record.governedReason)
+      ? { governedReason: record.governedReason }
+      : {}),
   };
 }
 

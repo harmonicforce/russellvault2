@@ -5,7 +5,6 @@ import path from 'node:path';
 import { openLegacyDatabase, initSchema, migrateProductType } from './db.js';
 import { seedIfEmpty } from './seed.js';
 import {
-  buildHealthResponse,
   checkLegacyDatabaseHealth,
   isLegacyDatabaseHealthy,
   type LegacyDatabaseHealth,
@@ -220,70 +219,9 @@ describe('the health check does not mutate the database', () => {
   });
 });
 
-describe('the /api/health response contract', () => {
-  const healthy: LegacyDatabaseHealth = {
-    legacyDatabaseAvailable: true,
-    legacySchemaPresent: true,
-    legacySeeded: true,
-    legacyBootWritesEnabled: false,
-  };
-
-  it('returns 200 and keeps the existing ok and readOnly fields the client reads', () => {
-    const { status, body } = buildHealthResponse({ legacy: healthy, readOnly: true });
-    expect(status).toBe(200);
-    expect(body.ok).toBe(true);
-    expect(body.readOnly).toBe(true);
-    expect(body).toEqual({
-      ok: true,
-      readOnly: true,
-      legacyDatabaseAvailable: true,
-      legacySchemaPresent: true,
-      legacySeeded: true,
-      legacyBootWritesEnabled: false,
-    });
-  });
-
-  it('reports readOnly=false when an owner has re-enabled legacy HTTP writes', () => {
-    const { body } = buildHealthResponse({ legacy: healthy, readOnly: false });
-    expect(body.readOnly).toBe(false);
-    expect(body.ok).toBe(true);
-  });
-
-  it('returns 503 with ok=false and a bounded reason when the database is unusable', () => {
-    const { status, body } = buildHealthResponse({
-      legacy: {
-        legacyDatabaseAvailable: false,
-        legacySchemaPresent: false,
-        legacySeeded: false,
-        legacyBootWritesEnabled: false,
-        reason: 'legacy_database_missing',
-      },
-      readOnly: true,
-    });
-    expect(status).toBe(503);
-    expect(body.ok).toBe(false);
-    // readOnly still reports the write-guard state, independent of the failure.
-    expect(body.readOnly).toBe(true);
-    expect(body.reason).toBe('legacy_database_missing');
-  });
-
-  it('returns 503 for an emptied baseline, which is the lost-volume signature', () => {
-    const { status, body } = buildHealthResponse({
-      legacy: {
-        legacyDatabaseAvailable: true,
-        legacySchemaPresent: true,
-        legacySeeded: false,
-        legacyBootWritesEnabled: false,
-        reason: 'legacy_baseline_empty',
-      },
-      readOnly: true,
-    });
-    expect(status).toBe(503);
-    expect(body.ok).toBe(false);
-  });
-
-  it('omits reason entirely when healthy', () => {
-    const { body } = buildHealthResponse({ legacy: healthy, readOnly: true });
-    expect('reason' in body).toBe(false);
-  });
-});
+// The `/api/health` response-contract tests that lived here asserted 503
+// whenever the legacy database was unusable. Work Order 3 deliberately removed
+// that behaviour — legacy state no longer decides readiness — so the block was
+// removed rather than edited to assert the opposite of its own name. The new
+// contract, including honest legacy reporting at 200, is covered in
+// health/healthContract.test.ts.
