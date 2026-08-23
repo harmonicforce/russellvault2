@@ -1,7 +1,7 @@
 {
   "name": "russellvault2",
   "version": "1.0.0",
-  "description": "The Russell Vault operations app — replaces the reconciliation spreadsheets with a live inventory, cost-basis, listing, and sales workflow.",
+  "description": "The Russell Vault operations app \u2014 replaces the reconciliation spreadsheets with a live inventory, cost-basis, listing, and sales workflow.",
   "private": true,
   "engines": {
     "node": ">=20"
@@ -14,14 +14,17 @@
     "build:ci": "npm run build --prefix client && npm run build --prefix server",
     "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix client",
     "lint": "npm run lint --prefix client",
-    "test": "npm run test --prefix server && npm run test --prefix client && node --test scripts/db/guard.test.mjs scripts/ci/client-audit-gate.test.mjs scripts/ci/current-state-guard.test.mjs scripts/reconciliation/runner.test.mjs",
+    "test": "npm run test --prefix server && npm run test --prefix client && node --test scripts/db/guard.test.mjs scripts/db/budgets.test.mjs scripts/db/supervisor.test.mjs scripts/db/progress.test.mjs scripts/db/suiteManifest.test.mjs scripts/ci/client-audit-gate.test.mjs scripts/ci/current-state-guard.test.mjs scripts/reconciliation/runner.test.mjs",
     "test:reconciliation": "node --test scripts/reconciliation/runner.test.mjs",
     "verify:backup": "node scripts/verify-sqlite-backup.mjs",
     "guard:current-state": "node scripts/ci/current-state-guard.mjs",
     "db:reset": "node scripts/db/reset.mjs",
     "db:test": "node scripts/db/test.mjs",
     "start": "npm run start --prefix server",
-    "seed": "npm run seed --prefix server"
+    "seed": "npm run seed --prefix server",
+    "db:manifest": "node scripts/db/test.mjs --write-manifest",
+    "db:diagnose": "node scripts/db/diagnose.mjs",
+    "db:proof": "node scripts/db/runner-proof.mjs"
   },
   "repository": {
     "type": "git",
