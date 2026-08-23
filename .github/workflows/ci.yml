@@ -58,6 +58,12 @@ jobs:
         run: npm run test --prefix client
       - name: Test (shadow-db connection guard)
         run: node --test scripts/db/guard.test.mjs
+      - name: 'Test (shadow-db runner: budgets, supervisor, progress, manifest)'
+        # These are the Work Order 11 self-tests. They spawn real processes to
+        # prove a stalled child and its grandchildren are actually killed, and
+        # they assert the timeout hierarchy in scripts/db/budgets.mjs still
+        # matches the timeout-minutes declared in this file.
+        run: node --test scripts/db/budgets.test.mjs scripts/db/supervisor.test.mjs scripts/db/progress.test.mjs scripts/db/suiteManifest.test.mjs
       - name: Test (client audit-gate policy)
         run: node --test scripts/ci/client-audit-gate.test.mjs
       - name: Test (current-state guard policy)
@@ -118,9 +124,11 @@ jobs:
   # --- Shadow DB security suite on a REAL local Supabase stack ---
   # Runs the pinned Supabase CLI against a Docker-local stack only: no link,
   # no project ref, no remote URL, no credentials, no production data. The
-  # stack is started from empty, all five migrations are applied by
-  # `supabase db reset --local`, the full pgTAP suite runs against that same
-  # database via `supabase test db --local`, and the stack is stopped.
+  # stack is started from empty, every migration in supabase/migrations is
+  # applied by `supabase db reset --local`, the full pgTAP suite runs against
+  # that same database via `supabase test db --local`, and the stack is
+  # stopped. The suite's file and assertion inventory is checked against
+  # scripts/db/suite-manifest.json on every run.
   shadow-db-supabase-stack:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -137,16 +145,41 @@ jobs:
       - name: Reset shadow DB from empty via pinned CLI
         run: SHADOW_DB_RUNNER=supabase-cli npm run db:reset
       - name: Run pgTAP suite inside the local stack
-        # Bounded at the step so a blocked suite fails here, with the runner's
-        # own suite timeout inside it, rather than running out the job clock and
-        # reporting as a cancelled job.
+        # The step bound is the OUTER limit; the runner holds a strictly smaller
+        # one and must be the thing that fires first. Before 2026-08-23 the
+        # runner's own bound was 15 minutes under this 12-minute step, so the
+        # step was always killed by GitHub with no attribution, no exit status
+        # and eight orphaned processes. The two budgets below are passed in so
+        # scripts/db/budgets.mjs can verify the hierarchy before running a
+        # single test, and scripts/db/budgets.test.mjs asserts they still match
+        # the timeout-minutes on this step and this job.
         timeout-minutes: 12
+        env:
+          DB_TEST_STEP_BUDGET_MS: '720000'
+          DB_TEST_JOB_BUDGET_MS: '1500000'
         run: |
           set -Eeuo pipefail
           SHADOW_DB_RUNNER=supabase-cli npm run db:test
+      - name: Diagnostics if the stack lane failed
+        # Backstop for the one case the runner cannot report on: being killed
+        # from outside before it reacted. Never fails the job on its own.
+        if: failure()
+        timeout-minutes: 4
+        continue-on-error: true
+        run: SHADOW_DB_RUNNER=supabase-cli node scripts/db/diagnose.mjs ci-post-failure
       - name: Stop local stack
         if: always()
-        run: npx --yes supabase@${{ steps.cli.outputs.version }} stop
+        timeout-minutes: 5
+        run: |
+          npx --yes supabase@${{ steps.cli.outputs.version }} stop || true
+          # `supabase stop` is the clean path. If it could not complete, remove
+          # whatever it left behind by label so the runner is not handed to the
+          # next job with containers still holding ports and disk.
+          leftover=$(docker ps -aq --filter label=com.supabase.cli.project || true)
+          if [ -n "$leftover" ]; then
+            echo "stop did not remove every container; forcing removal"
+            docker rm -f $leftover || true
+          fi
 
   # --- Shadow DB security suite on plain PostgreSQL + shim (fast supplement) ---
   # NOT Supabase parity: this uses scripts/db/shim to emulate the auth/storage
@@ -172,13 +205,30 @@ jobs:
       - name: Reset shadow DB from empty (shim runner)
         run: npm run db:reset
       - name: Run pgTAP suite (shim runner)
-        # timeout-minutes bounds the STEP; scripts/db/test.mjs additionally
-        # bounds each individual test file and reports a timeout as a failure,
-        # so a blocked file names itself instead of silently holding the job.
+        # timeout-minutes bounds the STEP; scripts/db/test.mjs bounds each file
+        # AND the suite, both strictly below this, and holds back a reserve so
+        # it can capture diagnostics and sweep abandoned backends before the
+        # step's own clock runs out. See scripts/db/budgets.mjs.
         timeout-minutes: 10
+        env:
+          DB_TEST_STEP_BUDGET_MS: '600000'
+          DB_TEST_JOB_BUDGET_MS: '900000'
         run: |
           set -Eeuo pipefail
           npm run db:test
+      - name: Diagnostics if the shim lane failed
+        if: failure()
+        timeout-minutes: 3
+        continue-on-error: true
+        run: node scripts/db/diagnose.mjs ci-post-failure
+      - name: Prove the runner names a failing file and cleans up after itself
+        # Injects a deliberately failing assertion into a miniature suite and
+        # asserts the runner reports that exact file, exits nonzero, and leaves
+        # nothing running. Regression guard for the silent-timeout defect.
+        timeout-minutes: 5
+        run: |
+          set -Eeuo pipefail
+          node scripts/db/runner-proof.mjs
       - name: Prove the concurrency harness fails finitely
         # Regression guard for the deadlock this suite used to hit: if the
         # harness ever regains an unbounded wait, this exits nonzero in seconds
