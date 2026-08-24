@@ -58,6 +58,16 @@ jobs:
         run: npm run test --prefix client
       - name: Test (shadow-db connection guard)
         run: node --test scripts/db/guard.test.mjs
+      # Work Order 4: the database contract's enforcement pass. The escape
+      # guard rejects new casts around the generated types; the negative proofs
+      # assert TypeScript still REJECTS an unknown RPC, a missing or wrongly
+      # typed argument, an invalid enum value, an unknown table, and an
+      # incompatible result assignment.
+      - name: Type-escape guard (database contract)
+        run: npm run guard:escapes
+      - name: 'Test (database contract: escape guard and compile-negative proofs)'
+        timeout-minutes: 10
+        run: node --test scripts/ci/escape-guard.test.mjs scripts/ci/type-negative.test.mjs
       - name: 'Test (shadow-db runner: budgets, supervisor, progress, manifest)'
         # These are the Work Order 11 self-tests. They spawn real processes to
         # prove a stalled child and its grandchildren are actually killed, and
@@ -144,6 +154,20 @@ jobs:
         run: npx --yes supabase@${{ steps.cli.outputs.version }} start -x studio,imgproxy
       - name: Reset shadow DB from empty via pinned CLI
         run: SHADOW_DB_RUNNER=supabase-cli npm run db:reset
+      # The database-to-TypeScript contract guard. Regenerates types from the
+      # schema this job just replayed from empty and fails on any difference,
+      # so a migration that lands without regenerated types cannot merge.
+      #
+      # Runs BEFORE the pgTAP suite deliberately: it depends only on the reset,
+      # and a flaky suite should not be able to withhold a type-contract answer.
+      - name: Verify the generated database types match the replayed schema
+        timeout-minutes: 8
+        env:
+          DB_TEST_STEP_BUDGET_MS: '480000'
+          DB_TEST_JOB_BUDGET_MS: '1500000'
+        run: |
+          set -Eeuo pipefail
+          npm run db:types:check
       - name: Run pgTAP suite inside the local stack
         # The step bound is the OUTER limit; the runner holds a strictly smaller
         # one and must be the thing that fires first. Before 2026-08-23 the
@@ -176,8 +200,15 @@ jobs:
           # whatever it left behind by label so the runner is not handed to the
           # next job with containers still holding ports and disk.
           leftover=$(docker ps -aq --filter label=com.supabase.cli.project || true)
-          if [ -n "$leftover" ]; then
-            echo "stop did not remove every container; forcing removal"
+          # The pg_prove container the CLI runs the suite in carries NO
+          # com.supabase.cli.project label, so neither `supabase stop` nor a
+          # label-filtered removal reaches it. Run 32655303716 ended with it
+          # still up after everything else had been torn down. Match it by
+          # image as well.
+          orphaned_prove=$(docker ps -aq --filter ancestor=public.ecr.aws/supabase/pg_prove:3.36 || true)
+          leftover="$leftover $orphaned_prove"
+          if [ -n "${leftover// /}" ]; then
+            echo "forcing removal of containers left behind: $leftover"
             docker rm -f $leftover || true
           fi
 

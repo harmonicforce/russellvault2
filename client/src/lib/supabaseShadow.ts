@@ -7,7 +7,7 @@
 // ever constructed in that case.
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { Database } from './database.types';
+import type { Database } from '../../../shared/databaseAliases.js';
 import type { AuthShellClient } from './authShell';
 import { getShadowAuthConfig, type EnvLike } from './shadowConfig';
 

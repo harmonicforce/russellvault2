@@ -74,7 +74,7 @@ function WorkspaceSummarySection() {
   const { workspace } = useWorkspace();
   const navigate = useNavigate();
   const operations = useMemo(() => createOperationsDashboardTransport(tokenProviderFromClient(
-    createShadowClient(import.meta.env as unknown as Record<string, string | undefined>)
+    createShadowClient(import.meta.env)
   )), []);
   const enabled = Boolean(workspace);
   const health = useQuery({ queryKey: ['operations-dashboard', workspace?.id, 'health'], queryFn: () => operations.health(workspace!.id), enabled });
@@ -188,7 +188,7 @@ interface DashboardData {
 
 export default function Dashboard() {
   const config = useMemo(
-    () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
+    () => getProvenanceUiConfig(import.meta.env),
     []
   );
   const { data, isLoading, error } = useQuery({

@@ -23,16 +23,34 @@
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { NextFunction, Request, Response } from 'express';
+import type { Database, WorkspaceRole } from '../../../shared/databaseAliases.js';
 import { getProvenanceConfig } from './config.js';
 
-export type WorkspaceRole = 'owner' | 'operator' | 'viewer';
+/**
+ * The caller's Supabase client, typed against the generated contract.
+ *
+ * Before Work Order 4 this was a bare `SupabaseClient`, so supabase-js resolved
+ * every table and every RPC to `never` and the routes silenced it with
+ * `client.rpc('name' as never, args as never)` — 40 such casts in
+ * routes/acquisition.ts alone. Those casts sat exactly where the schema is
+ * least understood: a renamed RPC or a changed argument would compile fine and
+ * fail at runtime. With the generic supplied, the compiler checks both.
+ */
+export type TypedSupabaseClient = SupabaseClient<Database>;
+
+/**
+ * Re-exported from the shared contract rather than redeclared. The server used
+ * to define this union by hand, which meant a role added to the database enum
+ * would silently disagree with the server's idea of the roles that exist.
+ */
+export type { WorkspaceRole } from '../../../shared/databaseAliases.js';
 
 export interface CallerContext {
   readonly userId: string;
   readonly workspaceId: string;
   readonly role: WorkspaceRole;
   /** Supabase client bound to the caller's JWT. RLS applies to every call. */
-  readonly client: SupabaseClient;
+  readonly client: TypedSupabaseClient;
 }
 
 // Express request augmented with the resolved caller. Set only after
@@ -73,7 +91,7 @@ function readWorkspaceId(req: Request): string | null {
     : null;
 }
 
-function defaultClientFactory(token: string): SupabaseClient {
+function defaultClientFactory(token: string): TypedSupabaseClient {
   const config = getProvenanceConfig(process.env);
   if (!config) throw new AuthError('provenance surface is not configured', 404);
   return createClient(config.supabaseUrl, config.supabaseAnonKey, {

@@ -17,6 +17,7 @@
 //     member (viewers included); every mutation requires owner/operator.
 
 import { Router } from 'express';
+import { isEnumValue, singleQuery } from './params.js';
 import { requireMember, requireOperator, type AuthedRequest } from '../provenance/auth.js';
 import { isProvenanceEnabled } from '../provenance/config.js';
 import { SourceReadError } from '../acquisition/sourceReader.js';
@@ -351,7 +352,15 @@ router.get(
     let q = client
       .from('intake_field_rules')
       .select('category, field_key, applicability, is_required, is_commit_blocker, condition, rule_version');
-    if (typeof req.query.category === 'string') q = q.eq('category', req.query.category);
+    // `category` is an intake_category enum column. This used to pass any
+    // string straight through; the permitted values now come from the
+    // generated contract, so an unknown category is refused here instead of
+    // becoming a filter the database cannot satisfy.
+    const category = singleQuery(req.query.category);
+    if (category !== null) {
+      if (!isEnumValue('intake_category', category)) throw new SourceReadError('invalid_category', 400);
+      q = q.eq('category', category);
+    }
     const { data, error } = await q.order('field_key', { ascending: true });
     if (error) throw new SourceReadError(error.message, 400);
     res.json({ staging: true, rules: data ?? [] });

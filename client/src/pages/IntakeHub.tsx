@@ -68,7 +68,7 @@ export default function IntakeHub({
   locationsTransport: injectedLocationsTransport,
 }: IntakeHubProps = {}) {
   const config = useMemo(
-    () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
+    () => getProvenanceUiConfig(import.meta.env),
     [],
   );
   const contextWorkspace = useWorkspaceIfConfigured();
@@ -86,14 +86,14 @@ export default function IntakeHub({
   const transport = useMemo(() => {
     if (injectedTransport) return injectedTransport;
     if (!config) return null;
-    const client = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
+    const client = createShadowClient(import.meta.env);
     return createIntakeTransport(tokenProviderFromClient(client));
   }, [config, injectedTransport]);
 
   const locationsTransport = useMemo(() => {
     if (injectedLocationsTransport) return injectedLocationsTransport;
     if (!config) return null;
-    const supabase = createShadowSupabaseClient(import.meta.env as unknown as Record<string, string | undefined>);
+    const supabase = createShadowSupabaseClient(import.meta.env);
     if (!supabase) return null;
     return createLocationsTransport(supabase as never, () => workspaceId);
   }, [config, injectedLocationsTransport, workspaceId]);

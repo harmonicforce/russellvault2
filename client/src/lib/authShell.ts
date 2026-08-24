@@ -8,7 +8,7 @@
 // those surfaces write to it under the caller's own JWT. See dataTopology.ts
 // for which system owns which domain.
 
-import type { WorkspaceRole } from './database.types';
+import type { WorkspaceRole } from '../../../shared/databaseAliases.js';
 
 export interface Membership {
   workspace_id: string;

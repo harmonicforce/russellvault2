@@ -55,7 +55,7 @@ export default function Receiving() {
     () =>
       createReceivingTransport(
         tokenProviderFromClient(
-          createShadowClient(import.meta.env as unknown as Record<string, string | undefined>),
+          createShadowClient(import.meta.env),
         ),
       ),
     [],

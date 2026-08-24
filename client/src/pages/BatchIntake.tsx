@@ -52,7 +52,7 @@ const STATUS_LABEL: Record<BatchRow['status'], string> = {
 
 export default function BatchIntake() {
   const config = useMemo(
-    () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
+    () => getProvenanceUiConfig(import.meta.env),
     []
   );
   const { workspace, client } = useWorkspace();
@@ -60,7 +60,7 @@ export default function BatchIntake() {
 
   const transport: IntakeTransport | null = useMemo(() => {
     if (!config) return null;
-    const client = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
+    const client = createShadowClient(import.meta.env);
     return createIntakeTransport(tokenProviderFromClient(client));
   }, [config]);
   const locationsTransport = useMemo(

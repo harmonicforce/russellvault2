@@ -76,7 +76,7 @@ export default function AcquisitionDetail() {
   const api = useMemo(
     () =>
       createAcquisitionDetailTransport(
-        tokenProviderFromClient(createShadowClient(import.meta.env as unknown as Record<string, string | undefined>)),
+        tokenProviderFromClient(createShadowClient(import.meta.env)),
       ),
     [],
   );

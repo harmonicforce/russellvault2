@@ -31,13 +31,13 @@ function jobTimeoutMinutes(block) {
   return Number(match[1]);
 }
 
-/** The timeout-minutes and declared budgets of the step that runs `npm run db:test`. */
-function dbTestStep(block) {
+/** The timeout-minutes and declared budgets of the step running a lane's command. */
+function laneStep(block, commandPattern) {
   const steps = block.split(/\n {6}- name: /).slice(1);
   // The split consumes the trailing newline of the last line, so anchor on
   // end-of-line rather than requiring one.
-  const step = steps.find((body) => /^\s*\S*\s*npm run db:test\s*$/m.test(body));
-  assert.notEqual(step, undefined, 'no step in this job runs `npm run db:test`');
+  const step = steps.find((body) => commandPattern.test(body));
+  assert.notEqual(step, undefined, `no step in this job runs a command matching ${commandPattern}`);
   const timeout = /\n {8}timeout-minutes: (\d+)\n/.exec(step);
   assert.notEqual(timeout, null, 'the db:test step declares no timeout-minutes');
   const stepBudget = /DB_TEST_STEP_BUDGET_MS: '(\d+)'/.exec(step);
@@ -51,7 +51,24 @@ function dbTestStep(block) {
   };
 }
 
-const CI_JOBS = { 'supabase-cli': 'shadow-db-supabase-stack', psql: 'shadow-db-postgres-shim' };
+/**
+ * Which CI job and step each lane's budgets describe. A lane may share a job
+ * with another lane (type generation runs in the Supabase job, against the
+ * stack that job already started) but always owns its own step and its own
+ * declared budgets.
+ */
+const CI_LANES = {
+  'supabase-cli': { job: 'shadow-db-supabase-stack', command: /^\s*\S*\s*npm run db:test\s*$/m },
+  psql: { job: 'shadow-db-postgres-shim', command: /^\s*\S*\s*npm run db:test\s*$/m },
+  // Matched by what the step DOES rather than by one exact command line: the
+  // type-generation step is invoked as `npm run db:types:*` in steady state
+  // and as a direct CLI call during the Work Order 4 bootstrap, and both are
+  // the step whose budgets this lane describes.
+  'gen-types': {
+    job: 'shadow-db-supabase-stack',
+    command: /npm run db:types:(check|write)\b|gen types typescript --local/,
+  },
+};
 
 test('no step name carries an unquoted colon, which silently breaks the whole workflow', () => {
   // A `- name: Test (runner: budgets)` line parses as a nested mapping, and
@@ -78,8 +95,8 @@ test('every lane satisfies the hierarchy with its shipped defaults', () => {
 
 test('the declared step and job budgets match ci.yml exactly', () => {
   for (const lane of LANES) {
-    const block = jobBlock(CI_JOBS[lane]);
-    const step = dbTestStep(block);
+    const block = jobBlock(CI_LANES[lane].job);
+    const step = laneStep(block, CI_LANES[lane].command);
     const declared = LANE_BUDGETS[lane];
 
     assert.equal(step.timeoutMinutes, declared.stepMinutes,
@@ -95,7 +112,7 @@ test('the declared step and job budgets match ci.yml exactly', () => {
 
 test('the hierarchy holds against the budgets CI actually passes in', () => {
   for (const lane of LANES) {
-    const step = dbTestStep(jobBlock(CI_JOBS[lane]));
+    const step = laneStep(jobBlock(CI_LANES[lane].job), CI_LANES[lane].command);
     const budgets = resolveBudgets(lane, {
       DB_TEST_STEP_BUDGET_MS: String(step.stepBudgetMs),
       DB_TEST_JOB_BUDGET_MS: String(step.jobBudgetMs),

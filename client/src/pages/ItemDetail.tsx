@@ -46,7 +46,7 @@ function Row({ label, value }: { label: string; value: string | null }) {
 
 export default function ItemDetail() {
   const config = useMemo(
-    () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
+    () => getProvenanceUiConfig(import.meta.env),
     []
   );
   const { workspace, client } = useWorkspace();
@@ -59,7 +59,7 @@ export default function ItemDetail() {
   );
   const chainTransport = useMemo(() => {
     if (!config) return null;
-    const shadow = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
+    const shadow = createShadowClient(import.meta.env);
     return createInventoryIdentityTransport(tokenProviderFromClient(shadow));
   }, [config]);
   const locationsTransport = useMemo(

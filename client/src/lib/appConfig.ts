@@ -48,21 +48,25 @@ export type AppConfigState =
 export type AppConfigMode = AppConfigState['mode'];
 
 /** Absent means undefined or empty string. Whitespace is present-but-invalid. */
-function isAbsent(value: string | undefined): boolean {
+function isAbsent(value: unknown): boolean {
   return value === undefined || value === '';
 }
 
 type FieldVerdict = 'absent' | 'valid' | 'invalid';
 
-function verdictForExact(value: string | undefined, expected: string): FieldVerdict {
+// These read straight off `import.meta.env`, whose values are not all strings
+// (Vite types DEV/PROD/SSR as booleans). Taking `unknown` and checking is what
+// lets EnvLike describe the real input instead of a cast asserting otherwise.
+function verdictForExact(value: unknown, expected: string): FieldVerdict {
   if (isAbsent(value)) return 'absent';
   return value === expected ? 'valid' : 'invalid';
 }
 
-function verdictForNonEmpty(value: string | undefined): FieldVerdict {
+function verdictForNonEmpty(value: unknown): FieldVerdict {
   if (isAbsent(value)) return 'absent';
-  // A whitespace-only URL or key is a configuration error, not a value.
-  return value!.trim() === '' ? 'invalid' : 'valid';
+  // A non-string, or a whitespace-only URL or key, is a configuration error
+  // rather than a value.
+  return typeof value !== 'string' || value.trim() === '' ? 'invalid' : 'valid';
 }
 
 /**

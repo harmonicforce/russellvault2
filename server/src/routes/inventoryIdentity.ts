@@ -17,6 +17,7 @@
 // could read as authoritative.
 
 import { Router } from 'express';
+import { isEnumValue, singleParam, singleQuery } from './params.js';
 import { requireMember, type AuthedRequest } from '../provenance/auth.js';
 import { isProvenanceEnabled } from '../provenance/config.js';
 import { SourceReadError } from '../acquisition/sourceReader.js';
@@ -69,10 +70,32 @@ router.get(
   })
 );
 
+/**
+ * The identity tables these generic routes may read.
+ *
+ * Declared as a union rather than `string` so `.from(table)` is checked against
+ * the generated contract. With `string` the client could not resolve a row
+ * shape at all, which is why every column filter below it degraded to `never`
+ * and the whole builder tripped TS2589. A table renamed by a migration now
+ * fails here at compile time instead of returning a runtime error to the owner.
+ */
+/**
+ * Columns the generic single-row lookup may filter on. Like IdentityTable this
+ * was `string`, which left the client unable to resolve a row shape.
+ */
+type IdentityLookupColumn = 'id' | 'public_id';
+
+type IdentityTable =
+  | 'product_catalog'
+  | 'sellable_skus'
+  | 'inventory_lots'
+  | 'inventory_items'
+  | 'storage_locations';
+
 // Generic paged list over one identity table, workspace-scoped and fail-closed.
 function listRoute(
   path: string,
-  table: string,
+  table: IdentityTable,
   columns: string,
   orderColumn: string
 ): void {
@@ -103,17 +126,20 @@ function listRoute(
 }
 
 // Generic single-row detail by internal id, workspace-scoped and fail-closed.
-function detailRoute(path: string, table: string, notFound: string): void {
+function detailRoute(path: string, table: IdentityTable, notFound: string): void {
   router.get(
     path,
     requireMember,
     asyncRoute(async (req, res) => {
       const { workspaceId, client } = caller(req);
+      // Express 5 types a route parameter as `string | string[]`.
+      const recordId = singleParam(req.params.id);
+      if (recordId === null) throw new SourceReadError(notFound, 404);
       const { data, error } = await client
         .from(table)
         .select('*')
         .eq('workspace_id', workspaceId)
-        .eq('id', req.params.id)
+        .eq('id', recordId)
         .limit(1);
       if (error) throw new SourceReadError(error.message, 400);
       if (!data || data.length === 0) throw new SourceReadError(notFound, 404);
@@ -135,7 +161,7 @@ detailRoute('/locations/:id', 'storage_locations', 'storage location not found')
 
 // Exact public-id lookup across every governed identity entity. Returns exactly
 // one authorized record (with its kind) or an explicit not-found.
-const PUBLIC_ID_TARGETS: ReadonlyArray<{ kind: string; table: string }> = [
+const PUBLIC_ID_TARGETS: ReadonlyArray<{ kind: string; table: IdentityTable }> = [
   { kind: 'product', table: 'product_catalog' },
   { kind: 'sku', table: 'sellable_skus' },
   { kind: 'lot', table: 'inventory_lots' },
@@ -147,17 +173,17 @@ router.get(
   requireMember,
   asyncRoute(async (req, res) => {
     const { workspaceId, client } = caller(req);
-    const publicId = String(req.params.publicId);
+    // Express 5 types a route parameter as `string | string[]`; String() on an
+    // array would have produced a comma-joined lookup key.
+    const publicId = singleParam(req.params.publicId);
+    if (publicId === null) throw new SourceReadError('no identity record with that public id', 404);
     for (const target of PUBLIC_ID_TARGETS) {
-      const { data, error } = await client
-        .from(target.table)
-        .select('*')
-        .eq('workspace_id', workspaceId)
-        .eq('public_id', publicId)
-        .limit(1);
-      if (error) throw new SourceReadError(error.message, 400);
-      if (data && data.length > 0) {
-        res.json({ staging: true, authoritative: false, kind: target.kind, record: data[0] });
+      // Uses the same helper as every other single-row lookup rather than
+      // repeating the query. Inlining it here also made the client resolve a
+      // five-table union at each call, which tripped TS2589.
+      const record = await oneBy(client, workspaceId, target.table, 'public_id', publicId);
+      if (record) {
+        res.json({ staging: true, authoritative: false, kind: target.kind, record });
         return;
       }
     }
@@ -170,8 +196,8 @@ router.get(
 async function oneBy(
   client: ReturnType<typeof caller>['client'],
   workspaceId: string,
-  table: string,
-  column: string,
+  table: IdentityTable,
+  column: IdentityLookupColumn,
   value: string | null
 ): Promise<Record<string, unknown> | null> {
   if (value === null) return null;
@@ -379,8 +405,14 @@ router.get(
     if (typeof req.query.locationId === 'string' && req.query.locationId) {
       q = q.eq('location_id', req.query.locationId);
     }
-    if (typeof req.query.trackingMode === 'string' && req.query.trackingMode) {
-      q = q.eq('tracking_mode', req.query.trackingMode);
+    // tracking_mode is an inventory_tracking_mode enum column; the permitted
+    // values come from the generated contract rather than from trust.
+    const trackingMode = singleQuery(req.query.trackingMode);
+    if (trackingMode !== null) {
+      if (!isEnumValue('inventory_tracking_mode', trackingMode)) {
+        throw new SourceReadError('invalid_tracking_mode', 400);
+      }
+      q = q.eq('tracking_mode', trackingMode);
     }
 
     const { data, error, count } = await q
