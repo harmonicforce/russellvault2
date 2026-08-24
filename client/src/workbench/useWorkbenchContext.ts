@@ -32,7 +32,7 @@ export function useWorkbenchWiring(surface: WorkbenchSurface): WorkbenchWiring {
   const workspaceId = workspace?.id ?? null;
 
   const config = useMemo(
-    () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
+    () => getProvenanceUiConfig(import.meta.env),
     [],
   );
 
@@ -51,7 +51,7 @@ export function useWorkbenchWiring(surface: WorkbenchSurface): WorkbenchWiring {
     // transport does not exist — which the data layer reports as
     // `notConfigured`, never as zero open sessions.
     if (!config) return null;
-    const shadow = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
+    const shadow = createShadowClient(import.meta.env);
     return createIntakeTransport(tokenProviderFromClient(shadow));
   }, [config]);
 

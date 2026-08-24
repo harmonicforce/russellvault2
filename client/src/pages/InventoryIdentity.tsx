@@ -98,14 +98,12 @@ const CONTROL =
 
 export default function InventoryIdentity() {
   const config = useMemo(
-    () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
+    () => getProvenanceUiConfig(import.meta.env),
     []
   );
   const transport: InventoryIdentityTransport | null = useMemo(() => {
     if (!config) return null;
-    const client = createShadowClient(
-      import.meta.env as unknown as Record<string, string | undefined>
-    );
+    const client = createShadowClient(import.meta.env);
     return createInventoryIdentityTransport(async () => {
       const session = await (
         client as unknown as {

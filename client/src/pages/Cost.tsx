@@ -83,7 +83,7 @@ export default function Cost() {
     () =>
       createCostTransport(
         tokenProviderFromClient(
-          createShadowClient(import.meta.env as unknown as Record<string, string | undefined>),
+          createShadowClient(import.meta.env),
         ),
       ),
     [],

@@ -58,6 +58,16 @@ jobs:
         run: npm run test --prefix client
       - name: Test (shadow-db connection guard)
         run: node --test scripts/db/guard.test.mjs
+      # Work Order 4: the database contract's enforcement pass. The escape
+      # guard rejects new casts around the generated types; the negative proofs
+      # assert TypeScript still REJECTS an unknown RPC, a missing or wrongly
+      # typed argument, an invalid enum value, an unknown table, and an
+      # incompatible result assignment.
+      - name: Type-escape guard (database contract)
+        run: npm run guard:escapes
+      - name: 'Test (database contract: escape guard and compile-negative proofs)'
+        timeout-minutes: 10
+        run: node --test scripts/ci/escape-guard.test.mjs scripts/ci/type-negative.test.mjs
       - name: 'Test (shadow-db runner: budgets, supervisor, progress, manifest)'
         # These are the Work Order 11 self-tests. They spawn real processes to
         # prove a stalled child and its grandchildren are actually killed, and

@@ -83,7 +83,7 @@ export default function MediaIssues() {
   const canEdit = workspace?.role === 'owner' || workspace?.role === 'operator';
 
   const transport = useMemo(() => {
-    const shadow = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
+    const shadow = createShadowClient(import.meta.env);
     return createMediaTransport(tokenProviderFromClient(shadow), () => workspace?.id ?? null);
   }, [workspace?.id]);
 
@@ -91,7 +91,7 @@ export default function MediaIssues() {
   // mutation, so it has its own transport.
   const operations = useMemo(
     () => createOperationsDashboardTransport(tokenProvider(
-      createShadowClient(import.meta.env as unknown as Record<string, string | undefined>))),
+      createShadowClient(import.meta.env))),
     []);
 
   // The URL carries the tab and status so the dashboard tile can link straight

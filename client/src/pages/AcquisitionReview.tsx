@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, History, Info, Layers, ListChecks, Users } from 'lucide-react';
+import { tokenProviderFromClient } from '../lib/tokenProvider';
 import { createAcquisitionTransport } from '../lib/acquisitionApi';
 import {
   AcquisitionReviewController,
@@ -63,25 +64,16 @@ function Section({
 export default function AcquisitionReview() {
   const config = useMemo(
     () =>
-      getProvenanceUiConfig(
-        import.meta.env as unknown as Record<string, string | undefined>
-      ),
+      getProvenanceUiConfig(import.meta.env),
     []
   );
 
   const controller = useMemo(() => {
     if (!config) return new AcquisitionReviewController(null, false);
-    const client = createShadowClient(
-      import.meta.env as unknown as Record<string, string | undefined>
-    );
-    const transport = createAcquisitionTransport(async () => {
-      const session = await (
-        client as unknown as {
-          auth: { getSession(): Promise<{ data: { session: { access_token?: string } | null } }> };
-        }
-      )?.auth.getSession();
-      return session?.data?.session?.access_token ?? null;
-    });
+    const client = createShadowClient(import.meta.env);
+    // The same helper every other governed page uses, rather than reaching
+    // past AuthShellClient's declared surface with an inline cast.
+    const transport = createAcquisitionTransport(tokenProviderFromClient(client));
     return new AcquisitionReviewController(transport, true);
   }, [config]);
 

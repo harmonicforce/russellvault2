@@ -85,7 +85,7 @@ export default function ReceiptWorkspace() {
     () =>
       createReceivingTransport(
         tokenProviderFromClient(
-          createShadowClient(import.meta.env as unknown as Record<string, string | undefined>),
+          createShadowClient(import.meta.env),
         ),
       ),
     [],

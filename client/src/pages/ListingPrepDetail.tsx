@@ -41,7 +41,7 @@ export default function ListingPrepDetail() {
   const isOwner = workspace?.role === 'owner';
 
   const transport = useMemo(() => {
-    const shadow = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
+    const shadow = createShadowClient(import.meta.env);
     return createListingPrepTransport(tokenProviderFromClient(shadow), () => workspace?.id ?? null);
   }, [workspace?.id]);
 

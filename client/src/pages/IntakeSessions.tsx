@@ -33,14 +33,14 @@ function countsSummary(counts: Record<string, number>): string {
 
 export default function IntakeSessions() {
   const config = useMemo(
-    () => getProvenanceUiConfig(import.meta.env as unknown as Record<string, string | undefined>),
+    () => getProvenanceUiConfig(import.meta.env),
     []
   );
   const { workspace } = useWorkspace();
   const navigate = useNavigate();
   const transport: IntakeTransport | null = useMemo(() => {
     if (!config) return null;
-    const client = createShadowClient(import.meta.env as unknown as Record<string, string | undefined>);
+    const client = createShadowClient(import.meta.env);
     return createIntakeTransport(tokenProviderFromClient(client));
   }, [config]);
 

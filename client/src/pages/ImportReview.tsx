@@ -71,9 +71,7 @@ function Section({
 export default function ImportReview() {
   const config = useMemo(
     () =>
-      getProvenanceUiConfig(
-        import.meta.env as unknown as Record<string, string | undefined>
-      ),
+      getProvenanceUiConfig(import.meta.env),
     []
   );
 
@@ -81,9 +79,7 @@ export default function ImportReview() {
   // the caller's own access token from the shadow session on every request.
   const controller = useMemo(() => {
     if (!config) return new ImportReviewController(null, false);
-    const client = createShadowClient(
-      import.meta.env as unknown as Record<string, string | undefined>
-    );
+    const client = createShadowClient(import.meta.env);
     const transport = createProvenanceTransport(async () => {
       const session = await (
         client as unknown as {

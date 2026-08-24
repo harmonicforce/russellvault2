@@ -75,13 +75,3 @@ export function parseEnumList<N extends keyof PublicEnums & keyof typeof Constan
   }
   return parsed;
 }
-
-/** Every permitted value of a database enum, for error messages and defaults. */
-export function enumValues<N extends keyof PublicEnums & keyof typeof Constants.public.Enums>(
-  name: N,
-): readonly PublicEnums[N][] {
-  // Constants is `as const`, so each entry is a readonly tuple of literals.
-  // TypeScript cannot see that the tuple for `name` is exactly the union for
-  // `name` without a widening step first.
-  return Constants.public.Enums[name] as unknown as readonly PublicEnums[N][];
-}
