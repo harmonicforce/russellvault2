@@ -41,6 +41,12 @@
 // job mapping the same source is refused on the duplicate identifiers.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  asRpcArgs, jsonNumber, jsonString, readAllPages, requireJsonObject,
+  type JsonObject, type NullableArgs,
+} from '../rpcContract.js';
+import type { TypedSupabaseClient } from '../provenance/auth.js';
+import type { FunctionArgs, FunctionName } from '../../../shared/databaseAliases.js';
 import type { AcquisitionPlan } from './adapter.js';
 
 export const BATCH_SIZE = 250;
@@ -76,43 +82,46 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
-async function rpc<T>(
-  client: SupabaseClient,
-  fn: string,
-  args: Record<string, unknown>
-): Promise<T> {
-  const { data, error } = await client.rpc(fn as never, args as never);
+/**
+ * Narrow a governed function's jsonb result, and read fields out of it.
+ *
+ * These replace `data as { id: string; … }`. The contract types every one of
+ * these functions as returning `Json`, which is accurate — the object's shape
+ * is not in the schema — so the shape is established by reading the value
+ * rather than by asserting it. A function that changes its result now fails
+ * here, naming the field, instead of producing `undefined` downstream.
+ */
+function commitJson(value: unknown): JsonObject {
+  return requireJsonObject(value, () => new AcquisitionCommitError('acquisition_commit_result_malformed', 502));
+}
+const commitFieldError = (key: string): Error =>
+  new AcquisitionCommitError(`acquisition_commit_result_malformed:${key}`, 502);
+const commitString = (obj: JsonObject, key: string): string => jsonString(obj, key, commitFieldError);
+const commitNumber = (obj: JsonObject, key: string): number => jsonNumber(obj, key, commitFieldError);
+
+/**
+ * Call one governed staging function.
+ *
+ * The name and arguments are checked against the generated contract. The
+ * result is jsonb — `Json` in the contract, which says nothing about the shape
+ * — so callers that need a shape narrow it themselves through
+ * `requireJsonObject` rather than this helper asserting one for them.
+ */
+async function rpc<N extends FunctionName>(
+  client: TypedSupabaseClient,
+  fn: N,
+  args: NullableArgs<FunctionArgs<N>>
+): Promise<unknown> {
+  const { data, error } = await client.rpc(fn, asRpcArgs<FunctionArgs<N>>(args));
   if (error) {
     throw new AcquisitionCommitError((error as { message: string }).message, 409);
   }
-  return data as T;
+  return data;
 }
 
 // Paged readback of one table's rows for this job. Kept under READBACK_PAGE so
 // a 2,149-row job is fetched in a few bounded pages rather than one huge query
 // that the database would silently truncate to its default row cap.
-async function readAll(
-  client: SupabaseClient,
-  table: string,
-  columns: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  filter: (q: any) => any
-): Promise<Array<Record<string, unknown>>> {
-  const out: Array<Record<string, unknown>> = [];
-  let from = 0;
-  for (;;) {
-    const query = filter(client.from(table).select(columns));
-    const { data, error } = await query.range(from, from + READBACK_PAGE - 1);
-    if (error) {
-      throw new AcquisitionCommitError((error as { message: string }).message, 409);
-    }
-    const page = (data ?? []) as Array<Record<string, unknown>>;
-    out.push(...page);
-    if (page.length < READBACK_PAGE) break;
-    from += READBACK_PAGE;
-  }
-  return out;
-}
 
 export async function commitAcquisitionPlan(
   client: SupabaseClient,
@@ -131,7 +140,7 @@ export async function commitAcquisitionPlan(
   }
 
   // 1. Open the governed job. A repeated key resumes rather than duplicating.
-  const begun = await rpc<{ id: string; status: string; resumed: boolean }>(
+  const begun = commitJson(await rpc(
     client,
     'begin_acquisition_import_job',
     {
@@ -143,10 +152,10 @@ export async function commitAcquisitionPlan(
       p_mapping_version: plan.mappingVersion,
       p_plan_sha256: plan.planSha256,
     }
-  );
+  ));
 
-  const importJobId = begun.id;
-  if (begun.status === 'committed') {
+  const importJobId = commitString(begun, 'id');
+  if (commitString(begun, 'status') === 'committed') {
     // RESPONSE-LOSS REPLAY: finalize already committed this job, but the HTTP
     // response was lost, so the caller retried the identical request. Return the
     // existing committed outcome from a governed, workspace-authorized read that
@@ -154,15 +163,7 @@ export async function commitAcquisitionPlan(
     // channel, source job, expected line count). No staging or finalize write is
     // repeated, and no duplicate audit event is created. A replay whose binding
     // differs is rejected by this RPC, not silently accepted.
-    const summary = await rpc<{
-      id: string;
-      orders: number;
-      lots: number;
-      line_items: number;
-      cost_components: number;
-      unresolved_supplier_candidates: number;
-      unresolved_cost_components: number;
-    }>(client, 'get_committed_acquisition_summary', {
+    const summary = commitJson(await rpc(client, 'get_committed_acquisition_summary', {
       p_import_job_id: importJobId,
       p_idempotency_key: key,
       p_channel_id: channelId,
@@ -170,17 +171,17 @@ export async function commitAcquisitionPlan(
       p_expected_line_count: plan.expectedLineItems,
       p_mapping_version: plan.mappingVersion,
       p_plan_sha256: plan.planSha256,
-    });
+    }));
     return {
       importJobId,
       status: 'committed',
       resumed: true,
-      orders: summary.orders,
-      lots: summary.lots,
-      lineItems: summary.line_items,
-      costComponents: summary.cost_components,
-      unresolvedSupplierCandidates: summary.unresolved_supplier_candidates,
-      unresolvedCostComponents: summary.unresolved_cost_components,
+      orders: commitNumber(summary, 'orders'),
+      lots: commitNumber(summary, 'lots'),
+      lineItems: commitNumber(summary, 'line_items'),
+      costComponents: commitNumber(summary, 'cost_components'),
+      unresolvedSupplierCandidates: commitNumber(summary, 'unresolved_supplier_candidates'),
+      unresolvedCostComponents: commitNumber(summary, 'unresolved_cost_components'),
       batches: 0,
     };
   }
@@ -209,11 +210,15 @@ export async function commitAcquisitionPlan(
     }
 
     // Read back order ids by source reference.
-    const orderRows = await readAll(
-      client,
-      'acquisition_orders',
-      'id, source_order_reference',
-      (q) => q.eq('acquisition_import_job_id', importJobId)
+    const orderRows = await readAllPages(
+      READBACK_PAGE,
+      (from, to) =>
+        client
+          .from('acquisition_orders')
+          .select('id, source_order_reference')
+          .eq('acquisition_import_job_id', importJobId)
+          .range(from, to),
+      (message) => new AcquisitionCommitError(message, 409),
     );
     const orderIdByRef = new Map<string, string>();
     for (const row of orderRows) {
@@ -241,17 +246,27 @@ export async function commitAcquisitionPlan(
     }
 
     // Read back lot ids by their order's source reference (sequence 1).
-    const lotRows = await readAll(
-      client,
-      'acquisition_lots',
-      'id, sequence_no, acquisition_orders!inner(source_order_reference, acquisition_import_job_id)',
-      (q) => q.eq('acquisition_orders.acquisition_import_job_id', importJobId)
+    const lotRows = await readAllPages(
+      READBACK_PAGE,
+      (from, to) =>
+        client
+          .from('acquisition_lots')
+          .select('id, sequence_no, acquisition_orders!inner(source_order_reference, acquisition_import_job_id)')
+          .eq('acquisition_orders.acquisition_import_job_id', importJobId)
+          .range(from, to),
+      (message) => new AcquisitionCommitError(message, 409),
     );
     const lotIdByRef = new Map<string, string>();
     for (const row of lotRows) {
-      const nested = row['acquisition_orders'] as { source_order_reference: string } | null;
-      if (nested && Number(row.sequence_no) === 1) {
-        lotIdByRef.set(String(nested.source_order_reference), String(row.id));
+      // PostgREST returns an embedded to-one resource as an object, but the
+      // generated relationship metadata describes it as an array. Read both
+      // rather than asserting either: getting this wrong silently produces an
+      // empty lot map, and every lot line would then be attached to nothing.
+      const embedded = row.acquisition_orders;
+      const nested = Array.isArray(embedded) ? embedded[0] : embedded;
+      const reference = nested?.source_order_reference;
+      if (typeof reference === 'string' && Number(row.sequence_no) === 1) {
+        lotIdByRef.set(reference, String(row.id));
       }
     }
 
@@ -287,11 +302,15 @@ export async function commitAcquisitionPlan(
     }
 
     // Read back line item ids by public id.
-    const lineRows = await readAll(
-      client,
-      'acquisition_line_items',
-      'id, public_id',
-      (q) => q.eq('acquisition_import_job_id', importJobId)
+    const lineRows = await readAllPages(
+      READBACK_PAGE,
+      (from, to) =>
+        client
+          .from('acquisition_line_items')
+          .select('id, public_id')
+          .eq('acquisition_import_job_id', importJobId)
+          .range(from, to),
+      (message) => new AcquisitionCommitError(message, 409),
     );
     const lineIdByPublicId = new Map<string, string>();
     for (const row of lineRows) {
@@ -329,16 +348,7 @@ export async function commitAcquisitionPlan(
     // 6. Finalize. The database recounts everything and refuses to commit
     //    anything inconsistent with these six expectations. All six are ALWAYS
     //    supplied explicitly, even when zero.
-    const finalized = await rpc<{
-      id: string;
-      status: string;
-      orders: number;
-      lots: number;
-      line_items: number;
-      cost_components: number;
-      unresolved_supplier_candidates: number;
-      unresolved_cost_components: number;
-    }>(client, 'finalize_acquisition_import_job', {
+    const finalized = commitJson(await rpc(client, 'finalize_acquisition_import_job', {
       p_import_job_id: importJobId,
       p_idempotency_key: key,
       p_expected_orders: plan.expectedOrders,
@@ -347,18 +357,18 @@ export async function commitAcquisitionPlan(
       p_expected_cost_components: plan.expectedCostComponents,
       p_expected_unresolved_supplier_candidates: plan.expectedUnresolvedSupplierCandidates,
       p_expected_unresolved_cost_components: plan.expectedUnresolvedCostComponents,
-    });
+    }));
 
     return {
       importJobId,
       status: 'committed',
-      resumed: begun.resumed,
-      orders: finalized.orders,
-      lots: finalized.lots,
-      lineItems: finalized.line_items,
-      costComponents: finalized.cost_components,
-      unresolvedSupplierCandidates: finalized.unresolved_supplier_candidates,
-      unresolvedCostComponents: finalized.unresolved_cost_components,
+      resumed: begun.resumed === true,
+      orders: commitNumber(finalized, 'orders'),
+      lots: commitNumber(finalized, 'lots'),
+      lineItems: commitNumber(finalized, 'line_items'),
+      costComponents: commitNumber(finalized, 'cost_components'),
+      unresolvedSupplierCandidates: commitNumber(finalized, 'unresolved_supplier_candidates'),
+      unresolvedCostComponents: commitNumber(finalized, 'unresolved_cost_components'),
       batches,
     };
   } catch (err) {
@@ -387,9 +397,12 @@ export async function abandonAcquisitionJob(
   failureCode: string,
   failureDetail?: string
 ): Promise<string> {
-  return rpc<string>(client, 'fail_acquisition_import_job', {
+  const result = await rpc(client, 'fail_acquisition_import_job', {
     p_import_job_id: importJobId,
     p_failure_code: failureCode,
     p_failure_detail: failureDetail ?? null,
   });
+  // The contract types this function's result as a scalar string.
+  if (typeof result !== 'string') throw new AcquisitionCommitError('acquisition_commit_result_malformed', 502);
+  return result;
 }

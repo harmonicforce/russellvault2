@@ -22,6 +22,39 @@
 
 import { Router } from 'express';
 import { singleParam } from './params.js';
+import { asRpcArgs, requireJsonObject, type NullableArgs, type QueryResult } from '../rpcContract.js';
+import type { Database } from '../../../shared/databaseAliases.js';
+
+/**
+ * The 12-argument overload of list_acquisition_lines — the one that filters on
+ * exclusion state.
+ *
+ * The database carries TWO functions of this name: an 11-argument version
+ * without p_exclusion_state, and this one. PostgREST chooses between them by
+ * the set of argument keys supplied, so every key must be sent on every call,
+ * including the ones whose value is null. Omitting a null key here would
+ * silently switch the call to the overload that does not filter exclusions.
+ */
+/**
+ * A cost-component or lot-line id from the path. Express 5 types a route
+ * parameter as `string | string[]`, and these five routes fed it straight into
+ * a governed mutation.
+ */
+function costComponentId(req: { params: Record<string, string | string[] | undefined> }): string {
+  const id = singleParam(req.params.id);
+  if (id === null) throw new AcquisitionReadError('invalid_request', 400);
+  return id;
+}
+
+type Fn = Database['public']['Functions'];
+type PaymentArgs = Fn['record_acquisition_payment']['Args'];
+type ShipmentArgs = Fn['create_acquisition_shipment']['Args'];
+type ShipmentTransitionArgs = Fn['transition_acquisition_shipment']['Args'];
+
+type ListAcquisitionLinesArgs = Extract<
+  Fn['list_acquisition_lines'],
+  { Args: { p_exclusion_state: string } }
+>['Args'];
 import {
   requireMember,
   requireOperator,
@@ -76,6 +109,8 @@ function optionalBodyText(value: unknown, max: number): string | null {
   if (value == null || value === '') return null;
   return bodyText(value, 'invalid_request', 1, max);
 }
+function isoDate(value: unknown, required: true): string;
+function isoDate(value: unknown, required?: false): string | null;
 function isoDate(value: unknown, required = false): string | null {
   if (value == null || value === '') { if (required) throw new AcquisitionReadError('invalid_request',400); return null; }
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value) || !Number.isFinite(Date.parse(value))) throw new AcquisitionReadError('invalid_request',400);
@@ -160,7 +195,9 @@ router.get('/lines', requireMember, asyncRoute(async (req, res) => {
   if (state && !STATES.has(state)) throw new AcquisitionReadError('invalid_filter', 400);
   if (exclusionState && !EXCLUSION_STATES.has(exclusionState)) throw new AcquisitionReadError('invalid_filter', 400);
   if (method && !METHODS.has(method)) throw new AcquisitionReadError('invalid_filter', 400);
-  const args = {
+  // Typed against the generated 12-argument overload with nulls permitted, so
+  // every key name and value type is still checked. See ESC-001.
+  const args: NullableArgs<ListAcquisitionLinesArgs> = {
     p_workspace_id: workspaceId,
     p_query: req.query.query === undefined ? null : optionalQuery(req.query.query),
     p_classification_key: optionalQuery(req.query.classification),
@@ -174,7 +211,7 @@ router.get('/lines', requireMember, asyncRoute(async (req, res) => {
     p_offset: integerQuery(req.query.offset, 0, 0),
     p_exclusion_state: exclusionState,
   };
-  const { data, error } = await client.rpc('list_acquisition_lines' as never, args as never);
+  const { data, error } = await client.rpc('list_acquisition_lines', asRpcArgs<ListAcquisitionLinesArgs>(args));
   if (error) {
     const message = String((error as { message?: string }).message ?? '');
     if (message.includes('invalid_sort')) throw new AcquisitionReadError('invalid_sort', 400);
@@ -183,52 +220,54 @@ router.get('/lines', requireMember, asyncRoute(async (req, res) => {
     if (/function .* does not exist|schema cache/i.test(message)) throw new AcquisitionReadError('acquisition_read_contract_missing', 503);
     throw new AcquisitionReadError('dependency_failed', 502);
   }
-  const payload = data as unknown as { total: number; limit: number; offset: number; rows: unknown[] };
-  if (!payload || !Array.isArray(payload.rows) || !Number.isFinite(payload.total)) throw new AcquisitionReadError('acquisition_read_unavailable', 503);
+  // jsonb: the generator can only say `Json`, so the shape is established by
+  // checking it rather than by asserting it.
+  const payload = requireJsonObject(data, () => new AcquisitionReadError('acquisition_read_unavailable', 503));
+  if (!Array.isArray(payload.rows) || !Number.isFinite(payload.total)) throw new AcquisitionReadError('acquisition_read_unavailable', 503);
   res.json({ coverage: 'governed_native_committed', historicalLegacyImported: false, ...payload });
 }));
 
 router.get('/facets', requireMember, asyncRoute(async (req, res) => {
   const { workspaceId, client } = caller(req);
-  const { data, error } = await client.rpc('get_acquisition_facets' as never, { p_workspace_id: workspaceId } as never);
+  const { data, error } = await client.rpc('get_acquisition_facets', { p_workspace_id: workspaceId });
   if (error) throw new AcquisitionReadError('dependency_failed', 502);
   if (!data || typeof data !== 'object') throw new AcquisitionReadError('acquisition_read_unavailable', 503);
   res.json({ coverage: 'governed_native_committed', historicalLegacyImported: false, facets: data });
 }));
 
 router.get('/lines/:publicId',requireMember,asyncRoute(async(req,res)=>{
-  const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('get_acquisition_line_detail' as never,{p_workspace_id:workspaceId,p_acquisition_line_public_id:publicId(req.params.publicId)} as never);
+  const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('get_acquisition_line_detail',{p_workspace_id:workspaceId,p_acquisition_line_public_id:publicId(req.params.publicId)});
   if(error) throw rpcError(error); if(!data) throw new AcquisitionReadError('acquisition_not_found',404); res.json(data);
 }));
 router.get('/sources/:sourceSystemPublicId/lines/:linePublicId',requireMember,asyncRoute(async(req,res)=>{
-  const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('get_acquisition_line_detail_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId)} as never);
+  const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('get_acquisition_line_detail_by_source',{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId)});
   if(error) throw rpcError(error); if(!data) throw new AcquisitionReadError('acquisition_not_found',404); res.json(data);
 }));
 router.post('/sources/:sourceSystemPublicId/lines/:linePublicId/exclude',requireOwner,asyncRoute(async(req,res)=>{
- const {workspaceId,client}=caller(req);const {data,error}=await client.rpc('exclude_acquisition_line_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId),p_reason:bodyText(req.body?.reason,'invalid_request',1,500),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
+ const {workspaceId,client}=caller(req);const {data,error}=await client.rpc('exclude_acquisition_line_by_source',{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId),p_reason:bodyText(req.body?.reason,'invalid_request',1,500),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)});if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
 }));
 router.post('/sources/:sourceSystemPublicId/lines/:linePublicId/restore',requireOwner,asyncRoute(async(req,res)=>{
- const {workspaceId,client}=caller(req);const {data,error}=await client.rpc('restore_acquisition_line_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId),p_reason:bodyText(req.body?.reason,'invalid_request',1,500),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
+ const {workspaceId,client}=caller(req);const {data,error}=await client.rpc('restore_acquisition_line_by_source',{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId),p_reason:bodyText(req.body?.reason,'invalid_request',1,500),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)});if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
 }));
 router.post('/sources/:sourceSystemPublicId/lines/:linePublicId/classify',requireOperator,asyncRoute(async(req,res)=>{
- const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('classify_acquisition_line_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId)} as never); if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
+ const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('classify_acquisition_line_by_source',{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId)}); if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
 }));
 router.post('/sources/:sourceSystemPublicId/lines/:linePublicId/classification-override',requireOwner,asyncRoute(async(req,res)=>{
- const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('override_acquisition_line_classification_by_source' as never,{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId),p_classification_option_key:bodyText(req.body?.classificationOptionKey),p_reason:bodyText(req.body?.reason)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
+ const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('override_acquisition_line_classification_by_source',{p_workspace_id:workspaceId,p_source_system_public_id:publicId(req.params.sourceSystemPublicId),p_acquisition_line_public_id:publicId(req.params.linePublicId),p_classification_option_key:bodyText(req.body?.classificationOptionKey),p_reason:bodyText(req.body?.reason)});if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
 }));
 router.post('/lines/:publicId/classify',requireOperator,asyncRoute(async(req,res)=>{
- const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('classify_acquisition_line_by_public_id' as never,{p_workspace_id:workspaceId,p_acquisition_line_public_id:publicId(req.params.publicId)} as never); if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
+ const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('classify_acquisition_line_by_public_id',{p_workspace_id:workspaceId,p_acquisition_line_public_id:publicId(req.params.publicId)}); if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
 }));
 router.post('/lines/:publicId/classification-override',requireOwner,asyncRoute(async(req,res)=>{
- const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('override_acquisition_line_classification_by_public_id' as never,{p_workspace_id:workspaceId,p_acquisition_line_public_id:publicId(req.params.publicId),p_classification_option_key:bodyText(req.body?.classificationOptionKey),p_reason:bodyText(req.body?.reason)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
+ const {workspaceId,client}=caller(req); const {data,error}=await client.rpc('override_acquisition_line_classification_by_public_id',{p_workspace_id:workspaceId,p_acquisition_line_public_id:publicId(req.params.publicId),p_classification_option_key:bodyText(req.body?.classificationOptionKey),p_reason:bodyText(req.body?.reason)});if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
 }));
 router.post('/orders/:orderPublicId/payments',requireOperator,asyncRoute(async(req,res)=>{
- const {workspaceId,client}=caller(req); const amount=req.body?.amountMinor;if(!Number.isSafeInteger(amount)||amount<=0)throw new AcquisitionReadError('invalid_amount',400);const currency=bodyText(req.body?.currency,'invalid_currency',3,3);if(!/^[A-Z]{3}$/.test(currency))throw new AcquisitionReadError('invalid_currency',400);const instrument=bodyText(req.body?.instrument,'invalid_instrument');if(!INSTRUMENTS.has(instrument))throw new AcquisitionReadError('invalid_instrument',400);
- const {data,error}=await client.rpc('record_acquisition_payment' as never,{p_workspace_id:workspaceId,p_acquisition_order_public_id:publicId(req.params.orderPublicId),p_paid_at:isoDate(req.body?.paidAt,true),p_amount_minor:amount,p_currency:currency,p_instrument:instrument,p_external_reference:optionalBodyText(req.body?.externalReference,200),p_source_record_id:null,p_evidence_note:optionalBodyText(req.body?.evidenceNote,1000),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
+ const {workspaceId,client}=caller(req); const amount: unknown=req.body?.amountMinor;if(typeof amount!=='number'||!Number.isSafeInteger(amount)||amount<=0)throw new AcquisitionReadError('invalid_amount',400);const currency=bodyText(req.body?.currency,'invalid_currency',3,3);if(!/^[A-Z]{3}$/.test(currency))throw new AcquisitionReadError('invalid_currency',400);const instrument=bodyText(req.body?.instrument,'invalid_instrument');if(!INSTRUMENTS.has(instrument))throw new AcquisitionReadError('invalid_instrument',400);
+ const {data,error}=await client.rpc('record_acquisition_payment',asRpcArgs<PaymentArgs>({p_workspace_id:workspaceId,p_acquisition_order_public_id:publicId(req.params.orderPublicId),p_paid_at:isoDate(req.body?.paidAt,true),p_amount_minor:amount,p_currency:currency,p_instrument:instrument,p_external_reference:optionalBodyText(req.body?.externalReference,200),p_source_record_id:null,p_evidence_note:optionalBodyText(req.body?.evidenceNote,1000),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)}));if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);
 }));
-router.post('/payments/:paymentPublicId/reverse',requireOwner,asyncRoute(async(req,res)=>{const {workspaceId,client}=caller(req);const {data,error}=await client.rpc('reverse_acquisition_payment' as never,{p_workspace_id:workspaceId,p_payment_public_id:publicId(req.params.paymentPublicId),p_reason:bodyText(req.body?.reason),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);}));
-router.post('/orders/:orderPublicId/shipments',requireOperator,asyncRoute(async(req,res)=>{const {workspaceId,client}=caller(req);const status=bodyText(req.body?.status??'expected');if(!INITIAL_SHIPMENT_STATES.has(status))throw new AcquisitionReadError('invalid_initial_status',400);const cost=req.body?.shippingCostMinor??null;if(cost!==null&&(!Number.isSafeInteger(cost)||cost<0))throw new AcquisitionReadError('invalid_amount',400);const currency=optionalBodyText(req.body?.currency,3);if(currency!==null&&!/^[A-Z]{3}$/.test(currency))throw new AcquisitionReadError('invalid_currency',400);const {data,error}=await client.rpc('create_acquisition_shipment' as never,{p_workspace_id:workspaceId,p_acquisition_order_public_id:publicId(req.params.orderPublicId),p_carrier:optionalBodyText(req.body?.carrier,100),p_tracking_number:optionalBodyText(req.body?.trackingNumber,200),p_shipped_at:isoDate(req.body?.shippedAt),p_expected_at:isoDate(req.body?.expectedAt),p_status:status,p_shipping_cost_minor:cost,p_currency:currency,p_source_record_id:null,p_evidence_note:optionalBodyText(req.body?.evidenceNote,1000),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);}));
-router.post('/shipments/:shipmentPublicId/transition',requireOperator,asyncRoute(async(req,res)=>{const {workspaceId,client}=caller(req);const expected=bodyText(req.body?.expectedStatus),next=bodyText(req.body?.newStatus);if(!SHIPMENT_STATES.has(expected)||!SHIPMENT_STATES.has(next))throw new AcquisitionReadError('invalid_transition',400);const {data,error}=await client.rpc('transition_acquisition_shipment' as never,{p_workspace_id:workspaceId,p_shipment_public_id:publicId(req.params.shipmentPublicId),p_expected_status:expected,p_new_status:next,p_received_at:isoDate(req.body?.receivedAt),p_reason:optionalBodyText(req.body?.reason,500),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)} as never);if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);}));
+router.post('/payments/:paymentPublicId/reverse',requireOwner,asyncRoute(async(req,res)=>{const {workspaceId,client}=caller(req);const {data,error}=await client.rpc('reverse_acquisition_payment',{p_workspace_id:workspaceId,p_payment_public_id:publicId(req.params.paymentPublicId),p_reason:bodyText(req.body?.reason),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)});if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);}));
+router.post('/orders/:orderPublicId/shipments',requireOperator,asyncRoute(async(req,res)=>{const {workspaceId,client}=caller(req);const status=bodyText(req.body?.status??'expected');if(!INITIAL_SHIPMENT_STATES.has(status))throw new AcquisitionReadError('invalid_initial_status',400);const cost=req.body?.shippingCostMinor??null;if(cost!==null&&(!Number.isSafeInteger(cost)||cost<0))throw new AcquisitionReadError('invalid_amount',400);const currency=optionalBodyText(req.body?.currency,3);if(currency!==null&&!/^[A-Z]{3}$/.test(currency))throw new AcquisitionReadError('invalid_currency',400);const {data,error}=await client.rpc('create_acquisition_shipment',asRpcArgs<ShipmentArgs>({p_workspace_id:workspaceId,p_acquisition_order_public_id:publicId(req.params.orderPublicId),p_carrier:optionalBodyText(req.body?.carrier,100),p_tracking_number:optionalBodyText(req.body?.trackingNumber,200),p_shipped_at:isoDate(req.body?.shippedAt),p_expected_at:isoDate(req.body?.expectedAt),p_status:status,p_shipping_cost_minor:cost,p_currency:currency,p_source_record_id:null,p_evidence_note:optionalBodyText(req.body?.evidenceNote,1000),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)}));if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);}));
+router.post('/shipments/:shipmentPublicId/transition',requireOperator,asyncRoute(async(req,res)=>{const {workspaceId,client}=caller(req);const expected=bodyText(req.body?.expectedStatus),next=bodyText(req.body?.newStatus);if(!SHIPMENT_STATES.has(expected)||!SHIPMENT_STATES.has(next))throw new AcquisitionReadError('invalid_transition',400);const {data,error}=await client.rpc('transition_acquisition_shipment',asRpcArgs<ShipmentTransitionArgs>({p_workspace_id:workspaceId,p_shipment_public_id:publicId(req.params.shipmentPublicId),p_expected_status:expected,p_new_status:next,p_received_at:isoDate(req.body?.receivedAt),p_reason:optionalBodyText(req.body?.reason,500),p_idempotency_key:bodyText(req.body?.idempotencyKey,'invalid_request',8,200)}));if(error)throw rpcError(error);if(!data)throw new AcquisitionReadError('dependency_failed',502);res.json(data);}));
 
 // --- Channel registry (owner) --------------------------------------------------
 router.post(
@@ -236,13 +275,13 @@ router.post(
   requireOwner,
   asyncRoute(async (req, res) => {
     const { workspaceId, client } = caller(req);
-    const { data, error } = await client.rpc('register_channel' as never, {
+    const { data, error } = await client.rpc('register_channel', {
       p_workspace_id: workspaceId,
       p_name: String(req.body?.name ?? ''),
       p_kind: String(req.body?.kind ?? 'marketplace'),
       p_description: req.body?.description ?? null,
       p_public_id: req.body?.publicId ?? null,
-    } as never);
+    });
     if (error) throw new AcquisitionCommitError((error as { message: string }).message, 409);
     res.json({ staging: true, authoritative: false, channel: data });
   })
@@ -359,9 +398,7 @@ router.get(
     const { data, error, count } = await client
       .from('acquisition_orders')
       .select(
-        'id, public_id, source_order_reference, first_source_record_id, order_status, ' +
-          'source_reported_status, source_reported_total_minor, currency, occurred_at, ' +
-          'supplier_id, suppliers(public_id), created_at',
+        'id, public_id, source_order_reference, first_source_record_id, order_status, source_reported_status, source_reported_total_minor, currency, occurred_at, supplier_id, suppliers(public_id), created_at',
         { count: 'exact' }
       )
       .eq('workspace_id', workspaceId)
@@ -406,13 +443,13 @@ router.get(
     // Every subordinate query is error-checked: a failed lots/placements/lines/
     // components/allocations/audit query FAILS the request (closed) rather than
     // silently returning an empty section that could read as authoritative.
-    const rq = async (
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      builder: any
-    ): Promise<Array<Record<string, unknown>>> => {
+    // Awaits a query built by the TYPED client and returns its rows. The row
+    // type flows out of the query rather than being asserted, so `Row` is
+    // whatever the generated contract says the selected columns are.
+    const rq = async <Row>(builder: PromiseLike<QueryResult<Row>>): Promise<Row[]> => {
       const { data, error } = await builder;
-      if (error) throw new SourceReadError((error as { message: string }).message, 400);
-      return (data ?? []) as unknown as Array<Record<string, unknown>>;
+      if (error) throw new SourceReadError(error.message, 400);
+      return data ?? [];
     };
 
     const lots = await rq(
@@ -431,10 +468,10 @@ router.get(
         ? await rq(
             client
               .from('acquisition_lot_lines')
-              .select(
-                'id, lot_id, line_item_id, sequence_no, state, superseded_by_id, ' +
-                  'supersedes_id, created_at'
-              )
+              // One string literal, not a concatenation: the typed client
+              // parses the column list at the type level and a concatenated
+              // expression is not a literal type.
+              .select('id, lot_id, line_item_id, sequence_no, state, superseded_by_id, supersedes_id, created_at')
               .eq('workspace_id', workspaceId)
               .in('lot_id', lotIds)
           )
@@ -453,8 +490,7 @@ router.get(
             client
               .from('acquisition_line_items')
               .select(
-                'id, public_id, quantity, description, reference_number, source_detail, ' +
-                  'source_record_id, external_identifier_id, created_at'
+                'id, public_id, quantity, description, reference_number, source_detail, source_record_id, external_identifier_id, created_at'
               )
               .eq('workspace_id', workspaceId)
               .in('id', allLineIds)
@@ -518,8 +554,7 @@ router.get(
             client
               .from('acquisition_cost_allocations')
               .select(
-                'id, public_id, cost_component_id, line_item_id, amount_minor, method, ' +
-                  'state, reviewed_by, reviewed_at, reversed_at, created_at'
+                'id, public_id, cost_component_id, line_item_id, amount_minor, method, state, reviewed_by, reviewed_at, reversed_at, created_at'
               )
               .eq('workspace_id', workspaceId)
               .in('cost_component_id', componentIds)
@@ -611,8 +646,7 @@ router.get(
     const { data: aliases, error: aliasError } = await client
       .from('supplier_aliases')
       .select(
-        'id, supplier_id, raw_handle, normalized_handle, source_system_id, ' +
-          'first_seen_source_record_id'
+        'id, supplier_id, raw_handle, normalized_handle, source_system_id, first_seen_source_record_id'
       )
       .eq('workspace_id', workspaceId)
       .limit(MAX_PAGE);
@@ -731,11 +765,11 @@ router.post(
   requireOperator,
   asyncRoute(async (req, res) => {
     const { client } = caller(req);
-    const { data, error } = await client.rpc('reverse_cost_component' as never, {
-      p_cost_component_id: req.params.id,
+    const { data, error } = await client.rpc('reverse_cost_component', {
+      p_cost_component_id: costComponentId(req),
       p_replacement: req.body?.replacement ?? {},
       p_reason: req.body?.note ?? null,
-    } as never);
+    });
     if (error) throw new AcquisitionCommitError((error as { message: string }).message, 409);
     res.json({ staging: true, result: data });
   })
@@ -746,11 +780,11 @@ router.post(
   requireOperator,
   asyncRoute(async (req, res) => {
     const { client } = caller(req);
-    const { data, error } = await client.rpc('propose_cost_allocation' as never, {
-      p_cost_component_id: req.params.id,
+    const { data, error } = await client.rpc('propose_cost_allocation', {
+      p_cost_component_id: costComponentId(req),
       p_method: String(req.body?.method ?? ''),
       p_allocations: req.body?.allocations ?? [],
-    } as never);
+    });
     if (error) throw new AcquisitionCommitError((error as { message: string }).message, 409);
     res.json({ staging: true, result: data });
   })
@@ -761,10 +795,10 @@ router.post(
   requireOperator,
   asyncRoute(async (req, res) => {
     const { client } = caller(req);
-    const { data, error } = await client.rpc('confirm_cost_allocation' as never, {
-      p_cost_component_id: req.params.id,
+    const { data, error } = await client.rpc('confirm_cost_allocation', {
+      p_cost_component_id: costComponentId(req),
       p_expected_total_minor: Number(req.body?.expectedTotalMinor ?? -1),
-    } as never);
+    });
     if (error) throw new AcquisitionCommitError((error as { message: string }).message, 409);
     res.json({ staging: true, result: data });
   })
@@ -775,10 +809,10 @@ router.post(
   requireOperator,
   asyncRoute(async (req, res) => {
     const { client } = caller(req);
-    const { data, error } = await client.rpc('reverse_cost_allocation' as never, {
-      p_cost_component_id: req.params.id,
+    const { data, error } = await client.rpc('reverse_cost_allocation', {
+      p_cost_component_id: costComponentId(req),
       p_reason: req.body?.note ?? null,
-    } as never);
+    });
     if (error) throw new AcquisitionCommitError((error as { message: string }).message, 409);
     res.json({ staging: true, result: data });
   })
@@ -789,11 +823,11 @@ router.post(
   requireOperator,
   asyncRoute(async (req, res) => {
     const { client } = caller(req);
-    const { data, error } = await client.rpc('supersede_lot_line' as never, {
-      p_lot_line_id: req.params.id,
+    const { data, error } = await client.rpc('supersede_lot_line', {
+      p_lot_line_id: costComponentId(req),
       p_new_lot_id: String(req.body?.newLotId ?? ''),
       p_note: req.body?.note ?? null,
-    } as never);
+    });
     if (error) throw new AcquisitionCommitError((error as { message: string }).message, 409);
     res.json({ staging: true, result: data });
   })

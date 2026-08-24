@@ -48,6 +48,11 @@
 // actually read it, and the target is inside the component's governed scope.
 // A UUID that survives all three is one the database would have accepted anyway.
 
+import {
+  asRpcArgs, minorUnitArg, requireJsonObject,
+  type JsonObject, type NullableArgs,
+} from '../rpcContract.js';
+import type { FunctionArgs, FunctionName } from '../../../shared/databaseAliases.js';
 import { Router } from 'express';
 import { requireMember, requireOperator, type AuthedRequest } from '../provenance/auth.js';
 import { isProvenanceEnabled } from '../provenance/config.js';
@@ -833,11 +838,23 @@ function lineKey(sourceSystemPublicId: string, acquisitionLinePublicId: string):
 
 // --- mutations ---------------------------------------------------------------
 
-async function rpc(client: Supa, fn: string, args: Record<string, unknown>) {
-  const { data, error } = await client.rpc(fn as never, args as never);
+/**
+ * Call one governed function.
+ *
+ * `fn` is constrained to the generated function names and `args` to that
+ * function's generated Args, so an unknown name, a missing required argument
+ * or a wrongly-typed one is a compile error. The result is jsonb, which the
+ * contract can only describe as `Json`; its object-ness is established at
+ * runtime rather than asserted.
+ */
+async function rpc<N extends FunctionName>(
+  client: Supa,
+  fn: N,
+  args: NullableArgs<FunctionArgs<N>>,
+): Promise<JsonObject> {
+  const { data, error } = await client.rpc(fn, asRpcArgs<FunctionArgs<N>>(args));
   if (error) fail(error);
-  if (!data) throw new CostError('dependency_failed', 502);
-  return data as Record<string, unknown>;
+  return requireJsonObject(data, () => new CostError('dependency_failed', 502));
 }
 
 /**
@@ -1022,7 +1039,8 @@ router.post('/components/:componentPublicId/allocations/confirm', requireOperato
 
     const result = await rpc(client, 'confirm_cost_allocation', {
       p_cost_component_id: component.id,
-      p_expected_total_minor: expected.toString(),
+      // bigint on the wire as a decimal string — see ESC-003.
+      p_expected_total_minor: minorUnitArg(expected),
     });
 
     // The allocation is COMMITTED at this point. Everything after it is a
