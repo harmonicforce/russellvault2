@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   evaluate, scanSource, isEnforced, readManifestIds, registeredIdsNear,
-  ESCAPE_PATTERNS, MANIFEST_PATH, BASELINE_PATH,
+  ESCAPE_PATTERNS, MANIFEST_PATH, BASELINE_PATH, EXEMPT,
 } from './escape-guard.mjs';
 
 const IDS = ['ESC-001', 'ESC-002', 'ESC-003'];
@@ -113,6 +113,18 @@ test('a brand-new file outside the scope starts at zero', () => {
   assert.match(problems[0], /baseline allows 0/);
 });
 
+test('the detector does not report itself', () => {
+  // Its pattern table literally contains `as never`, `as any` and the rest.
+  // This is not hypothetical: the first CI run of this guard failed on its own
+  // source, because the file was still untracked when the baseline was written
+  // and `git ls-files` could not see it.
+  const self = 'scripts/ci/escape-guard.mjs';
+  assert.equal(EXEMPT.has(self), true);
+  assert.equal(EXEMPT.has('scripts/ci/escape-guard.test.mjs'), true);
+  const { problems } = run([self], { [self]: 'const x = y as never;\n' });
+  assert.deepEqual(problems, []);
+});
+
 test('the generated contract is exempt, because it is machine-written', () => {
   const generated = 'shared/database.types.ts';
   const { problems } = run([generated], { [generated]: 'const x: any = 1;\n' });
@@ -135,4 +147,10 @@ test('the shipped baseline holds no file from the enforced scope', () => {
   const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8')).files;
   const leaked = Object.keys(baseline).filter(isEnforced);
   assert.deepEqual(leaked, [], 'the enforced scope must never be frozen at a baseline');
+});
+
+test('the shipped baseline holds no exempt file', () => {
+  const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf8')).files;
+  const leaked = Object.keys(baseline).filter((file) => EXEMPT.has(file));
+  assert.deepEqual(leaked, [], 'an exempt file must not also carry a baseline allowance');
 });

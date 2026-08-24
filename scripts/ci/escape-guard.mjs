@@ -71,6 +71,21 @@ export const ESCAPE_PATTERNS = [
 
 const COMMENT = /^\s*(\/\/|\*|\/\*)/;
 
+/**
+ * Files exempt from scanning.
+ *
+ * A detector necessarily contains the strings it detects: this guard's own
+ * pattern table holds the literals `as never`, `as any` and so on, and its
+ * tests feed those literals in as fixtures. Scanning them reports the detector
+ * as the offender. The generated contract is exempt for a different reason —
+ * it is machine-written and policed by its own drift guard.
+ */
+export const EXEMPT = new Set([
+  'scripts/ci/escape-guard.mjs',
+  'scripts/ci/escape-guard.test.mjs',
+  'shared/database.types.ts',
+]);
+
 /** Count escapes per pattern in one file's source, ignoring comment lines. */
 export function scanSource(source) {
   const counts = {};
@@ -116,9 +131,7 @@ export function evaluate({ files, read, baseline, manifestIds }) {
   const observed = {};
 
   for (const file of files) {
-    // The generated contract is machine-written and exempt: it is regenerated
-    // wholesale and policed by its own drift guard.
-    if (file === 'shared/database.types.ts') continue;
+    if (EXEMPT.has(file)) continue;
 
     const source = read(file);
     const lines = source.split('\n');
@@ -176,6 +189,20 @@ function main() {
   const { problems, observed } = evaluate({ files, read, baseline, manifestIds });
 
   if (write) {
+    // A baseline written while source files are untracked is silently
+    // incomplete: `git ls-files` cannot see them, so they get no entry and the
+    // guard fails the moment they are committed. That is exactly how
+    // escape-guard.mjs itself slipped through on first run.
+    const untracked = execSync(
+      "git ls-files --others --exclude-standard '*.ts' '*.tsx' '*.mjs' | grep -v '\\.test\\.' || true",
+      { cwd: ROOT, encoding: 'utf8' },
+    ).trim();
+    if (untracked.length > 0) {
+      console.error('escape-guard: refusing to write a baseline while source files are untracked:');
+      for (const file of untracked.split('\n')) console.error(`  - ${file}`);
+      console.error('\nStage them first (`git add`), so the baseline covers what CI will scan.');
+      process.exit(1);
+    }
     const frozen = Object.fromEntries(
       Object.entries(observed).filter(([file]) => !isEnforced(file)).sort(),
     );
