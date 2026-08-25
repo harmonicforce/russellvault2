@@ -10,7 +10,9 @@
 - PR: **#81**, open, **draft**, not merged.
 - Release authority: branch and draft PR only. No merge, no deploy, no Railway
   change, no hosted Supabase contact, no migration.
-- Status: **implemented** and **validated** locally; CI evidence recorded below.
+- Status: **implemented**, **validated** locally, and **CI-green on attempt 2**
+  after a failed attempt 1. See the CI section — do not restate this as "never
+  failed".
 
 ### What changed since the previous revision of this PR
 
@@ -145,6 +147,67 @@ needs WebKit, which is not installed here. All three run in CI on the exact PR
 head; see the CI section. WO3 contains **zero SQL** and does not touch
 `shared/database.types.ts`, so neither database lane can be affected by it.
 
+## CI evidence
+
+Recorded for head **`1f3916123623ee5ba5db183df0339a732bda2976`**. The only
+commit after it on this branch adds this section, which is documentation-only
+and changes no code; its own run is reported in the PR conversation.
+
+**Green on attempt 2 after a failed attempt 1. Do not restate that as "never failed."**
+
+| Run | Event | Attempt | Required job | Conclusion |
+| --- | --- | --- | --- | --- |
+| `32838983007` | `pull_request` | **1** | `build-and-verify` | success |
+| `32838983007` | `pull_request` | **1** | `shadow-db-postgres-shim` | success |
+| `32838983007` | `pull_request` | **1** | `dev-advisory-report` | success |
+| `32838983007` | `pull_request` | **1** | `shadow-db-supabase-stack` | **FAILURE** |
+| `32838983007` | `pull_request` | **2** | all four required jobs | success |
+
+Run `32838983007` attempt 2, conclusion **success**.
+
+### Why attempt 1 failed, and why it is not this change
+
+The failing step was "Run pgTAP suite inside the local stack". The Work Order 11
+runner reported it precisely rather than letting GitHub kill the step silently:
+
+> `db:test — phase suite — exceeded 300000 ms after 315.5s and the process group
+> was terminated (SIGTERM:sent → SIGKILL:sent; group gone after 15.1s).
+> Position: file 16/70 15_acquisition_digest_parity.sql, last completed
+> 14_acquisition_acceptance.sql. Completed 15/70; not started: 54 file(s).
+> Treated as a FAILURE, never a pass.`
+
+Four independent facts place this outside WO3:
+
+1. `git diff origin/main...HEAD -- supabase/ scripts/db/` is **empty**. This
+   change contains no SQL, no migration, and no runner or budget change, so it
+   cannot alter what that lane executes or how long it is given.
+2. The **push-event run `32838975562`, attempt 1, on this exact SHA**, ran the
+   same `shadow-db-supabase-stack` job and its pgTAP step **succeeded in 59s**
+   — concurrently with the run where it stalled. Same commit, same workflow,
+   same lane, opposite outcomes on two runners at the same moment.
+3. The same 70-file suite passed on this SHA in `shadow-db-postgres-shim` in
+   43s, and locally in 50.5s with 2673 assertions.
+4. `15_acquisition_digest_parity.sql` is named in `docs/ai/CURRENT_STATE.md` as
+   the **top platform debt** for exactly this lane, and has already caused a
+   real `main` attempt-1 failure before.
+
+One re-run was issued, for the documented reason of establishing whether the
+failure reproduced. It did not: on attempt 2 the same step completed in **58s**.
+Nothing was skipped, disabled, quarantined, or re-budgeted to obtain green.
+
+The underlying debt is **not repaired here** — that is WO11's lane and would
+require changing `scripts/db/budgets.mjs`, which this work order must not touch.
+It is reported as a live, recurring platform risk: the `supabase-cli` lane's
+suite budget is a hard 300 s sized against a 23 s measurement, and this file can
+exceed it under runner contention.
+
+### `main` baseline CI
+
+`main` at `fa6cd83` is **green**: workflow `CI`, event `push`, run
+`32789241147`, **attempt 1**, conclusion **success** — no earlier attempt. The
+prior revision of this PR claimed `main` was RED; that claim described the
+WO11 timeout, which is merged, and it has been removed.
+
 ## Preserved behavior
 
 - **WO2** — legacy routes remain authenticated and bound to
@@ -223,7 +286,11 @@ program removes; one import of the wrong one would restore the veto.
   appear uncallable through PostgREST. Repairing them needs a database
   migration and belongs in its own work order.
 - `db:types:check` and the Supabase-stack pgTAP lane were not run locally; see
-  the "Not run locally" note above. Both run in CI.
+  the "Not run locally" note above. Both ran green in CI on the recorded head —
+  the stack lane only on attempt 2, for the reason recorded in the CI section.
+- The `supabase-cli` lane's 300 s suite budget versus
+  `15_acquisition_digest_parity.sql` remains live platform debt owned by WO11.
+  It is reported, not repaired, and not re-budgeted.
 - The full browser matrix was not run locally: WebKit is not installed in the
   agent environment. Chromium desktop and tablet-portrait passed.
 - Governed readiness validates the **shape** of `SUPABASE_URL`, never which
@@ -235,7 +302,7 @@ program removes; one import of the wrong one would restore the veto.
 
 ## Rollback
 
-Revert commits `1fa4c02` and `bbef4a5`, or close PR #81. Nothing has been
+Revert this branch's three commits above `fa6cd83`, or close PR #81. Nothing has been
 merged, deployed, or changed in any live system.
 
 ## Exact next decision
