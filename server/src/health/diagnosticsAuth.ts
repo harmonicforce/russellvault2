@@ -147,9 +147,13 @@ export async function decideDiagnosticsAccess(
 
 export function createDiagnosticsGuard(deps: DiagnosticsGuardDeps = {}) {
   return function diagnosticsGuard(req: Request, res: Response, next: NextFunction) {
-    // Express's Request satisfies DiagnosticsRequestLike structurally except for
-    // header()'s 'set-cookie' overload, which this guard never calls.
-    decideDiagnosticsAccess(req as unknown as DiagnosticsRequestLike, deps)
+    // No cast. Express's Request satisfies DiagnosticsRequestLike structurally:
+    // header()'s overloads resolve to the string form this guard asks for, and
+    // ParsedQs is assignable to Record<string, unknown>. Reaching the contract
+    // by shape rather than by assertion is the point — a double cast here would
+    // be exactly the kind of compile-time question turned into a runtime
+    // surprise that Work Order 4's escape guard exists to reject.
+    decideDiagnosticsAccess(req, deps)
       .then((decision) => {
         if (decision.allowed) {
           next();

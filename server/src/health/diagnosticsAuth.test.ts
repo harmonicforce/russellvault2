@@ -172,3 +172,112 @@ describe('the diagnostics middleware adapter', () => {
     );
   });
 });
+
+/**
+ * Cross-workspace authority.
+ *
+ * The guard lets the caller NAME a workspace, which is the opposite of the
+ * legacy quarantine guard, where the workspace comes from configuration
+ * precisely so the caller cannot choose it. Naming one must therefore grant
+ * nothing on its own: the membership lookup has to be filtered by the workspace
+ * the caller named AND by the user id the provider derived from their token, so
+ * an owner of one workspace cannot read another workspace's diagnostics by
+ * naming it.
+ *
+ * This double records the filters actually applied and answers from a real
+ * membership table, so the proof is the query's postcondition rather than a
+ * stubbed `true`.
+ */
+describe('diagnostics authority is bound to the caller, never to what they name', () => {
+  const OWNED = '11111111-2222-4333-8444-555555555555';
+  const OTHER = '99999999-8888-4777-8666-555555555555';
+  const OTHER_OWNER = 'ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb';
+
+  /** The only memberships that exist. */
+  const MEMBERSHIPS = [
+    { workspace_id: OWNED, user_id: USER, role: 'owner' },
+    { workspace_id: OTHER, user_id: OTHER_OWNER, role: 'owner' },
+  ];
+
+  function recordingClient() {
+    const seen: { table?: string; filters: Record<string, unknown> }[] = [];
+    const factory = () =>
+      ({
+        auth: {
+          async getUser() {
+            return { data: { user: { id: USER } }, error: null };
+          },
+        },
+        from(table: string) {
+          const call: { table?: string; filters: Record<string, unknown> } = { table, filters: {} };
+          seen.push(call);
+          const builder: any = {
+            select: () => builder,
+            eq: (column: string, value: unknown) => {
+              call.filters[column] = value;
+              return builder;
+            },
+            async limit() {
+              const rows = MEMBERSHIPS.filter(
+                (m) =>
+                  m.workspace_id === call.filters.workspace_id
+                  && m.user_id === call.filters.user_id,
+              ).map((m) => ({ role: m.role }));
+              return { data: rows, error: null };
+            },
+          };
+          return builder;
+        },
+      }) as any;
+    return { factory, seen };
+  }
+
+  it('admits an owner in the workspace they actually own', async () => {
+    const { factory, seen } = recordingClient();
+    const decision = await decideDiagnosticsAccess(req(bearer(), { workspaceId: OWNED }), {
+      env: GOVERNED,
+      clientFactory: factory,
+    });
+    expect(decision.allowed).toBe(true);
+    expect(decision.workspaceId).toBe(OWNED);
+    // The membership lookup was filtered by BOTH the named workspace and the
+    // token-derived user — never by one alone.
+    expect(seen).toHaveLength(1);
+    expect(seen[0].table).toBe('workspace_members');
+    expect(seen[0].filters).toEqual({ workspace_id: OWNED, user_id: USER });
+  });
+
+  it('refuses an owner who names a workspace someone else owns', async () => {
+    const { factory, seen } = recordingClient();
+    const decision = await decideDiagnosticsAccess(req(bearer(), { workspaceId: OTHER }), {
+      env: GOVERNED,
+      clientFactory: factory,
+    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.status).toBe(403);
+    expect(decision.code).toBe(DIAGNOSTICS_DENIAL.forbidden);
+    // The query was scoped to the NAMED workspace, so the other workspace's
+    // owner row could not answer for this caller.
+    expect(seen[0].filters).toEqual({ workspace_id: OTHER, user_id: USER });
+    expect(decision.userId).toBeUndefined();
+  });
+
+  it('ignores a user id supplied by the caller and uses the token-derived one', async () => {
+    const { factory, seen } = recordingClient();
+    const decision = await decideDiagnosticsAccess(
+      req(bearer(), { workspaceId: OTHER, userId: OTHER_OWNER, role: 'owner' }),
+      { env: GOVERNED, clientFactory: factory },
+    );
+    expect(decision.allowed).toBe(false);
+    expect(seen[0].filters.user_id).toBe(USER);
+  });
+
+  it('reads only workspace_members, and never a governed inventory table', async () => {
+    const { factory, seen } = recordingClient();
+    await decideDiagnosticsAccess(req(bearer(), { workspaceId: OWNED }), {
+      env: GOVERNED,
+      clientFactory: factory,
+    });
+    expect(seen.map((call) => call.table)).toEqual(['workspace_members']);
+  });
+});

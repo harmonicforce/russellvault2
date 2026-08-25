@@ -40,10 +40,15 @@ export const LEGACY_ROUTER_MODULES = [
  *
  * `/api/health` is what Railway health-checks, so authenticating it would make
  * a healthy deployment look unhealthy and block promotion. `/api/version`
- * reports a commit SHA and Node version and nothing else. Health SEMANTICS are
- * explicitly out of scope here — that is Work Order 3.
+ * reports a commit SHA and Node version and nothing else. `/api/live` was added
+ * by Work Order 3 and reports only that the process is answering; it is the
+ * most public of the three because it reads nothing at all.
+ *
+ * `/api/diagnostics` is deliberately NOT here. It is the owner-only surface
+ * introduced alongside `/api/live`, and it stays behind a bearer token and the
+ * owner role — listing it here would assert the opposite.
  */
-export const PUBLIC_API_PATHS = ['/api/health', '/api/version'] as const;
+export const PUBLIC_API_PATHS = ['/api/live', '/api/health', '/api/version'] as const;
 
 /**
  * Governed prefixes. Listed only so the inventory test can assert they are NOT

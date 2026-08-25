@@ -187,3 +187,35 @@ export function buildDiagnosticsResponse(params: {
     ],
   };
 }
+
+// ---------------------------------------------------------------------------
+// Version — UNCHANGED by Work Order 3
+
+export interface VersionResponse {
+  readonly sha: string;
+  readonly node: string;
+  readonly startedAtUtc: string;
+}
+
+/**
+ * The exact `GET /api/version` body, extracted from the route so the "Work
+ * Order 3 did not touch the deployment diagnostic" claim is executable rather
+ * than asserted in prose.
+ *
+ * The semantics are carried over verbatim: GIT_COMMIT_SHA wins, Railway's
+ * RAILWAY_GIT_COMMIT_SHA is the fallback, and an unlabelled build reports
+ * `unknown` rather than guessing. It reads neither governed readiness nor
+ * legacy state, so no health condition can change what it reports — a probe
+ * answer must never be able to disguise which commit is deployed.
+ */
+export function buildVersionResponse(params: {
+  env: { GIT_COMMIT_SHA?: string; RAILWAY_GIT_COMMIT_SHA?: string };
+  nodeVersion: string;
+  startedAtUtc: string;
+}): VersionResponse {
+  return {
+    sha: params.env.GIT_COMMIT_SHA || params.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
+    node: params.nodeVersion,
+    startedAtUtc: params.startedAtUtc,
+  };
+}

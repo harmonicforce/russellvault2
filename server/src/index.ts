@@ -4,9 +4,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { prepareLegacyDatabase } from './legacyBootstrap.js';
-import { buildDiagnosticsResponse, buildHealthResponse, buildLivenessResponse } from './health/healthContract.js';
+import { createHealthHandlers } from './health/healthRoutes.js';
 import { describeGovernedReadiness, resolveGovernedReadiness } from './health/governedReadiness.js';
-import { createLegacyProbe } from './health/legacyProbeCache.js';
 import { diagnosticsGuard } from './health/diagnosticsAuth.js';
 import { legacyWriteGuard, legacyWritesEnabled } from './legacyWriteGuard.js';
 import { legacyAccessGuard } from './legacy/accessGuard.js';
@@ -166,62 +165,29 @@ for (const prefix of LEGACY_ROUTE_PREFIXES) {
 //
 // Legacy state is still reported in full — nothing was concealed — but it no
 // longer decides readiness.
-const startedAtUtc = new Date().toISOString();
-const legacyProbe = createLegacyProbe();
-console.log(describeGovernedReadiness(resolveGovernedReadiness(process.env)));
-
-// Pure liveness: is this process up? No configuration, no storage, no I/O, so
-// nothing can veto it. Available as an alternative Railway probe target.
-app.get('/api/live', (_req, res) => {
-  const { status, body } = buildLivenessResponse(startedAtUtc);
-  res.status(status).json(body);
-});
-
-// Governed readiness — the Railway probe. Bounded and fast: governed readiness
-// is a pure configuration check with no network call (probing Supabase on every
-// request would turn a dependency blip into a self-inflicted outage), and the
-// legacy read is served from a short TTL cache.
 //
-// Status is decided by governed readiness ALONE. 503 only when the governed
-// configuration is present but incomplete — an operator error that must not be
-// promoted. A legacy-only deployment returns 200 with `governedReady: false`
-// and `mode: 'legacy_only'`, so it is explicitly defined and never mistaken for
-// a governed deployment.
-app.get('/api/health', (_req, res) => {
-  const { status, body } = buildHealthResponse({
-    legacy: legacyProbe.read(),
-    readiness: resolveGovernedReadiness(process.env),
-    readOnly: !legacyWritesEnabled,
-  });
-  res.status(status).json(body);
-});
+// The handler bodies live in health/healthRoutes.ts so the endpoint contract —
+// not just the pure builders behind it — is exercised over real HTTP in tests.
+// The route table stays here, so which path is public, which is guarded, and by
+// what remains visible at the wiring site.
+const startedAtUtc = new Date().toISOString();
+console.log(describeGovernedReadiness(resolveGovernedReadiness(process.env)));
+const health = createHealthHandlers({ startedAtUtc, legacyWritesEnabled });
 
-// Detailed component diagnostics — OWNER ONLY, and never part of the probe.
-// Carries strictly more detail about the same bounded facts: no filesystem
-// path, SQL text, driver message, credential, project ref, or stack trace.
-app.get('/api/diagnostics', diagnosticsGuard, (_req, res) => {
-  res.status(200).json(
-    buildDiagnosticsResponse({
-      legacy: legacyProbe.readFresh(),
-      readiness: resolveGovernedReadiness(process.env),
-      legacyWritesEnabled,
-      startedAtUtc,
-      checkedAtUtc: new Date().toISOString(),
-    }),
-  );
-});
+// Process liveness. Depends on nothing, so nothing can veto it.
+app.get('/api/live', health.live);
 
-// Read-only build/version info to confirm which commit is actually deployed.
-// Reports only a git SHA + Node version — never any secret. Railway provides
-// RAILWAY_GIT_COMMIT_SHA automatically; GIT_COMMIT_SHA is a manual override.
-// UNCHANGED by Work Order 3: this remains the exact deployment diagnostic.
-app.get('/api/version', (_req, res) => {
-  res.json({
-    sha: process.env.GIT_COMMIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || 'unknown',
-    node: process.version,
-    startedAtUtc,
-  });
-});
+// Governed readiness — the Railway probe. Legacy SQLite state is reported here
+// and decides nothing.
+app.get('/api/health', health.health);
+
+// Owner-only component detail. The guard runs before the handler; an
+// unauthorized caller never reaches the body at all.
+app.get('/api/diagnostics', diagnosticsGuard, health.diagnostics);
+
+// Read-only build/version info. UNCHANGED by Work Order 3: this remains the
+// exact deployment diagnostic.
+app.get('/api/version', health.version);
 
 // In production (e.g. Railway) the API also serves the built client so the
 // whole app runs as a single service on one port. The client build is
