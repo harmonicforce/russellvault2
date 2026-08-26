@@ -76,6 +76,14 @@ jobs:
         run: node --test scripts/db/budgets.test.mjs scripts/db/supervisor.test.mjs scripts/db/progress.test.mjs scripts/db/suiteManifest.test.mjs
       - name: Test (client audit-gate policy)
         run: node --test scripts/ci/client-audit-gate.test.mjs
+      # The deployment-target guard. It protects an invariant no other check
+      # covers: that a deploy or hosted migration can only ever act on the
+      # project verified as production. It is tested here rather than only at
+      # deploy time, because a guard nobody exercises is a guard nobody can
+      # trust the day it has to say no.
+      - name: Test (production-target guard)
+        run: node --test scripts/ci/production-target-guard.test.mjs
+
       - name: Test (current-state guard policy)
         run: node --test scripts/ci/current-state-guard.test.mjs
       # Fails when the governed migration set moves without updating the

@@ -1,0 +1,41 @@
+{
+  "$comment": [
+    "Canonical, NON-SECRET deployment-target registry for scripts/ci/production-target-guard.mjs.",
+    "A Supabase project ref is a public routing identifier, not an authentication secret: it appears",
+    "in every URL the browser sends. It is recorded here so a target can be COMPARED, and nowhere",
+    "else, so there is exactly one place to change when the owner rotates or moves a project.",
+    "",
+    "canonicalProductionRef is DELIBERATELY null until deployment identity is verified from the",
+    "deployed Railway environment. While it is null the guard fails closed on every production",
+    "check: it will not accept any target, including one that looks right. That is the intended",
+    "behaviour — an unproven canonical identity must block deployment, never wave it through.",
+    "",
+    "OWNER UPDATE PROCEDURE is documented in docs/runbooks/deployment-target-guard.md."
+  ],
+  "schemaVersion": 1,
+  "canonicalProductionRef": null,
+  "canonicalProductionUnverifiedReason": "Production identity has never been read from the deployed Railway service. The egress policy in every verifying environment so far has answered 403 to CONNECT for the live app host, and Railway environment variables are not stored in this repository.",
+  "knownRefs": [
+    {
+      "ref": "ncyqqitqtsyjrijieykd",
+      "classification": "UNKNOWN",
+      "displayName": "russellvault2-production",
+      "note": "STRONGEST production candidate and NOT confirmed. Its public-table fingerprint matches this repository's replayed schema exactly, but a schema that matches the repository proves what a database CONTAINS, never which database the deployed service is CONFIGURED to use. Its name contains 'production'; a name is not authority. Deployment stays blocked until the ref is read from the deployed environment.",
+      "deployable": false
+    },
+    {
+      "ref": "ykdyqnvmwpxhowbwhzqz",
+      "classification": "STALE_PREVIEW",
+      "displayName": "The Russell Vault 2",
+      "note": "Target of the repository's Supabase Preview GitHub check, whose preview branching is DISABLED, so the check is a permanent no-op. Structurally far behind this repository. Displayed under a name that reads like the product, which is exactly what makes it dangerous.",
+      "deployable": false
+    },
+    {
+      "ref": "ssqrgfbhqfufnjrsjpgj",
+      "classification": "LEGACY_OR_DECOY",
+      "displayName": "TheRussellOps",
+      "note": "A different product's project (harmonicforce/the-russellops), INACTIVE. Never a target for this repository.",
+      "deployable": false
+    }
+  ]
+}
