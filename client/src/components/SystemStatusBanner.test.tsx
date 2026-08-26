@@ -34,12 +34,21 @@ const HEALTHY: SystemHealth = {
   legacySchemaPresent: true,
   legacySeeded: true,
   legacyBootWritesEnabled: false,
+  legacyStatus: 'ready' as const,
 };
 
 function healthy(overrides: Partial<SystemHealth> = {}): SystemHealthResult {
   return { status: 'healthy', health: { ...HEALTHY, ...overrides } };
 }
 
+/**
+ * A legacy database that cannot be trusted.
+ *
+ * `legacyStatus` is what the banner keys on since Genome Repair Work Order 3.
+ * The overall result status is left at 'unhealthy' here for the pre-WO3 cases,
+ * but see `governedReadyLegacyBroken` below: the important new case is a
+ * deployment that is genuinely healthy overall while legacy is unusable.
+ */
 function unhealthy(overrides: Partial<SystemHealth> = {}): SystemHealthResult {
   return {
     status: 'unhealthy',
@@ -49,6 +58,30 @@ function unhealthy(overrides: Partial<SystemHealth> = {}): SystemHealthResult {
       legacyDatabaseAvailable: false,
       legacySchemaPresent: false,
       legacySeeded: false,
+      legacyStatus: 'unavailable',
+      reason: 'legacy_database_missing',
+      ...overrides,
+    },
+  };
+}
+
+/**
+ * The WO3 case: governed readiness succeeded (200, ok:true) while the legacy
+ * database is unusable. Before WO3 this combination could not occur, and a
+ * banner keyed on the overall status would show nothing here.
+ */
+function governedReadyLegacyBroken(overrides: Partial<SystemHealth> = {}): SystemHealthResult {
+  return {
+    status: 'healthy',
+    health: {
+      ...HEALTHY,
+      ok: true,
+      mode: 'governed',
+      governedReady: true,
+      legacyDatabaseAvailable: false,
+      legacySchemaPresent: false,
+      legacySeeded: false,
+      legacyStatus: 'unavailable',
       reason: 'legacy_database_missing',
       ...overrides,
     },
@@ -68,6 +101,84 @@ function renderBanner(
     </QueryClientProvider>,
   );
 }
+
+describe('Work Order 3: governed readiness and legacy availability are separate', () => {
+  it('still warns about an unusable legacy database when the deployment is otherwise healthy', async () => {
+    // The regression this guards: WO3 made /api/health return 200 with ok:true
+    // when governed config is valid and only legacy is broken. A banner keyed on
+    // the overall status would have gone silent here and left the operator
+    // reading untrustworthy legacy numbers with no warning at all.
+    fetchSystemHealth.mockResolvedValue(governedReadyLegacyBroken());
+    renderBanner({}, '/purchases');
+    expect(await screen.findByText(/legacy data unavailable/i)).toBeTruthy();
+    expect(await screen.findByText(/could not be found/i)).toBeTruthy();
+  });
+
+  it('warns on governed routes too, without claiming governed workflows are down', async () => {
+    fetchSystemHealth.mockResolvedValue(governedReadyLegacyBroken());
+    renderBanner({}, '/inventory/current');
+    expect(await screen.findByText(/legacy data unavailable/i)).toBeTruthy();
+    expect(await screen.findByText(/governed inventory workflows are unaffected/i)).toBeTruthy();
+  });
+
+  it('warns about a degraded legacy baseline, not only an absent database', async () => {
+    fetchSystemHealth.mockResolvedValue(
+      governedReadyLegacyBroken({
+        legacyDatabaseAvailable: true,
+        legacySchemaPresent: true,
+        legacySeeded: false,
+        legacyStatus: 'degraded',
+        reason: 'legacy_baseline_empty',
+      }),
+    );
+    renderBanner({}, '/purchases');
+    expect(await screen.findByText(/imported records are missing/i)).toBeTruthy();
+  });
+
+  it('stays silent about legacy when legacy is ready', async () => {
+    fetchSystemHealth.mockResolvedValue(healthy({ readOnly: false, mode: 'governed', governedReady: true }));
+    renderBanner({}, '/inventory/current');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText(/legacy data unavailable/i)).toBeNull();
+  });
+
+  it('reports an incomplete governed configuration as a server problem', async () => {
+    fetchSystemHealth.mockResolvedValue({
+      status: 'unhealthy',
+      health: {
+        ...HEALTHY,
+        ok: false,
+        mode: 'misconfigured' as const,
+        governedReady: false,
+        governedReason: 'governed_configuration_incomplete' as const,
+      },
+    });
+    renderBanner({}, '/inventory/current');
+    expect(await screen.findByText(/governed configuration is incomplete/i)).toBeTruthy();
+  });
+
+  it('shows the legacy failure ahead of the configuration problem when both are true', async () => {
+    fetchSystemHealth.mockResolvedValue({
+      status: 'unhealthy',
+      health: {
+        ...HEALTHY,
+        ok: false,
+        mode: 'misconfigured' as const,
+        governedReady: false,
+        governedReason: 'governed_configuration_incomplete' as const,
+        legacyDatabaseAvailable: false,
+        legacySchemaPresent: false,
+        legacySeeded: false,
+        legacyStatus: 'unavailable' as const,
+        reason: 'legacy_database_missing' as const,
+      },
+    });
+    renderBanner({}, '/purchases');
+    // One banner, never two contradicting each other.
+    expect(await screen.findByText(/legacy data unavailable/i)).toBeTruthy();
+    expect(screen.queryByText(/governed configuration is incomplete/i)).toBeNull();
+  });
+});
 
 describe('governed mode, healthy legacy database', () => {
   it('warns on a legacy write route that changes will not be saved', async () => {

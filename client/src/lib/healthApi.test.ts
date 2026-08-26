@@ -6,6 +6,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+  legacyIsUsable,
   HealthTransportError,
   LEGACY_HEALTH_REASONS,
   fetchSystemHealth,
@@ -147,5 +148,60 @@ describe('the generic transport is not weakened', () => {
     vi.stubGlobal('fetch', fetchMock);
     await expect(get('/inventory')).rejects.toThrow(/service unavailable/);
     vi.unstubAllGlobals();
+  });
+});
+
+
+describe('Work Order 3 fields', () => {
+  const BASE = {
+    ok: true,
+    readOnly: false,
+    legacyDatabaseAvailable: true,
+    legacySchemaPresent: true,
+    legacySeeded: true,
+    legacyBootWritesEnabled: false,
+  };
+
+  it('reads legacyStatus, mode and governedReady when the server sends them', () => {
+    const health = parseSystemHealth({
+      ...BASE,
+      legacyStatus: 'degraded',
+      mode: 'governed',
+      governedReady: true,
+    });
+    expect(health?.legacyStatus).toBe('degraded');
+    expect(health?.mode).toBe('governed');
+    expect(health?.governedReady).toBe(true);
+  });
+
+  it('derives legacyStatus from the booleans when an older server omits it', () => {
+    expect(parseSystemHealth(BASE)?.legacyStatus).toBe('ready');
+    expect(parseSystemHealth({ ...BASE, legacyDatabaseAvailable: false })?.legacyStatus).toBe('unavailable');
+    expect(parseSystemHealth({ ...BASE, legacySeeded: false })?.legacyStatus).toBe('degraded');
+    expect(parseSystemHealth({ ...BASE, legacySchemaPresent: false })?.legacyStatus).toBe('degraded');
+  });
+
+  it('drops unrecognized values rather than passing server strings through', () => {
+    const health = parseSystemHealth({
+      ...BASE,
+      legacyStatus: 'catastrophic',
+      mode: 'experimental',
+      governedReason: 'because',
+    });
+    // Falls back to the derived value; never renders an unvalidated string.
+    expect(health?.legacyStatus).toBe('ready');
+    expect(health?.mode).toBeUndefined();
+    expect(health?.governedReason).toBeUndefined();
+  });
+
+  it('still rejects a payload missing a required boolean', () => {
+    const { ok: _ok, ...withoutOk } = BASE;
+    expect(parseSystemHealth({ ...withoutOk, legacyStatus: 'ready' })).toBeNull();
+  });
+
+  it('legacyIsUsable answers only about legacy, not about the deployment', () => {
+    expect(legacyIsUsable(parseSystemHealth(BASE)!)).toBe(true);
+    expect(legacyIsUsable(parseSystemHealth({ ...BASE, ok: false })!)).toBe(true);
+    expect(legacyIsUsable(parseSystemHealth({ ...BASE, legacyDatabaseAvailable: false })!)).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import { AlertTriangle, ShieldAlert, WifiOff } from 'lucide-react';
 import {
   SYSTEM_HEALTH_QUERY_KEY,
   fetchSystemHealth,
+  legacyIsUsable,
   type LegacyHealthReason,
   type SystemHealthResult,
 } from '../lib/healthApi';
@@ -77,7 +78,14 @@ export default function SystemStatusBanner({
   // 1. A structurally unusable legacy database outranks everything else, and is
   //    shown on every route — hiding it on governed routes would leave an
   //    operator reading legacy numbers elsewhere with no warning.
-  if (health.data?.status === 'unhealthy') {
+  //
+  //    This keys on the LEGACY component, not on the overall result. Genome
+  //    Repair Work Order 3 made the overall status report governed readiness, so
+  //    a deployment is now legitimately healthy (200) while its legacy database
+  //    is missing. Keying on the old overall status would have silently deleted
+  //    this warning at exactly the moment it became the only thing saying the
+  //    legacy numbers on screen cannot be trusted.
+  if (health.data && !legacyIsUsable(health.data.health)) {
     return (
       <Banner tone="critical" role="alert" icon={<ShieldAlert className="h-4 w-4 shrink-0" />}>
         <strong className="font-semibold">Legacy data unavailable.</strong>{' '}
@@ -109,7 +117,21 @@ export default function SystemStatusBanner({
     );
   }
 
-  // 3. Legacy-only mode. One coherent notice that also carries the read-only
+  // 3. The governed configuration is present but incomplete. The server fails
+  //    readiness closed for this; say so rather than leaving the operator to
+  //    infer it from governed pages quietly not working.
+  if (health.data?.health.mode === 'misconfigured') {
+    return (
+      <Banner tone="critical" role="alert" icon={<ShieldAlert className="h-4 w-4 shrink-0" />}>
+        <strong className="font-semibold">Governed configuration is incomplete.</strong>{' '}
+        This deployment has part of its governed configuration but not all of it, so governed
+        workflows are unavailable. Contact the owner — this is a server configuration problem, not
+        something that can be fixed from this screen.
+      </Banner>
+    );
+  }
+
+  // 4. Legacy-only mode. One coherent notice that also carries the read-only
   //    fact when it applies, rather than a second stacked banner.
   if (legacyOnly) {
     const readOnly = health.data?.health.readOnly === true;
@@ -124,7 +146,7 @@ export default function SystemStatusBanner({
     );
   }
 
-  // 4. Governed mode with a healthy legacy database. The read-only warning is
+  // 5. Governed mode with a healthy legacy database. The read-only warning is
   //    true only on legacy write surfaces; governed writes are unaffected.
   if (health.data?.health.readOnly && onLegacyPath) {
     return (
