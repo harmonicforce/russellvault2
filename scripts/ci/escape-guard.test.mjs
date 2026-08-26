@@ -139,8 +139,14 @@ test('registeredIdsNear finds an id on the cast line itself', () => {
 // --- the real repository ----------------------------------------------------
 
 test('the shipped manifest defines exactly the ids the code references', () => {
+  // ESC-002 was retired by 20260826000100_receiving_rpc_named_parameters.sql.
+  // It was never a typing limitation: three receiving functions had unnamed SQL
+  // parameters, so PostgREST could not call them and the generator omitted
+  // them. Naming the parameters removed the cause, so the entry and its cast
+  // are gone rather than reworded. ESC-002 survives below only as a synthetic
+  // id in the parser fixtures, which test string matching and not this ledger.
   const ids = readManifestIds(readFileSync(MANIFEST_PATH, 'utf8'));
-  assert.deepEqual(ids, ['ESC-001', 'ESC-002', 'ESC-003']);
+  assert.deepEqual(ids, ['ESC-001', 'ESC-003']);
 });
 
 test('the shipped baseline holds no file from the enforced scope', () => {

@@ -8508,6 +8508,14 @@ export type Database = {
         }
         Returns: Json
       }
+      cancel_acquisition_receipt: {
+        Args: {
+          p_reason: string
+          p_receipt_public_id: string
+          p_workspace_id: string
+        }
+        Returns: Json
+      }
       cancel_cycle_count: {
         Args: { p_reason: string; p_session_id: string; p_workspace_id: string }
         Returns: Json
@@ -9165,6 +9173,10 @@ export type Database = {
         Args: { p_workspace_id: string }
         Returns: Json
       }
+      reconcile_acquisition_receipt: {
+        Args: { p_receipt_public_id: string; p_workspace_id: string }
+        Returns: Json
+      }
       reconcile_inventory_media: {
         Args: {
           p_stale_upload_minutes?: number
@@ -9542,6 +9554,10 @@ export type Database = {
           p_subject_kind: string
           p_workspace_id: string
         }
+        Returns: Json
+      }
+      submit_acquisition_receipt: {
+        Args: { p_receipt_public_id: string; p_workspace_id: string }
         Returns: Json
       }
       submit_cycle_count_for_review: {

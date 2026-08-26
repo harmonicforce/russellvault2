@@ -1,311 +1,255 @@
 # Last Implementation Handoff
 
-## Genome Repair Work Order 3 — decouple governed readiness from legacy SQLite health
+## Receiving RPC Dispatch Repair — ESC-002
 
 - Repository: `harmonicforce/russellvault2`; canonical branch: `main`.
-- Branch: `claude/russell-vault-genome-repair-hjt51c` (the existing PR #81
-  branch, refreshed in place).
-- Base SHA: `fa6cd832188d79505f9d41ca777c9ae1d9e7bba7` — current `main`, the
-  merge of PR #83 (Work Order 4), read from GitHub on 2026-08-25.
-- PR: **#81**, open, **draft**, not merged.
+- Branch: `claude/wo-esc002-receiving-rpc-dispatch`.
+- Base SHA: `43ca11400dca6f5fd28859bf5181e6d9811b5f7a` — current `main`, the merge
+  of PR #81 (Work Order 3), read from GitHub 2026-08-26T04:57Z.
 - Release authority: branch and draft PR only. No merge, no deploy, no Railway
-  change, no hosted Supabase contact, no migration.
-- Status: **implemented**, **validated** locally, and **CI-green on attempt 2**
-  after a failed attempt 1. See the CI section — do not restate this as "never
-  failed".
+  change, no hosted Supabase contact.
+- Status: **implemented** and **validated** locally; CI evidence below.
 
-### What changed since the previous revision of this PR
+### Preconditions, verified rather than assumed
 
-PR #81 was written against `77a019a` and its previously observed head was
-`b118c42084a4cc284ca4b4e0d1ce55939dccd2f0`. Both are superseded. The branch was
-**rebased** onto `fa6cd83`; the WO3 commit replayed as `bbef4a5` with exactly
-one conflict — this file, which WO4 had rewritten — resolved by taking `main`'s
-version and then rewriting it here for WO3. A second commit, `1fa4c02`, carries
-the drift repair and the added proofs.
+PR #81 reported `merged: true`, `state: closed`, merged 2026-08-26T04:07:14Z,
+head `ec09e6732c01378cf59c25a1cfea53f99b2d4f63` — matching the expected WO3
+head — and `ec09e673` is an ancestor of `main`. `main` CI: run `32929009096`,
+**attempt 1**, success, no earlier attempt.
 
-The prior PR body claimed `main` was RED. **That claim is stale and has been
-removed.** The `shadow-db-supabase-stack` timeout it described was Work Order
-11's scope and was repaired and merged; `main` at `fa6cd83` is green.
+## The defect
 
-## Behavior before and after
+`20260808000100_s2_receiving_functions.sql` declared three governed receiving
+wrappers with a bare type list and no parameter names:
 
-Before, `GET /api/health` returned **503** whenever the legacy SQLite database
-was missing, unreadable, structurally incomplete or empty. `railway.json`
-health-checks that path, so a store that is authoritative for **no current
-business fact** could veto a governed deployment. That is R-003.
+```sql
+create function public.submit_acquisition_receipt(uuid,text) ...
+create function public.cancel_acquisition_receipt(uuid,text,text) ...
+create function public.reconcile_acquisition_receipt(uuid,text) ...
+```
 
-After, three states are kept separate and only one of them decides readiness:
+Every other function in that file names its parameters. These three did not, so
+`pg_proc.proargnames` was `NULL`. PostgREST resolves a JSON-body RPC by matching
+the body's keys to parameter **names**, and the only alternative convention — a
+single unnamed `json`/`jsonb` parameter — does not apply to `(uuid,text)` or
+`(uuid,text,text)`. All three were therefore uncallable through the transport
+the server uses.
 
-| State | Endpoint | Question |
+### Why pgTAP missed it
+
+The pgTAP suite calls these functions **positionally from SQL**, where unnamed
+parameters are legal. The database semantics were never broken — only the
+dispatch membrane — so 2,673 assertions stayed green over three dead endpoints.
+A governed function's SQL semantics and its transport dispatchability are
+separate properties; proving the first says nothing about the second.
+
+### Why the generated contract exposed it
+
+Work Order 4 generated `shared/database.types.ts` from the catalog. The
+generator emits what PostgREST can call, so all three came back **absent** while
+their named siblings were present. That absence was evidence about the
+**database**, not a limitation of the generator — which is why the correct fix
+was a migration and not a cast.
+
+## Baseline reproduction (PROVEN)
+
+Reproduced against the unmodified baseline: 79 migrations replayed from empty on
+local PostgreSQL, real **PostgREST 13.0.7** in front of it, schema cache freshly
+loaded (155 functions).
+
+| Probe | Token | Result |
 | --- | --- | --- |
-| Process liveness | `GET /api/live` | Is this process up? Depends on nothing. |
-| Governed readiness | `GET /api/health` | Was this deployment given a coherent governed configuration? |
-| Legacy availability | reported in both, decides neither | Is the non-authoritative legacy database usable? |
+| `open_acquisition_receipt` (named sibling, control) | operator | `42501` / **403** `workspace not found or not authorized` |
+| `link_acquisition_receipt_inventory` (named sibling, control) | operator | `42501` / **403** |
+| `submit_acquisition_receipt` | operator | **`PGRST202` / 404** |
+| `reconcile_acquisition_receipt` | operator | **`PGRST202` / 404** |
+| `cancel_acquisition_receipt` | operator | **`PGRST202` / 404** |
 
-`GET /api/version` is unchanged and remains the exact deployment diagnostic.
+The `PGRST202` details named the very parameters searched for. Catalog:
+`proargnames IS NULL` for all three; exactly one overload each; no dependents.
+Positional SQL entered the function body and failed inside
+`app.assert_workspace_role`, i.e. at domain validation rather than resolution.
 
-## The health truth table
+**This rules out every alternative cause.** The controls used the *same* token,
+the *same* nonexistent workspace, and the *same* schema cache, and they passed
+through authentication, RLS, workspace authorization and into business
+validation. The targets never got that far. Overload ambiguity is excluded by
+the catalog (one each); staleness by the freshly loaded cache; fixture state by
+the controls sharing it.
 
-Asserted in `server/src/health/healthContract.test.ts` as a full 6 × 5 matrix
-(6 governed configurations × 5 legacy states), and again over real HTTP in
-`server/src/health/healthRoutes.test.ts`.
+## The repair
 
-| Governed configuration | Legacy condition | HTTP | `mode` | `ok` | `governedReady` | `legacyStatus` |
-| --- | --- | --- | --- | --- | --- | --- |
-| Valid | Ready | 200 | `governed` | true | true | `ready` |
-| Valid | Missing | 200 | `governed` | true | true | `unavailable` |
-| Valid | Corrupt | 200 | `governed` | true | true | `unavailable` |
-| Valid | Required schema missing | 200 | `governed` | true | true | `degraded` |
-| Valid | Empty baseline | 200 | `governed` | true | true | `degraded` |
-| Absent (legacy-only) | Any | 200 | `legacy_only` | false | false | reported |
-| Partial or malformed | Any | 503 | `misconfigured` | false | false | reported |
+`supabase/migrations/20260826000100_receiving_rpc_named_parameters.sql`, one
+forward-only migration.
 
-Partial or malformed governed configuration returns the bounded code
-`governed_configuration_incomplete`; a wholly absent one reports
-`governed_configuration_absent` at 200.
+**`CREATE OR REPLACE`, not DROP.** PostgreSQL refuses to *rename* an existing
+input parameter but permits *adding* a name to one that had none — exactly this
+case, verified empirically before choosing it. Consequences: function identity
+unchanged, so nothing referencing it needs rebuilding; the ACL survives, so no
+re-`GRANT` can widen or narrow it by accident; no window where the governed
+function does not exist; no `CASCADE`.
 
-`ok` now reports **governed readiness**. All six legacy booleans are still
-present with the same names and types, `legacyStatus` is added, and only 200 or
-503 is ever emitted — so a pre-WO3 client still parses the response rather than
-falling into its protocol-error path.
+Bodies keep their `$1/$2/$3` references, so the change is provably
+interface-only. The migration then **asserts its own postcondition** against
+`pg_proc` and fails if any parameter is still unnamed, so it cannot report
+success over a partially applied state.
 
-Readiness is decided by `SUPABASE_URL` + `SUPABASE_ANON_KEY` — the same two
-variables `legacy/accessConfig.ts` and `provenance/config.ts` already read. No
-second configuration-semantic authority was created: `governedReadiness.ts`
-answers only "is this deployment governed, legacy-only, or half-configured",
-and the existing modules keep deciding what their own surfaces do.
+### Before and after
 
-## Security properties
+| Function | Before | After |
+| --- | --- | --- |
+| `submit_acquisition_receipt` | `(uuid, text)` | `(p_workspace_id uuid, p_receipt_public_id text)` |
+| `cancel_acquisition_receipt` | `(uuid, text, text)` | `(p_workspace_id uuid, p_receipt_public_id text, p_reason text)` |
+| `reconcile_acquisition_receipt` | `(uuid, text)` | `(p_workspace_id uuid, p_receipt_public_id text)` |
 
-- `/api/health` performs **no network call and never touches Supabase**.
-  Readiness is a pure function of configuration, so a transient dependency
-  failure cannot fail the probe and cannot create a Railway restart loop.
-- The legacy read sits behind a 5-second TTL cache (`legacyProbeCache.ts`), so
-  slow or contended disk cannot dominate readiness. Diagnostics bypass the
-  cache, because an owner asking for detail is asking about now.
-- Health inspection is **side-effect-free**. With `SEED_LEGACY_ON_EMPTY` absent
-  or set to anything other than exactly `true`, neither startup nor a health
-  check creates the database, creates its parent directory, seeds records, or
-  otherwise mutates legacy state. Proved against real temporary paths in
-  `governedStartup.test.ts`, including `false`, `1`, `TRUE`, `yes` and `''`.
-- `GET /api/diagnostics?workspaceId=<uuid>` requires a bearer token, a
-  well-formed workspace id, and the **owner** role in the named workspace,
-  resolved under the caller's own JWT through `workspace_members`. Operator,
-  viewer and non-member are refused with the same code.
-- **No service-role key** exists anywhere in the server source
-  (`grep -rn 'SERVICE_ROLE\|service_role\|serviceRole' server/src client/src`
-  returns nothing outside tests).
-- Cross-workspace authority is proved by postcondition rather than by a stubbed
-  `true`: a recording membership double asserts the query is filtered by both
-  the **named** workspace and the **token-derived** user id, that an owner of
-  one workspace naming another is refused, that a caller-supplied `userId` never
-  displaces the token-derived one, and that only `workspace_members` is read.
-- Every diagnostic code is bounded. A test asserts no code matches `/`,
-  `select`, `sqlite`, `.db`, `Error:`, a stack frame, `anon`, or `supabase.co`.
+Names are not invented for the generator: they are what the delegate
+`app.transition_receipt(p_workspace_id, p_receipt_public_id, p_action, p_reason)`
+uses, what every sibling in the S2 migration uses, and what
+`server/src/routes/receiving.ts` was already sending.
 
-## Client truth states
+### Preserved, verified in the catalog before and after
 
-`SystemStatusBanner` keyed its legacy warning on the **overall** result status.
-Health is now 200 when only legacy is broken, so that would have silently
-deleted the warning at exactly the moment it was the only thing saying the
-legacy numbers on screen cannot be trusted. It now keys on `legacyStatus`.
+Identical across all three: `SECURITY DEFINER` (`prosecdef=t`), volatile
+(`v`), parallel unsafe (`u`), not strict (`f`), not leakproof (`f`), language
+`sql`, owner unchanged, `proconfig = search_path=""`, returns `jsonb`, ACL
+`owner=X/owner | authenticated=X/owner`, no comments before or after, one
+overload each, zero dependents. Replay-from-empty and
+upgrade-from-the-previous-schema were both exercised and both produce the same
+catalog state.
 
-- When the server omits `legacyStatus` — an older deployment — the parser
-  **derives** it from the three legacy booleans, so every consumer can rely on
-  it. Unavailable legacy data is never presented as healthy, empty, or
-  authoritative.
-- A legacy failure **outranks** the incomplete-configuration notice, so the two
-  can never appear together or contradict each other.
-- Unrecognized server strings for `legacyStatus`, `mode` and `governedReason`
-  are dropped rather than rendered.
+## Security review
 
-## Verification evidence — local, on `1fa4c02`
+- **SECURITY DEFINER**, deliberately and unchanged. Authorization is enforced
+  *inside* the function by `app.assert_workspace_role`, which resolves the
+  caller from `auth.uid()` — i.e. from the token's own `sub` — and checks
+  `workspace_members` for the **named** workspace. A caller cannot reach another
+  workspace by naming it.
+- **`search_path=''`** is retained, so every object reference must be
+  schema-qualified and object shadowing is not possible. The bodies reference
+  `app.transition_receipt` fully qualified.
+- **Executable roles unchanged:** `authenticated` only. `anon` is not granted,
+  and `PUBLIC` is not granted. Asserted in pgTAP and exercised over HTTP.
+- **No service-role anywhere** — not in the server, and deliberately not in the
+  transport harness, where it would let an unauthorized call look successful.
+- **Error disclosure unchanged:** bounded codes (`receipt_not_found`,
+  `receipt_not_open`, `receipt_not_submitted`, `invalid_request`, `42501`).
+
+No security semantics were changed. The repair alters the dispatch membrane
+only.
+
+## Coverage added
+
+| Layer | File | Count |
+| --- | --- | --- |
+| Catalog | `supabase/tests/71_receiving_rpc_dispatch.sql` | 27 assertions |
+| Transport | `scripts/db/transport/` (real HTTP, real PostgREST) | 17 tests |
+| Compile time | `scripts/ci/type-negative.test.mjs` | 5 new cases + a group control |
+
+The catalog test covers **every** governed receiving RPC, not only the three
+that were broken, so a fourth declared without names would fail there rather
+than in production.
+
+**The transport suite is not vacuous:** it fails **14 of 17** against the
+unrepaired baseline and passes **17 of 17** after the repair. The three that pass
+either way are the missing/misspelled/unknown-argument cases, which are
+`PGRST202` in both worlds and are meaningful only alongside the resolution test.
+
+## The generated contract
+
+Regenerated by the pinned CLI (2.109.1) from the schema replayed from empty. The
+diff adds exactly three `Functions` entries and changes nothing else.
+
+Docker image pulls are blocked in the agent environment (the egress policy
+answers `403` at the registry blob layer for both `public.ecr.aws` and Docker
+Hub), so the file could not be produced locally — the same constraint Work Order
+4 recorded. It was generated by a temporary CI step, recovered from that job's
+own `git diff`, applied as a patch, and confirmed **byte-for-byte** by git blob
+hash `784a10b`, matching the object CI produced. It was **not** hand-edited. The
+temporary steps have been removed; `db:types:check` verifies the committed bytes
+on every run.
+
+## ESC-002 retired
+
+Removed from `docs/ai/TYPE_ESCAPE_MANIFEST.md` — not reworded — because its
+cause is gone. `UncontractedRpcName`, `LooseRpc`, `rpcNotInContract` and the
+`client.rpc as LooseRpc` cast are deleted from `server/src/rpcContract.ts`, and
+`rpcUncontracted` is deleted from `server/src/routes/receiving.ts`; all three
+call sites now use the ordinary typed `rpc()` path. **No replacement cast.**
+The retired entry is recorded under a heading that deliberately does not match
+the guard's `### ESC-nnn` form, so a retired id cannot be referenced by code as
+if it were live. **ESC-001 and ESC-003 are untouched.**
+
+## Verification (local, all exit 0)
 
 | Command | Result |
 | --- | --- |
-| `npm ci` (root, client, server) | exit 0 |
-| `npm run lint --prefix client` | exit 0 (warnings only, pre-existing) |
-| `npm run typecheck` (server + client) | exit 0 |
-| `npm run build:ci` (client + server) | exit 0 |
-| `npm test` | exit 0 — server **1134** in 41 files, client **1637** in 68 files, Node guards **154** |
-| `npm run guard:escapes` | exit 0 — 18 enforced files, only ESC-001/002/003 |
-| `node --test scripts/ci/type-negative.test.mjs` | exit 0 — 7 compile-negative proofs |
-| `node scripts/ci/current-state-guard.mjs` | exit 0 |
-| `npm run db:reset` (shim) | exit 0 — 79 migrations replayed from empty |
-| `npm run db:test` (shim) | exit 0 — **70 files, 2673 assertions**, matching the manifest |
-| `npm audit --omit=dev --audit-level=high` (root) | exit 0 |
-| `node scripts/ci/client-audit-gate.mjs` | exit 0 — GHSA-qwww-vcr4-c8h2 waived under the standing BrowserRouter/no-RSC policy |
-| `npm audit --prefix server --omit=dev --audit-level=high` | exit 0 |
-| `npx playwright test --project=chromium-desktop-1440x900 --project=chromium-tablet-portrait-834x1194` | exit 0 — 378 passed, 36 skipped, visual baselines unchanged |
+| `npm ci` (root, client, server) | 0 |
+| `npm run lint --prefix client` | 0 |
+| `npm run typecheck` | 0 |
+| `npm run build:ci` | 0 |
+| `npm test` | server **1134**/41 files, client **1637**/68 files, node guards **154** |
+| `npm run guard:escapes` | 0 — 2 registered escapes (ESC-001, ESC-003) |
+| `node --test scripts/ci/type-negative.test.mjs` | 0 — **12** proofs |
+| `node scripts/ci/current-state-guard.mjs` | 0 |
+| `npm run db:reset` (shim) | 0 — **80** migrations from empty |
+| `npm run db:test` (shim) | 0 — **71 files, 2700 assertions** |
+| `npm run db:transport` (real PostgREST) | 0 — **17/17** |
+| Upgrade path (79-migration schema + this migration) | applied cleanly, names present, ACL preserved |
+| `npm audit` root / client gate / server | 0 / 0 / 0 |
 
-**Not run locally, and why.** `npm run db:types:check` and the
-`shadow-db-supabase-stack` pgTAP lane both need the local Supabase stack. The
-agent environment's egress policy answers `403 Forbidden` to the Docker
-registry blob fetch (`production.cloudfront.docker.com`), so
-`supabase start` cannot pull its images. The full Playwright matrix additionally
-needs WebKit, which is not installed here. All three run in CI on the exact PR
-head; see the CI section. WO3 contains **zero SQL** and does not touch
-`shared/database.types.ts`, so neither database lane can be affected by it.
-
-## CI evidence
-
-Recorded for head **`1f3916123623ee5ba5db183df0339a732bda2976`**. The only
-commit after it on this branch adds this section, which is documentation-only
-and changes no code; its own run is reported in the PR conversation.
-
-**Green on attempt 2 after a failed attempt 1. Do not restate that as "never failed."**
-
-| Run | Event | Attempt | Required job | Conclusion |
-| --- | --- | --- | --- | --- |
-| `32838983007` | `pull_request` | **1** | `build-and-verify` | success |
-| `32838983007` | `pull_request` | **1** | `shadow-db-postgres-shim` | success |
-| `32838983007` | `pull_request` | **1** | `dev-advisory-report` | success |
-| `32838983007` | `pull_request` | **1** | `shadow-db-supabase-stack` | **FAILURE** |
-| `32838983007` | `pull_request` | **2** | all four required jobs | success |
-
-Run `32838983007` attempt 2, conclusion **success**.
-
-### Why attempt 1 failed, and why it is not this change
-
-The failing step was "Run pgTAP suite inside the local stack". The Work Order 11
-runner reported it precisely rather than letting GitHub kill the step silently:
-
-> `db:test — phase suite — exceeded 300000 ms after 315.5s and the process group
-> was terminated (SIGTERM:sent → SIGKILL:sent; group gone after 15.1s).
-> Position: file 16/70 15_acquisition_digest_parity.sql, last completed
-> 14_acquisition_acceptance.sql. Completed 15/70; not started: 54 file(s).
-> Treated as a FAILURE, never a pass.`
-
-Four independent facts place this outside WO3:
-
-1. `git diff origin/main...HEAD -- supabase/ scripts/db/` is **empty**. This
-   change contains no SQL, no migration, and no runner or budget change, so it
-   cannot alter what that lane executes or how long it is given.
-2. The **push-event run `32838975562`, attempt 1, on this exact SHA**, ran the
-   same `shadow-db-supabase-stack` job and its pgTAP step **succeeded in 59s**
-   — concurrently with the run where it stalled. Same commit, same workflow,
-   same lane, opposite outcomes on two runners at the same moment.
-3. The same 70-file suite passed on this SHA in `shadow-db-postgres-shim` in
-   43s, and locally in 50.5s with 2673 assertions.
-4. `15_acquisition_digest_parity.sql` is named in `docs/ai/CURRENT_STATE.md` as
-   the **top platform debt** for exactly this lane, and has already caused a
-   real `main` attempt-1 failure before.
-
-One re-run was issued, for the documented reason of establishing whether the
-failure reproduced. It did not: on attempt 2 the same step completed in **58s**.
-Nothing was skipped, disabled, quarantined, or re-budgeted to obtain green.
-
-The underlying debt is **not repaired here** — that is WO11's lane and would
-require changing `scripts/db/budgets.mjs`, which this work order must not touch.
-It is reported as a live, recurring platform risk: the `supabase-cli` lane's
-suite budget is a hard 300 s sized against a 23 s measurement, and this file can
-exceed it under runner contention.
-
-### `main` baseline CI
-
-`main` at `fa6cd83` is **green**: workflow `CI`, event `push`, run
-`32789241147`, **attempt 1**, conclusion **success** — no earlier attempt. The
-prior revision of this PR claimed `main` was RED; that claim described the
-WO11 timeout, which is merged, and it has been removed.
-
-## Preserved behavior
-
-- **WO2** — legacy routes remain authenticated and bound to
-  `LEGACY_WORKSPACE_ID`; an unconfigured surface still returns bounded
-  `503 legacy_surface_not_configured`; read/write role separation and the exact
-  `ALLOW_LEGACY_WRITES === 'true'` semantics are untouched; CORS is unchanged.
-  Its structural proof over `index.ts` — that the public paths are declared
-  publicly and no legacy prefix is mounted without the guard — passes
-  **unmodified**. `/api/live` was added to `PUBLIC_API_PATHS` so that same proof
-  now covers it; `/api/diagnostics` was deliberately not, because it is
-  owner-gated.
-- **WO11** — the CI timeout hierarchy, budgets, supervisor, progress and suite
-  manifest are untouched; their self-tests pass.
-- **WO4** — the generated contract, `shared/databaseAliases.ts`, the escape
-  manifest and baseline, the compile-negative proofs and the migration-replay
-  drift guard are untouched. The one interaction was the escape guard correctly
-  rejecting a double cast in this PR's own new code; it was **removed**, not
-  baselined.
-
-## Files changed relative to `fa6cd83`
-
-```
-client/src/components/SystemStatusBanner.tsx        client banner keys on legacyStatus
-client/src/components/SystemStatusBanner.test.tsx   +6 precedence / no-contradiction tests
-client/src/lib/healthApi.ts                         WO3 fields, derived fallback, legacyIsUsable
-client/src/lib/healthApi.test.ts                    old-payload and new-payload parsing
-docs/ai/LAST_IMPLEMENTATION_HANDOFF.md              this file
-docs/runbooks/health-and-readiness.md               new runbook
-server/.env.example                                 documents the four endpoints and readiness inputs
-server/src/health/governedReadiness.ts              new — configuration-only readiness
-server/src/health/healthContract.ts                 new — liveness, health, diagnostics, version bodies
-server/src/health/healthRoutes.ts                   new — the handlers behind those four paths
-server/src/health/legacyProbeCache.ts               new — bounded, cached legacy read
-server/src/health/diagnosticsAuth.ts                new — owner-only guard, caller JWT only
-server/src/health/healthContract.test.ts            new — the 6x5 truth table
-server/src/health/healthRoutes.test.ts              new — the same contract over real HTTP
-server/src/health/governedStartup.test.ts           new — bootstrap opt-in and side-effect absence
-server/src/health/diagnosticsAuth.test.ts           new — authorization and cross-workspace proofs
-server/src/index.ts                                 route table for the four paths
-server/src/legacy/routeInventory.ts                 /api/live added to PUBLIC_API_PATHS
-server/src/legacyDatabaseHealth.ts                  superseded buildHealthResponse DELETED
-server/src/legacyDatabaseHealth.test.ts             its 503-veto contract tests removed with it
-```
-
-No migration was added or altered. `docs/ai/CURRENT_STATE.md`,
-`docs/ai/CURRENT_STATE.attestation.json`, `supabase/migrations/**` and
-`shared/database.types.ts` are untouched.
-
-The superseded `buildHealthResponse` is **deleted** from
-`legacyDatabaseHealth.ts` rather than deprecated in place. Two functions with
-the same name and opposite semantics is the duplicate-truth pattern this
-program removes; one import of the wrong one would restore the veto.
-`grep -rn 'buildHealthResponse' server/src client/src` finds it only in
-`health/healthContract.ts` and its callers.
-
-## Deployment and hosted state
-
-- Railway: **not touched**. `railway.json` still declares
-  `healthcheckPath: "/api/health"`, deliberately unchanged — that path is now
-  the governed-readiness probe, which is the correct target. No executable
-  evidence was found that the existing configuration cannot satisfy WO3, so
-  scope was not expanded. Repointing it at `/api/live` is possible but not
-  recommended and is an owner-timed action; see the runbook.
-- Live Supabase project ref: **not checked**. No live read, migration, reset,
-  restore or parity claim was made, so no deployed-configuration read was
-  required.
-- `/api/version` against the deployed app: **not checked / not authorized**.
-- Hosted acceptance: **not performed**. Nothing was deployed.
-- Production data touched: **none**.
-
-## Known limitations and deferred work
-
-- **ESC-002 remains open and is outside this work order.** Work Order 4 found
-  that `submit_acquisition_receipt`, `cancel_acquisition_receipt` and
-  `reconcile_acquisition_receipt` have unnamed SQL parameters and therefore
-  appear uncallable through PostgREST. Repairing them needs a database
-  migration and belongs in its own work order.
-- `db:types:check` and the Supabase-stack pgTAP lane were not run locally; see
-  the "Not run locally" note above. Both ran green in CI on the recorded head —
-  the stack lane only on attempt 2, for the reason recorded in the CI section.
-- The `supabase-cli` lane's 300 s suite budget versus
-  `15_acquisition_digest_parity.sql` remains live platform debt owned by WO11.
-  It is reported, not repaired, and not re-budgeted.
-- The full browser matrix was not run locally: WebKit is not installed in the
-  agent environment. Chromium desktop and tablet-portrait passed.
-- Governed readiness validates the **shape** of `SUPABASE_URL`, never which
-  project it names. Deployment identity remains the deployed runtime's to
-  answer, per `CLAUDE.md`.
-- The anon key is checked only for presence. A syntactically valid but wrong
-  key cannot be detected without a network call, which the probe deliberately
-  does not make.
+**Not run locally:** the Supabase-stack pgTAP lane and `db:types:check`, both of
+which need Docker images this environment cannot pull. Both run in CI, where the
+transport suite also runs against the real Supabase stack.
 
 ## Rollback
 
-Revert this branch's three commits above `fa6cd83`, or close PR #81. Nothing has been
-merged, deployed, or changed in any live system.
+Revert the branch's commits, or close the PR. If the migration has already been
+applied to a database, reverting the repository does **not** restore unnamed
+parameters — and should not: the previous state was the defect. To roll the
+database back deliberately, `CREATE OR REPLACE` the three functions with a bare
+type list, which is the inverse operation and is equally non-destructive. Note
+that PostgreSQL will not let a later migration *rename* these parameters; only
+adding names to unnamed ones is permitted, so a future rename would require a
+DROP and full privilege reconstruction.
+
+## Deployment requirements
+
+Nothing here is deployed. This change is **merged-and-deployable at most**, and
+this document must not be read as saying production is repaired.
+
+**PostgREST caches the schema.** Until that cache reloads, the repaired RPCs keep
+answering `PGRST202` — indistinguishable from the defect. Supabase Cloud's DDL
+event triggers normally reload it automatically; if the three RPCs still return
+`PGRST202` after deploying, run `notify pgrst, 'reload schema'`. The migration
+deliberately does not embed that NOTIFY: there is no such convention in this
+repository and inventing one was out of scope. See
+`docs/runbooks/receiving-rpc-dispatch.md`.
+
+## Known limitations
+
+- Production is **not** verified. No hosted Supabase was contacted, the project
+  ref was not read from Railway, and no owner-facing receiving action was
+  exercised against the deployed app.
+- The transport fixture commits and expects a freshly reset database; it is a
+  CI/local harness, never pointed at a hosted project.
+- The `supabase-cli` lane's 300 s suite budget remains WO11 platform debt. It
+  was not resized here.
+- `docs/ai/CURRENT_STATE.md` narrative is unchanged; only the auto-authorized
+  machine-derived baseline block moved, together with the attestation.
+
+## Unrelated finding: the Supabase Preview check
+
+A non-required **"Supabase Preview"** check appears on pull requests, and its
+details URL points at the stale 40-migration decoy project rather than the
+project whose ledger matches this repository. It was `skipped` on PR #81.
+
+It could mislead a reviewer: a green or skipped "Supabase Preview" next to the
+required jobs reads like hosted-database evidence, and it is not. It is **not**
+production evidence, was not deployed to, was not mutated, and was not repaired
+here. It deserves a separate production-identity / control-plane work order.
 
 ## Exact next decision
 
-Create the separate **Receiving RPC Dispatch Repair** work order for ESC-002
-before beginning WO5, then return to review and merge PR #81.
+Review and merge this PR, deploy the migration to the verified production
+project, confirm the schema cache reloaded, and exercise submit / cancel /
+reconcile through the deployed app before treating receiving as functional.

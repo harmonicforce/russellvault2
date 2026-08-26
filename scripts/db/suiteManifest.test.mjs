@@ -23,13 +23,19 @@ test('the shipped manifest matches the pgTAP suite on disk', () => {
   assert.equal(result.ok, true, result.problems.join('; '));
 });
 
-test('the shipped manifest still declares 70 files and 2673 assertions', () => {
+test('the shipped manifest still declares 71 files and 2700 assertions', () => {
   // The figures Work Order 11 must preserve. If this test changes, the diff has
   // to say why.
-  assert.equal(onDisk.length, 70);
-  assert.equal(Object.keys(manifest.files).length, 70);
-  assert.equal(expectedTotal(manifest), 2673);
-  assert.equal(manifest.totalAssertions, 2673);
+  //
+  // WHY IT CHANGED: 70 files / 2,673 assertions until the ESC-002 repair, which
+  // adds 71_receiving_rpc_dispatch.sql and its 27 assertions. That file exists
+  // because the previous 2,673 could not see a defect that made three governed
+  // receiving RPCs unreachable through PostgREST — they call those functions
+  // positionally from SQL, where unnamed parameters are legal.
+  assert.equal(onDisk.length, 71);
+  assert.equal(Object.keys(manifest.files).length, 71);
+  assert.equal(expectedTotal(manifest), 2700);
+  assert.equal(manifest.totalAssertions, 2700);
 });
 
 test('15_acquisition_digest_parity.sql is still in the suite with its four assertions', () => {
@@ -79,14 +85,14 @@ test('assertions MOVED between files are caught, which a bare total could not do
 test('an exactly matching run passes', () => {
   const result = checkExecution(manifest, { ...manifest.files });
   assert.equal(result.ok, true, result.problems.join('; '));
-  assert.equal(result.observedTotal, 2673);
-  assert.equal(result.declaredTotal, 2673);
+  assert.equal(result.observedTotal, 2700);
+  assert.equal(result.declaredTotal, 2700);
 });
 
 test('the pg_prove roll-up is checked against the manifest', () => {
-  assert.equal(checkSummary(manifest, { files: 70, tests: 2673 }).ok, true);
-  assert.match(checkSummary(manifest, { files: 69, tests: 2673 }).problems.join(' '), /executed 69 files/);
-  assert.match(checkSummary(manifest, { files: 70, tests: 2669 }).problems.join(' '), /reported 2669 assertions/);
+  assert.equal(checkSummary(manifest, { files: 71, tests: 2700 }).ok, true);
+  assert.match(checkSummary(manifest, { files: 70, tests: 2700 }).problems.join(' '), /executed 70 files/);
+  assert.match(checkSummary(manifest, { files: 71, tests: 2696 }).problems.join(' '), /reported 2696 assertions/);
 });
 
 test('a runner that reports no roll-up at all fails rather than being assumed complete', () => {

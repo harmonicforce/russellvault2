@@ -54,37 +54,6 @@ this work order, but they cannot grow.
 - **Removal condition:** `supabase gen types` emitting nullable parameter types,
   or the governed functions declaring `strict`/non-null parameters.
 
-### ESC-002 — receiving functions absent from the contract
-
-- **File and symbol:** `server/src/rpcContract.ts`, `rpcNotInContract` and the
-  closed union `UncontractedRpcName`
-- **Covered names:** `submit_acquisition_receipt`, `cancel_acquisition_receipt`,
-  `reconcile_acquisition_receipt`
-- **Category:** RPC name bypass — but the underlying cause is a **database
-  defect, not a typing limitation**
-- **Why generated types cannot express it:**
-  `supabase/migrations/20260808000100_s2_receiving_functions.sql` declares all
-  three with UNNAMED parameters (`create function
-  public.submit_acquisition_receipt(uuid,text)`). PostgREST resolves a
-  JSON-body RPC by matching the body's keys to parameter NAMES, so a function
-  whose parameters have no names cannot be called that way at all. The
-  generator omits all three for exactly that reason, while their named siblings
-  (`open_acquisition_receipt`, `record_acquisition_receipt_line`) are present.
-- **Narrowest cast used:** one `client.rpc as LooseRpc` inside
-  `rpcNotInContract`. The function name is still constrained — to the closed
-  three-name union, not to `string`.
-- **Runtime validation protecting it:** the result goes through
-  `requireJsonObject`, and PostgREST's own error is surfaced by `fail()`.
-- **Consequence, stated plainly:** `POST /receipts/:id/submit`, `/cancel` and
-  `/reconcile` are believed non-functional against a real deployment. The pgTAP
-  suite does not catch it because those tests call the functions positionally
-  in SQL and never traverse PostgREST.
-- **Removal condition:** a migration that drops and recreates the three
-  functions with named parameters (`create or replace` cannot rename a
-  parameter). That is database work outside Work Order 4's scope; until it
-  lands, the calls are left exactly as they are, because changing them would
-  only move the failure.
-
 ### ESC-003 — bigint minor units on the wire
 
 - **File and symbol:** `server/src/rpcContract.ts`, `minorUnitArg`
@@ -106,6 +75,35 @@ this work order, but they cannot grow.
 - **Removal condition:** Work Order 7 settles the repository-wide
   representation for bigint and minor units. This helper is the single place
   that changes.
+
+## Retired entries
+
+These ids are NOT registered. The headings below deliberately do not match the
+`### ESC-nnn` form the guard parses, so retired ids cannot be referenced by code
+as though they were still live.
+
+### Retired — ESC-002, receiving functions absent from the contract (2026-08-26)
+
+Retired by `supabase/migrations/20260826000100_receiving_rpc_named_parameters.sql`,
+and removed rather than reworded because its cause is gone.
+
+It was never a typing limitation. `20260808000100_s2_receiving_functions.sql`
+declared `submit_acquisition_receipt`, `cancel_acquisition_receipt` and
+`reconcile_acquisition_receipt` with UNNAMED parameters. PostgREST resolves a
+JSON-body RPC by matching the body's keys to parameter NAMES, so all three were
+uncallable through the transport the server uses, and the generator omitted
+them for exactly that reason. The entry existed to record a **database defect**
+that the type system was being asked to absorb.
+
+Naming the parameters removed the cause. The generated contract now describes
+all three, `server/src/routes/receiving.ts` calls them through the ordinary
+typed `rpc()` path, and the widening cast in `server/src/rpcContract.ts` is
+deleted.
+
+Why the previous suite could not see it: the pgTAP tests call these functions
+positionally from SQL, where unnamed parameters are legal. `supabase/tests/71_receiving_rpc_dispatch.sql`
+now asserts the dispatch contract in the catalog, and `scripts/db/transport/`
+exercises all three over real HTTP against real PostgREST.
 
 ## Known contract hazards that are NOT escapes
 

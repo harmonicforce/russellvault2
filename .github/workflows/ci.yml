@@ -160,29 +160,6 @@ jobs:
       #
       # Runs BEFORE the pgTAP suite deliberately: it depends only on the reset,
       # and a flaky suite should not be able to withhold a type-contract answer.
-      # TEMPORARY — remove before this PR is reviewed.
-      #
-      # The agent environment cannot pull the Supabase container images (the
-      # egress policy answers 403 at the registry blob layer), so the generated
-      # contract cannot be regenerated locally. This step regenerates it here,
-      # from the schema this job just replayed from empty, and uploads it so the
-      # exact bytes can be committed. The check step below then verifies those
-      # same bytes in the same run. This mirrors what Work Order 4 did for the
-      # same reason.
-      - name: TEMP regenerate the generated database types
-        timeout-minutes: 8
-        env:
-          DB_TEST_STEP_BUDGET_MS: '480000'
-          DB_TEST_JOB_BUDGET_MS: '1500000'
-        run: npm run db:types:write
-      - name: TEMP print the generated-contract diff
-        run: |
-          set -Eeuo pipefail
-          echo '===RVDIFF-BEGIN==='
-          git --no-pager diff --unified=3 -- shared/database.types.ts
-          echo '===RVDIFF-END==='
-          echo "sha256: $(sha256sum shared/database.types.ts)"
-
       - name: Verify the generated database types match the replayed schema
         timeout-minutes: 8
         env:

@@ -29,8 +29,8 @@
 // joining is presentation assembly and lives in ../receiving/contract.ts.
 
 import {
-  asRpcArgs, requireJsonObject, rpcNotInContract,
-  type JsonObject, type NullableArgs, type UncontractedRpcName,
+  asRpcArgs, requireJsonObject,
+  type JsonObject, type NullableArgs,
 } from '../rpcContract.js';
 import type { FunctionArgs, FunctionName } from '../../../shared/databaseAliases.js';
 import { Router } from 'express';
@@ -429,21 +429,6 @@ router.get('/inventory-subjects', requireMember, asyncRoute(async (req, res) => 
  * name and arguments are checked against the generated contract, and the jsonb
  * result is narrowed at runtime rather than asserted.
  */
-/**
- * The three receiving functions the generated contract cannot describe, because
- * their SQL parameters are unnamed and PostgREST therefore cannot call them.
- * See rpcContract.ts and docs/ai/TYPE_ESCAPE_MANIFEST.md (ESC-002).
- */
-async function rpcUncontracted(
-  client: Supa,
-  fn: UncontractedRpcName,
-  args: Record<string, unknown>,
-): Promise<JsonObject> {
-  const { data, error } = await rpcNotInContract(client, fn, args);
-  if (error) fail(error);
-  return requireJsonObject(data, () => new ReceivingError('dependency_failed', 502));
-}
-
 async function rpc<N extends FunctionName>(
   client: Supa,
   fn: N,
@@ -511,7 +496,7 @@ router.post('/receipt-lines/:receiptLinePublicId/correct', requireOperator, asyn
 
 router.post('/receipts/:receiptPublicId/cancel', requireOperator, asyncRoute(async (req, res) => {
   const { workspaceId, client } = caller(req);
-  res.json(await rpcUncontracted(client, 'cancel_acquisition_receipt', {
+  res.json(await rpc(client, 'cancel_acquisition_receipt', {
     p_workspace_id: workspaceId,
     p_receipt_public_id: publicId(req.params.receiptPublicId),
     p_reason: requiredText(req.body?.reason, 1, 500),
@@ -527,7 +512,7 @@ router.post('/receipts/:receiptPublicId/cancel', requireOperator, asyncRoute(asy
  */
 router.post('/receipts/:receiptPublicId/submit', requireOperator, asyncRoute(async (req, res) => {
   const { workspaceId, client } = caller(req);
-  res.json(await rpcUncontracted(client, 'submit_acquisition_receipt', {
+  res.json(await rpc(client, 'submit_acquisition_receipt', {
     p_workspace_id: workspaceId,
     p_receipt_public_id: publicId(req.params.receiptPublicId),
   }));
@@ -595,7 +580,7 @@ router.post('/inventory-links/:inventoryLinkPublicId/unlink', requireOperator, a
  */
 router.post('/receipts/:receiptPublicId/reconcile', requireOwner, asyncRoute(async (req, res) => {
   const { workspaceId, client } = caller(req);
-  res.json(await rpcUncontracted(client, 'reconcile_acquisition_receipt', {
+  res.json(await rpc(client, 'reconcile_acquisition_receipt', {
     p_workspace_id: workspaceId,
     p_receipt_public_id: publicId(req.params.receiptPublicId),
   }));

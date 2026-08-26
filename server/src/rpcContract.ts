@@ -98,6 +98,28 @@ export function isJsonObject(value: unknown): value is JsonObject {
 }
 
 /**
+ * A note on what is NOT in this module any more.
+ *
+ * It used to carry a closed union of three receiving function names plus one
+ * widening cast, so the server could call functions the generated contract did
+ * not contain: submit, cancel and reconcile for acquisition receipts. They were
+ * missing for a real reason. `20260808000100_s2_receiving_functions.sql`
+ * declared all three with UNNAMED SQL parameters, and PostgREST resolves a
+ * JSON-body RPC by matching the body's keys to parameter NAMES, so they could
+ * not be called that way at all. The generator omits what PostgREST cannot
+ * reach, and the ledger recorded the gap rather than papering over it.
+ *
+ * `20260826000100_receiving_rpc_named_parameters.sql` gave those parameters
+ * names. The generator now emits all three, and they are called through the
+ * same typed path as every other governed function, so the union, the cast and
+ * the ledger entry are gone rather than rewritten.
+ *
+ * The lesson worth keeping: an absence from the generated contract is evidence
+ * about the DATABASE, not a limitation of the generator. The fix for one
+ * belongs in a migration, never in a cast.
+ */
+
+/**
  * Narrow an RPC result to a JSON object, at runtime.
  *
  * The governed functions return `jsonb`, which the generator can only describe
@@ -133,63 +155,6 @@ export function jsonNumber(obj: JsonObject, key: string, onInvalid: (key: string
   const value = obj[key];
   if (typeof value !== 'number' || !Number.isFinite(value)) throw onInvalid(key);
   return value;
-}
-
-/**
- * Functions this repository calls over PostgREST that the generated contract
- * does NOT contain — because they are not callable that way at all.
- *
- * THIS IS A DEFECT LEDGER, NOT AN ESCAPE HATCH.
- *
- * `supabase/migrations/20260808000100_s2_receiving_functions.sql` declares
- * these three with UNNAMED parameters:
- *
- *   create function public.submit_acquisition_receipt(uuid,text) …
- *   create function public.cancel_acquisition_receipt(uuid,text,text) …
- *   create function public.reconcile_acquisition_receipt(uuid,text) …
- *
- * PostgREST resolves a JSON-body RPC by matching the body's keys to parameter
- * NAMES. A function whose parameters have no names cannot be matched, which is
- * why the generator omits all three while their named siblings
- * (open_acquisition_receipt, record_acquisition_receipt_line) are present. The
- * pgTAP suite does not catch it: those tests call the functions positionally in
- * SQL and never traverse PostgREST.
- *
- * So POST /receipts/:id/submit, /cancel and /reconcile are believed
- * non-functional against a real deployment. Repairing that means a migration
- * that drops and recreates the three with named parameters, which is database
- * work outside this work order. Until then the calls are left exactly as they
- * are — changing them would only move the failure — and the type system is told
- * the truth about why they cannot be checked.
- *
- * The union is CLOSED. Adding a name here requires a matching entry in
- * docs/ai/TYPE_ESCAPE_MANIFEST.md, and scripts/ci/escape-guard.mjs fails if the
- * two disagree.
- */
-export type UncontractedRpcName =
-  | 'submit_acquisition_receipt'
-  | 'cancel_acquisition_receipt'
-  | 'reconcile_acquisition_receipt';
-
-/**
- * Call one of the functions above. Registered as ESC-002.
- *
- * The name is still constrained — to the closed union, not to `string` — and
- * the result is still narrowed at runtime. What cannot be checked is the
- * argument shape, because the contract has no entry to check it against.
- */
-type LooseRpc = (fn: string, args: Record<string, unknown>) => PromiseLike<{ data: unknown; error: unknown }>;
-
-export async function rpcNotInContract(
-  client: { rpc: unknown },
-  fn: UncontractedRpcName,
-  args: Record<string, unknown>,
-): Promise<{ data: unknown; error: unknown }> {
-  // The typed client refuses a name it has no entry for, which is the whole
-  // point of typing it — and also the reason this call cannot go through it.
-  // The widening is confined to this line and covers only these three names.
-  const call = client.rpc as LooseRpc;
-  return call.call(client, fn, args);
 }
 
 /**
