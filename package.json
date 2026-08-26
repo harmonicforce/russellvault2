@@ -20,6 +20,7 @@
     "guard:current-state": "node scripts/ci/current-state-guard.mjs",
     "db:reset": "node scripts/db/reset.mjs",
     "db:test": "node scripts/db/test.mjs",
+    "db:transport": "node scripts/db/transport/run.mjs",
     "start": "npm run start --prefix server",
     "seed": "npm run seed --prefix server",
     "db:manifest": "node scripts/db/test.mjs --write-manifest",

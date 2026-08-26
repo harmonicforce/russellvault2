@@ -40,8 +40,8 @@ The block below is **machine-owned**. `scripts/ci/current-state-guard.mjs` parse
 
 <!-- machine-derived-baseline:begin -->
 - reviewed-main-sha: `a647b77a0f88fbaac9abc86430be58502a562bf9`
-- governed-migration-count: `79`
-- last-migration-name: `20260819000200_null_safe_acquisition_mutation_guards`
+- governed-migration-count: `80`
+- last-migration-name: `20260826000100_receiving_rpc_named_parameters`
 <!-- machine-derived-baseline:end -->
 
 Evidence classes for the block: SHA **[github]**, count and last migration **[repo]**.
