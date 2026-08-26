@@ -567,7 +567,11 @@ test('the repaired repository baseline passes the guard', () => {
 });
 
 test('the repository migration set matches the attested digest', () => {
+  // The tail of the governed migration set, pinned so a migration that lands
+  // without moving the attestation is caught here as well as by the guard.
+  // Updated by the ESC-002 receiving RPC dispatch repair, which added
+  // 20260826000100 — the first migration after the null-safe mutation guards.
   const names = readMigrationNames();
   assert.ok(names.length > 0);
-  assert.equal(names[names.length - 1], '20260819000200_null_safe_acquisition_mutation_guards');
+  assert.equal(names[names.length - 1], '20260826000100_receiving_rpc_named_parameters');
 });

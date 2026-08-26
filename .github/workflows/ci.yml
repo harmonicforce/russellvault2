@@ -184,6 +184,23 @@ jobs:
         run: |
           set -Eeuo pipefail
           SHADOW_DB_RUNNER=supabase-cli npm run db:test
+      # The transport lane. pgTAP proves the governed functions' SEMANTICS by
+      # calling them positionally from SQL; this proves their DISPATCHABILITY by
+      # calling them the way the server does — real HTTP, to the real PostgREST
+      # in this stack, with a named JSON body. ESC-002 was a defect that only
+      # this lane can see: three receiving functions kept perfect SQL semantics
+      # while being unreachable by name.
+      - name: Run the PostgREST transport suite (real HTTP against this stack)
+        timeout-minutes: 6
+        run: |
+          set -Eeuo pipefail
+          eval "$(npx --yes supabase@${{ steps.cli.outputs.version }} status -o env)"
+          RV_TRANSPORT_API_URL="$API_URL" \
+          RV_TRANSPORT_ANON_KEY="$ANON_KEY" \
+          RV_TRANSPORT_JWT_SECRET="$JWT_SECRET" \
+          RV_TRANSPORT_DB_URL="$DB_URL" \
+          npm run db:transport
+
       - name: Diagnostics if the stack lane failed
         # Backstop for the one case the runner cannot report on: being killed
         # from outside before it reacted. Never fails the job on its own.

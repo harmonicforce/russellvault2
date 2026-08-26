@@ -32,9 +32,9 @@
       "'.sql' suffix, one per line, each line newline-terminated. The digest catches a",
       "replaced or renamed migration that leaves the count unchanged."
     ],
-    "expectedCount": 79,
-    "lastMigrationName": "20260819000200_null_safe_acquisition_mutation_guards",
-    "setDigest": "sha256:da426b95d517cb89626809c0ce4411ce49973b70429bb00954474daee0d10592",
+    "expectedCount": 80,
+    "lastMigrationName": "20260826000100_receiving_rpc_named_parameters",
+    "setDigest": "sha256:377c3f5366c214b5bfeb5927a0942b7e8b56307b31548f415468b35e436be8b7",
     "sourceOfTruth": "supabase/migrations/*.sql",
     "derivedAssertion": "supabase/tests/06_provenance_structure.sql",
     "evidenceClass": "repository"
