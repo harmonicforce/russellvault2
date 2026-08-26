@@ -175,12 +175,13 @@ jobs:
           DB_TEST_STEP_BUDGET_MS: '480000'
           DB_TEST_JOB_BUDGET_MS: '1500000'
         run: npm run db:types:write
-      - name: TEMP upload the regenerated database types
-        uses: actions/upload-artifact@v4
-        with:
-          name: generated-database-types
-          path: shared/database.types.ts
-          retention-days: 1
+      - name: TEMP print the generated-contract diff
+        run: |
+          set -Eeuo pipefail
+          echo '===RVDIFF-BEGIN==='
+          git --no-pager diff --unified=3 -- shared/database.types.ts
+          echo '===RVDIFF-END==='
+          echo "sha256: $(sha256sum shared/database.types.ts)"
 
       - name: Verify the generated database types match the replayed schema
         timeout-minutes: 8
