@@ -84,7 +84,7 @@
         "observedAtUtc": "2026-08-26T11:52:00Z",
         "governedLedgerCount": 79,
         "lastMigrationName": "20260819000200_null_safe_acquisition_mutation_guards",
-        "note": "Governed public.schema_migrations_log reports 79/79 with the same last migration as the reviewed repository set, and migration 80 (20260826000100_receiving_rpc_named_parameters) is NOT applied. Read-only catalog on 2026-08-26 also matched this repository's replayed schema exactly: 119 public tables with an identical sha256 over their sorted names, 54 enums, 17 views, 8 receiving RPCs, and all three receiving RPCs still carrying UNNAMED parameters. Reachable and ACTIVE_HEALTHY, in organization mbxqxhxmvocethwktvct \u2014 a DIFFERENT organization from the one a scoped project listing returns, which is why that listing appears to omit it. Its Supabase display name contains the word 'production'; a name is not authority and was not used to classify it. Matching a schema proves what a database CONTAINS, never which database the deployed service is CONFIGURED to use. Production identity remains UNVERIFIED."
+        "note": "Governed public.schema_migrations_log reports 79/79 with the same last migration as the reviewed repository set, and migration 80 (20260826000100_receiving_rpc_named_parameters) is NOT applied. Read-only catalog on 2026-08-26 also matched this repository's replayed schema exactly: 119 public tables with an identical sha256 over their sorted names, 54 enums, 17 views, 8 receiving RPCs, and all three receiving RPCs still carrying UNNAMED parameters. Reachable and ACTIVE_HEALTHY, in organization mbxqxhxmvocethwktvct — a DIFFERENT organization from the one a scoped project listing returns, which is why that listing appears to omit it. Its Supabase display name contains the word 'production'; a name is not authority and was not used to classify it. Matching a schema proves what a database CONTAINS, never which database the deployed service is CONFIGURED to use. Production identity remains UNVERIFIED."
       },
       {
         "ref": "ykdyqnvmwpxhowbwhzqz",
@@ -93,7 +93,7 @@
         "observedAtUtc": "2026-08-26T11:52:00Z",
         "governedLedgerCount": 40,
         "lastMigrationName": "20260729000300_cycle_count_observations",
-        "note": "Governed public.schema_migrations_log reports 40, tail 20260729000300_cycle_count_observations \u2014 re-confirmed by read-only catalog on 2026-08-26, which also found only 69 public tables, 2 of 4 governed marker tables, and ZERO receiving RPCs. It is additionally the target of this repository's 'Supabase Preview' GitHub check; that integration's preview branching is DISABLED, so the check is a permanent no-op that neither deploys nor mutates. It remains an ACTIVE_HEALTHY database displayed as 'The Russell Vault 2', which is exactly what makes it dangerous. Do not treat it as production."
+        "note": "Governed public.schema_migrations_log reports 40, tail 20260729000300_cycle_count_observations — re-confirmed by read-only catalog on 2026-08-26, which also found only 69 public tables, 2 of 4 governed marker tables, and ZERO receiving RPCs. It is additionally the target of this repository's 'Supabase Preview' GitHub check; that integration's preview branching is DISABLED, so the check is a permanent no-op that neither deploys nor mutates. It remains an ACTIVE_HEALTHY database displayed as 'The Russell Vault 2', which is exactly what makes it dangerous. Do not treat it as production."
       },
       {
         "ref": "ssqrgfbhqfufnjrsjpgj",
@@ -124,7 +124,7 @@
         "failedJobs": [
           "shadow-db-supabase-stack"
         ],
-        "note": "The 'Run pgTAP suite inside the local stack' step ran 14:45:56Z\u201314:58:08Z on 2026-08-19 (~12m12s) and failed. The other three required jobs were green on attempt 1."
+        "note": "The 'Run pgTAP suite inside the local stack' step ran 14:45:56Z–14:58:08Z on 2026-08-19 (~12m12s) and failed. The other three required jobs were green on attempt 1."
       }
     ],
     "requiredJobs": [
@@ -139,7 +139,7 @@
       {
         "name": "shadow-db-supabase-stack",
         "conclusion": "success",
-        "note": "Re-run on attempt 2; the pgTAP step completed in 59s (04:25:22Z\u201304:26:21Z on 2026-08-21)."
+        "note": "Re-run on attempt 2; the pgTAP step completed in 59s (04:25:22Z–04:26:21Z on 2026-08-21)."
       },
       {
         "name": "dev-advisory-report",
@@ -178,14 +178,14 @@
     "shipped": [
       {
         "slice": "S1 governed acquisition",
-        "proof": "migrations 20260804000100\u201320260806000800; routes /acquisitions, /acquisitions/:sourceSystemPublicId/:linePublicId, /acquisition-review"
+        "proof": "migrations 20260804000100–20260806000800; routes /acquisitions, /acquisitions/:sourceSystemPublicId/:linePublicId, /acquisition-review"
       },
       {
-        "slice": "S2.1\u2013S2.3 governed receiving",
+        "slice": "S2.1–S2.3 governed receiving",
         "proof": "migrations 20260807000100, 20260808000100, 20260809000100; routes /receiving, /receiving/:receiptPublicId"
       },
       {
-        "slice": "S2.4\u2013S2.6 cost basis and allocation",
+        "slice": "S2.4–S2.6 cost basis and allocation",
         "proof": "migrations 20260812000100, 20260815000100, 20260815000200; routes /cost, /cost/:componentPublicId; cost-basis algorithm version 1.1.0"
       },
       {
@@ -203,7 +203,7 @@
         "proof": "No client route or page mounts any reconciliation surface at the reviewed SHA."
       },
       {
-        "slice": "S3.4\u2013S3.8 historical import and cutover",
+        "slice": "S3.4–S3.8 historical import and cutover",
         "proof": "No import-execution migrations or governed cutover handlers exist at the reviewed SHA."
       }
     ],
