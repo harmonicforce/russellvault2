@@ -219,9 +219,9 @@
     "note": "Legacy SQLite surfaces (/inventory, /purchases, /cost-links, /listings, /sales, /checks) remain mounted ungated during transition and must never be conflated with governed truth."
   },
   "liveParity": {
-    "$comment": "Parity is a claim about a NAMED database. It cannot be stated for production while production identity is unverified.",
+    "$comment": "Parity is a claim about a NAMED database. Production is named: ncyqqitqtsyjrijieykd. Parity against it has simply not been measured yet.",
     "checkedForCanonicalProduction": false,
-    "reason": "deploymentIdentity.verificationPerformed is false, so there is no verified production target to claim parity against.",
-    "evidenceClass": "not_inspectable"
+    "reason": "Read-only catalog inspection on 2026-08-26 confirmed the canonical production project is at governed ledger 79 with migration 80 not applied — the pre-repair state. A full parity run has not been performed, so no parity claim is made either way.",
+    "evidenceClass": "live_schema"
   }
 }

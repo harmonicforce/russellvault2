@@ -109,10 +109,10 @@ receiving RPCs still carry **UNNAMED** parameters — i.e. the candidate sits at
 exactly the pre-repair state migration 80 was written against.
 
 Hosted PostgREST resolution for those three RPCs was **not** probed. Doing so
-would require either a mutation or an authenticated application call against a
-project whose production role is unproven. The catalog evidence (`proargnames IS
-NULL`) is sufficient and non-mutating: with unnamed parameters PostgREST cannot
-resolve them by name, so they are unreachable there today.
+would require either a mutation or an authenticated application call against
+production, and this work order is read-only. The catalog evidence (`proargnames
+IS NULL`) is sufficient and non-mutating: with unnamed parameters PostgREST
+cannot resolve them by name, so they are unreachable there today.
 
 ## Supabase Preview — autopsy
 
