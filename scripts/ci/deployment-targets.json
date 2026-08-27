@@ -5,23 +5,28 @@
     "in every URL the browser sends. It is recorded here so a target can be COMPARED, and nowhere",
     "else, so there is exactly one place to change when the owner rotates or moves a project.",
     "",
-    "canonicalProductionRef is DELIBERATELY null until deployment identity is verified from the",
-    "deployed Railway environment. While it is null the guard fails closed on every production",
-    "check: it will not accept any target, including one that looks right. That is the intended",
-    "behaviour — an unproven canonical identity must block deployment, never wave it through.",
+    "canonicalProductionRef is set from the REPOSITORY OWNER'S DECLARATION. The owner knows their",
+    "own deployment; that is authority. It is NOT a reading of the deployed Railway runtime, which",
+    "no verifying environment has been able to reach, and it is deliberately not recorded as one.",
+    "See identityBasis below and deploymentIdentity in CURRENT_STATE.attestation.json.",
+    "",
+    "Setting it does NOT make deployment unconditional. This guard still resolves the target from",
+    "the environment it is actually run in and rejects anything that is not this ref. A declaration",
+    "fixes the expected answer; the guard checks the environment in front of you against it.",
     "",
     "OWNER UPDATE PROCEDURE is documented in docs/runbooks/deployment-target-guard.md."
   ],
   "schemaVersion": 1,
-  "canonicalProductionRef": null,
-  "canonicalProductionUnverifiedReason": "Production identity has never been read from the deployed Railway service. The egress policy in every verifying environment so far has answered 403 to CONNECT for the live app host, and Railway environment variables are not stored in this repository.",
+  "canonicalProductionRef": "ncyqqitqtsyjrijieykd",
+  "identityBasis": "owner_declaration",
+  "identityBasisNote": "Declared by the repository owner in the 'Production Identity and Supabase Preview Integrity' follow-up work order, 2026-08-26. Corroborated by read-only catalog evidence (see the entry below). NOT independently read from the deployed Railway service: the egress policy answered 403 to CONNECT for the live app host, so that evidence class was unobtainable in this environment.",
   "knownRefs": [
     {
       "ref": "ncyqqitqtsyjrijieykd",
-      "classification": "UNKNOWN",
+      "classification": "CANONICAL_PRODUCTION",
       "displayName": "russellvault2-production",
-      "note": "STRONGEST production candidate and NOT confirmed. Its public-table fingerprint matches this repository's replayed schema exactly, but a schema that matches the repository proves what a database CONTAINS, never which database the deployed service is CONFIGURED to use. Its name contains 'production'; a name is not authority. Deployment stays blocked until the ref is read from the deployed environment.",
-      "deployable": false
+      "note": "Canonical production, established by REPOSITORY OWNER DECLARATION and corroborated by read-only catalog evidence: governed ledger 79 with this repository's tail, 119 public tables whose sha256 over sorted names matches the local replay exactly, 54 enums, 17 views, all four governed marker tables, 8 receiving RPCs, migration 80 not applied. The corroboration is what a database CONTAINS; the owner declaration is what makes it canonical. Its display name contains 'production'; that played no part in the classification, and never may.",
+      "deployable": true
     },
     {
       "ref": "ykdyqnvmwpxhowbwhzqz",

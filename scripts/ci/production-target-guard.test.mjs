@@ -4,10 +4,11 @@
 // A guard that only proves it accepts the right answer has not been tested at
 // all: the failure it exists to prevent is accepting a wrong one.
 //
-// The canonical-accept cases build their own registry rather than reading the
-// shipped one, because the shipped registry deliberately has no canonical ref
-// yet. Testing against it alone would let "accepts the canonical target" pass
-// vacuously forever.
+// Most cases build their own registry rather than reading the shipped one, so
+// the rejection proofs keep working whatever the shipped registry says. The
+// shipped registry is then pinned separately, at the bottom, against the state
+// it is actually in — including that identity rests on an owner declaration and
+// not on a reading of the deployed runtime.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -177,16 +178,69 @@ test('non-production acceptance uses a DIFFERENT code from production acceptance
 
 // --- the shipped registry, as it actually stands ----------------------------
 
-test('the shipped registry has no canonical ref, so production is refused today', () => {
+const OWNER_DECLARED_CANON = 'ncyqqitqtsyjrijieykd';
+const SHIPPED_PREVIEW = 'ykdyqnvmwpxhowbwhzqz';
+const SHIPPED_LEGACY = 'ssqrgfbhqfufnjrsjpgj';
+
+test('the shipped registry accepts the owner-declared canonical production project', () => {
   const shipped = loadRegistry();
-  assert.equal(shipped.canonicalProductionRef, null,
-    'a canonical ref appeared without the owner verification procedure being run');
-  for (const entry of shipped.knownRefs) {
-    assert.equal(entry.deployable, false, `${entry.ref} is marked deployable while identity is unverified`);
-  }
-  const d = decide({ env: { SUPABASE_URL: url('ncyqqitqtsyjrijieykd') }, registry: shipped });
-  assert.equal(d.ok, false);
-  assert.equal(d.code, CODES.unverified);
+  assert.equal(shipped.canonicalProductionRef, OWNER_DECLARED_CANON);
+  const d = decide({ env: { SUPABASE_URL: url(OWNER_DECLARED_CANON) }, registry: shipped });
+  assert.equal(d.ok, true);
+  assert.equal(d.code, CODES.ok);
+  assert.equal(d.ref, OWNER_DECLARED_CANON);
+});
+
+test('the shipped registry marks exactly one project deployable', () => {
+  const shipped = loadRegistry();
+  const deployable = shipped.knownRefs.filter((e) => e.deployable === true);
+  assert.deepEqual(deployable.map((e) => e.ref), [OWNER_DECLARED_CANON],
+    'exactly one project may be deployable, and it must be the canonical one');
+});
+
+test('the shipped registry still refuses the stale preview and the legacy project', () => {
+  const shipped = loadRegistry();
+  // These are the two real projects a name or a dashboard listing could talk
+  // someone into. Neither may pass, canonical ref set or not.
+  assert.equal(decide({ env: { SUPABASE_URL: url(SHIPPED_PREVIEW) }, registry: shipped }).code, CODES.preview);
+  assert.equal(decide({ env: { SUPABASE_URL: url(SHIPPED_LEGACY) }, registry: shipped }).code, CODES.legacy);
+});
+
+test('the shipped registry records that identity rests on an owner declaration', () => {
+  // The registry must not present the declaration as a runtime reading. If this
+  // ever flips to deployed_config, an owner actually read Railway — and the
+  // attestation has to say the same thing, which the current-state guard pins.
+  const shipped = loadRegistry();
+  assert.equal(shipped.identityBasis, 'owner_declaration');
+  const entry = shipped.knownRefs.find((e) => e.ref === shipped.canonicalProductionRef);
+  assert.equal(entry.classification, 'CANONICAL_PRODUCTION');
+});
+
+test('the shipped registry and the attestation name the same production project', () => {
+  // A half-applied identity update — one file moved, the other not — is the
+  // failure this pair of assertions exists to catch.
+  const shipped = loadRegistry();
+  const attestation = JSON.parse(readFileSync('docs/ai/CURRENT_STATE.attestation.json', 'utf8'));
+  assert.equal(attestation.deploymentIdentity.canonicalProjectRef, shipped.canonicalProductionRef);
+  assert.equal(attestation.deploymentIdentity.evidenceClass, shipped.identityBasis);
+  const production = attestation.projectRefRegistry.refs.filter(
+    (e) => e.role === 'deployed_production' || e.role === 'owner_declared_production',
+  );
+  assert.deepEqual(production.map((e) => e.ref), [shipped.canonicalProductionRef]);
+});
+
+test('the attestation keeps saying the deployed runtime was never read', () => {
+  // The single most losable fact in this whole change. An owner declaration is
+  // authority about which project is production; it is not an inspection of the
+  // deployed service, and the moment the file stops saying so, a later reader
+  // will assume it was one.
+  const attestation = JSON.parse(readFileSync('docs/ai/CURRENT_STATE.attestation.json', 'utf8'));
+  const note = attestation.deploymentIdentity.independentRuntimeInspection;
+  assert.ok(typeof note === 'string' && note.trim() !== '',
+    'independentRuntimeInspection must record whether the deployed runtime was inspected');
+  assert.match(note, /NOT PERFORMED/);
+  assert.ok(attestation.deploymentIdentity.preDeploymentRequirement.trim() !== '',
+    'the pre-deployment re-resolution requirement must survive the identity being established');
 });
 
 test('the shipped registry classifies every ref this repository mentions', () => {

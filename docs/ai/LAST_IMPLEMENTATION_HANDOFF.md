@@ -8,8 +8,10 @@
   merge of PR #84, read from GitHub 2026-08-26T11:48:27Z.
 - Release authority: branch and draft PR only. **No deployment, no hosted
   mutation, no merge.** Migration 80 was deliberately NOT deployed.
-- Status: **investigation complete**, control-plane guard **implemented**;
-  production identity **still UNVERIFIED** and deliberately left that way.
+- Status: **investigation complete**, control-plane guard **implemented and
+  bound**; production identity **ESTABLISHED by owner declaration** and
+  corroborated by read-only catalog evidence. The deployed Railway runtime was
+  **not** independently inspected — a limitation, not an open question.
 
 ### Preconditions, verified
 
@@ -21,25 +23,37 @@ clean.
 
 ## The headline
 
-**Production identity could not be established, and this work order refuses to
-pretend otherwise.**
+**Canonical production is `ncyqqitqtsyjrijieykd`, on the repository owner's
+declaration.** The guard is bound to it and fails closed on everything else.
 
-Two traps sit next to each other in this account:
+Two traps sit next to each other in this account, and both are still live:
 
 - the project **far behind** the repository is displayed as **"The Russell Vault
   2"** — it reads like the product;
-- the project that **matches the repository exactly** is displayed as
-  **"russellvault2-production"** — it reads like the answer.
+- the canonical project is displayed as **"russellvault2-production"** — it
+  reads like the answer.
 
-Choosing either because of its name would be the same mistake. So the repair
-here is not a conclusion; it is a **fail-closed guard** that refuses every
-production target until an owner reads the ref from the deployed environment.
+Choosing either *because of its name* would be the same mistake, and one of them
+would merely have been lucky. The canonical project was selected on the owner's
+declaration; its name played no part, and the guard never reads one.
+
+Three things are kept apart deliberately, and every document here must keep them
+apart:
+
+| | |
+| --- | --- |
+| **Owner declaration** | The authority. The owner knows their own deployment. This is what makes `ncyqqitqtsyjrijieykd` canonical. |
+| **Catalog corroboration** | Read-only evidence that agrees with the declaration. Proves what a database *contains*, never which one the deployed service is *configured to use*. |
+| **Live Railway configuration** | **Never inspected here** — egress policy answered 403 to CONNECT. This is why the guard must still resolve the live target immediately before any migration. |
+
+An established identity is not a licence to deploy. A declaration fixes the
+expected answer; the guard checks the environment in front of you against it.
 
 ## Candidate registry
 
 | Ref | Displayed name | Org | Status | Governed ledger | Public tables | Markers | Receiving RPCs | Classification |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `ncyqqitqtsyjrijieykd` | `russellvault2-production` | `mbxqxhxmvocethwktvct` | ACTIVE_HEALTHY | **79**, tail `20260819000200_null_safe…` | **119** | 4/4 | 8, all **UNNAMED** | **UNKNOWN** — strongest candidate, unconfirmed |
+| `ncyqqitqtsyjrijieykd` | `russellvault2-production` | `mbxqxhxmvocethwktvct` | ACTIVE_HEALTHY | **79**, tail `20260819000200_null_safe…` | **119** | 4/4 | 8, all **UNNAMED** | **CANONICAL_PRODUCTION** — owner-declared, catalog-corroborated |
 | `ykdyqnvmwpxhowbwhzqz` | `The Russell Vault 2` | `kdhymqcheiwhnjxdffrl` | ACTIVE_HEALTHY | **40**, tail `20260729000300_cycle_count_observations` | 69 | 2/4 | **0** | **STALE_PREVIEW** |
 | `ssqrgfbhqfufnjrsjpgj` | `TheRussellOps` | `kdhymqcheiwhnjxdffrl` | INACTIVE | not inspected | — | — | — | **LEGACY_OR_DECOY** (different product) |
 | Railway runtime target | — | — | — | — | — | — | — | **NOT_INSPECTABLE** |
@@ -62,21 +76,30 @@ this repository's ledger.
 
 ## Evidence chain (redacted)
 
+0. **Owner declaration — OBTAINED, and the basis for the designation.** The
+   repository owner declared `ncyqqitqtsyjrijieykd` canonical production in the
+   follow-up work order of 2026-08-26. An owner knows their own deployment.
+   Recorded as `evidenceClass: owner_declaration`, never as a runtime reading.
 1. **Railway runtime — NOT OBTAINED.** The egress proxy answered **403 to
    CONNECT** for the live app host, twice, at 2026-08-26T11:49:25Z; the proxy's
    own guidance is that policy denials must be reported, not retried. Railway
-   variables are not stored in this repository. **This is the missing link, and
-   nothing below substitutes for it.**
+   variables are not stored in this repository. This limitation is permanent for
+   this environment and is recorded in
+   `deploymentIdentity.independentRuntimeInspection`. It does **not** reopen the
+   identity question — it is why preflight re-resolves the live target.
 2. **Deployment metadata — not obtainable** for the same reason.
 3. **Endpoint derived from runtime config — not obtainable.**
-4. **Read-only catalog — obtained, for candidates only.** The repository's 80
-   migrations replayed locally produce a public-table set whose sha256 is
-   `f5cfa2ee1a1de329da47a5156b3911f539bddd2a79d67b89975eb690fc72e77d`, with 54
-   enums, 17 views and 8 receiving RPCs. `ncyqqitqtsyjrijieykd` returns the
-   **identical fingerprint and counts**. That is a very strong statement about
-   schema lineage and **not a statement about deployment**.
-5. **Attestation** — refreshed with the above; `deploymentIdentity` remains
-   `verificationPerformed: false`, `canonicalProjectRef: null`.
+4. **Read-only catalog — obtained, and it corroborates the declaration.** The
+   repository's 80 migrations replayed locally produce a public-table set whose
+   sha256 is `f5cfa2ee1a1de329da47a5156b3911f539bddd2a79d67b89975eb690fc72e77d`,
+   with 54 enums, 17 views and 8 receiving RPCs. `ncyqqitqtsyjrijieykd` returns
+   the **identical fingerprint and counts**. That is a strong statement about
+   schema lineage and **not a statement about deployment**; it agrees with the
+   declaration without being what establishes it.
+5. **Attestation** — state `OWNER_DECLARED`: `verificationPerformed: true`,
+   `canonicalProjectRef: ncyqqitqtsyjrijieykd`,
+   `evidenceClass: owner_declaration`, with `independentRuntimeInspection`,
+   `corroboration` and `preDeploymentRequirement` all populated and enforced.
 
 ## Migration 80 in production
 
@@ -118,8 +141,10 @@ resolve them by name, so they are unreachable there today.
 | --- | --- |
 | `scripts/ci/production-target-guard.mjs` | Fail-closed deployment-target guard |
 | `scripts/ci/deployment-targets.json` | Canonical non-secret target registry |
-| `scripts/ci/production-target-guard.test.mjs` | 21 tests |
-| `docs/runbooks/deployment-target-guard.md` | Owner verification procedure, preflight, stop conditions, Preview autopsy |
+| `scripts/ci/production-target-guard.test.mjs` | 26 tests |
+| `scripts/ci/current-state-guard.mjs` | Extended to a three-state identity machine (see below) |
+| `scripts/ci/current-state-guard.test.mjs` | 55 tests, incl. the owner-declared state and its half-applied transitions |
+| `docs/runbooks/deployment-target-guard.md` | Identity states, owner upgrade procedure, preflight, stop conditions, Preview autopsy |
 
 The guard compares **only non-secret routing identity** — the project ref inside
 the Supabase URL. It never reads, requires or prints a key, and redacts
@@ -128,12 +153,43 @@ first, because two variables disagreeing is precisely the ambiguity worth
 catching. Production and non-production acceptance use **different** outcome
 codes, so a preview verdict can never read as a production one.
 
-**Today it rejects everything in production mode** with
-`canonical_identity_unverified`, including `ncyqqitqtsyjrijieykd`. A test pins
-that, and another pins that no shipped entry is marked `deployable`.
+Bound behaviour, all pinned by tests:
+
+| Resolves to | Mode | Exit | Code |
+| --- | --- | --- | --- |
+| `ncyqqitqtsyjrijieykd` | production | 0 | `target_matches_canonical_production` |
+| `ykdyqnvmwpxhowbwhzqz` | production | 1 | `target_is_preview` |
+| `ssqrgfbhqfufnjrsjpgj` | production | 1 | `target_is_legacy` |
+| nothing set | production | 1 | `target_absent` |
+| two variables disagreeing | production | 1 | `target_ambiguous` |
+| unregistered project | production | 1 | `target_unknown_to_registry` |
+| `ncyqqitqtsyjrijieykd` | non-production | 1 | `target_is_not_canonical_production` |
+
+`canonical_identity_unverified` remains reachable and tested: it fires if
+`canonicalProductionRef` ever returns to `null`. The guard did not lose the
+ability to fail closed by gaining a canonical answer. Tests also pin that
+exactly one entry is `deployable`, and that the registry and the attestation
+name the same project on the same authority — a half-applied identity update
+fails.
+
+### The attestation now has three identity states, not two
+
+The old machine had only `UNVERIFIED` (`not_inspectable`) and `VERIFIED`
+(`deployed_config`). An owner declaration is neither, and filing it as
+`deployed_config` would have asserted that this environment read Railway, which
+it did not. So the machine gained a third coherent state, `OWNER_DECLARED`,
+which requires `independentRuntimeInspection`, `corroboration` and
+`preDeploymentRequirement` alongside the usual tuple. `verificationPerformed`
+stays the single state variable for "is there an established identity";
+`evidenceClass` — already present and already validated — says on what
+authority. No second boolean was introduced, because a duplicate flag is exactly
+what drifts.
+
+The guard rejects a registry entry whose role or evidence class names a
+different authority than the section does, in either direction.
 
 It is deliberately **not** wired into a deployment path, because no deployment
-path exists in this repository. The runbook names it as preflight step 2 for the
+path exists in this repository. The runbook names it as preflight step 1 for the
 future deployment work order.
 
 ## Verification
@@ -145,11 +201,20 @@ untouched.
 
 ## Known limitations / remaining uncertainty
 
-- **Production identity remains unproven.** Everything about
-  `ncyqqitqtsyjrijieykd` is consistent with it being production; none of it is
-  proof, and the guard treats it accordingly.
+- **The deployed Railway runtime was never independently inspected here** (403
+  to CONNECT). Identity rests on the owner's declaration plus catalog
+  corroboration. This is a limitation on the *evidence class*, not an open
+  question about *which project* is production, and it is exactly why preflight
+  re-resolves the live target before any migration.
+- Migration 80 is **not deployed**, and the three hosted receiving functions
+  still carry unnamed parameters.
+- After migration 80 is applied, PostgREST will keep answering `PGRST202` until
+  its schema cache reloads — indistinguishable from the defect. Confirm the
+  reload; see `docs/runbooks/receiving-rpc-dispatch.md`.
 - The Preview integration could not be corrected from here — it needs Supabase
-  dashboard admin. The exact owner action is in the runbook.
+  dashboard admin. It remains externally connected to `ykdyqnvmwpxhowbwhzqz`,
+  emits a permanent `skipped` no-op, and **is not production evidence**. The
+  exact owner action is in the runbook.
 - `ssqrgfbhqfufnjrsjpgj` was classified from project metadata only; its catalog
   was not read, because it belongs to a different product.
 - Hosted PostgREST behaviour for the three RPCs was inferred from the catalog
@@ -157,7 +222,11 @@ untouched.
 
 ## Exact next decision
 
-Owner performs the verification procedure in
-`docs/runbooks/deployment-target-guard.md`, updates the two files together, and
-only then opens a **separate migration-80 deployment work order**. Independently,
-disconnect or repoint the Supabase Preview integration.
+Open a **separate migration-80 deployment and hosted-acceptance work order**. It
+runs the preflight in `docs/runbooks/deployment-target-guard.md` — starting with
+`npm run guard:target` exiting 0 *in the environment that will run the
+migration* — applies migration 80, confirms the PostgREST schema-cache reload,
+and verifies the three receiving RPCs resolve with named arguments.
+
+Independently and separately, disconnect or repoint the Supabase Preview
+integration.
