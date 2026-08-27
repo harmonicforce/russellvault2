@@ -88,6 +88,31 @@ function verifiedAttestation(mutate = () => {}) {
   return att;
 }
 
+// A coherent OWNER_DECLARED state: identity established on the owner's word,
+// with the fields that keep it from being read back as a runtime inspection.
+function ownerDeclaredAttestation(mutate = () => {}) {
+  const att = baseAttestation();
+  att.deploymentIdentity = {
+    verificationPerformed: true,
+    canonicalProjectRef: PROD,
+    verifiedAtUtc: '2026-08-26T12:00:00Z',
+    verificationMethod: 'Declared by the repository owner in a named work order.',
+    authoritativeSource: 'Repository owner declaration',
+    evidenceClass: 'owner_declaration',
+    blocker: null,
+    independentRuntimeInspection: 'NOT PERFORMED. Egress policy answered 403 to CONNECT for the Railway host.',
+    corroboration: 'Read-only catalog: governed ledger 79, schema fingerprint matches the local replay.',
+    preDeploymentRequirement: 'Resolve the target from the live environment immediately before acting.',
+    destructiveActionRule: 'Re-read the deployed Supabase URL immediately before acting.',
+  };
+  att.projectRefRegistry.refs = [
+    { ref: PROD, role: 'owner_declared_production', evidenceClass: 'owner_declaration' },
+    { ref: OTHER, role: 'superseded_documentation_ref', evidenceClass: 'live_schema' },
+  ];
+  mutate(att);
+  return att;
+}
+
 function baselineDoc({ sha = SHA, count = MIGRATIONS.length, last = MIGRATIONS[MIGRATIONS.length - 1] } = {}) {
   return [
     '# Current State',
@@ -441,6 +466,115 @@ test('a live_schema ledger match can never stand in for deployment verification'
     a.projectRefRegistry.refs[0].evidenceClass = 'live_schema';
   });
   assert.ok(codes(checkDeploymentIdentity(att, {})).includes('verified_production_evidence_class'));
+});
+
+// --- OWNER_DECLARED: identity on the owner's authority, not a runtime read ---
+
+test('a coherent owner-declared identity is accepted', () => {
+  assert.deepEqual(checkDeploymentIdentity(ownerDeclaredAttestation(), {}), []);
+});
+
+test('an owner-declared identity lets documents name that exact ref', () => {
+  // The point of establishing identity is that canonical prose may finally say
+  // which project is production.
+  assert.deepEqual(checkDeploymentIdentity(ownerDeclaredAttestation(), {
+    'CLAUDE.md': `Canonical deployed Supabase project: \`${PROD}\``,
+  }), []);
+});
+
+test('an owner declaration must keep saying the runtime was not inspected', () => {
+  for (const field of ['independentRuntimeInspection', 'corroboration', 'preDeploymentRequirement']) {
+    for (const empty of [undefined, null, '   ']) {
+      const att = ownerDeclaredAttestation((a) => { a.deploymentIdentity[field] = empty; });
+      assert.notEqual(
+        checkDeploymentIdentity(att, {}).length, 0,
+        `owner_declaration with ${field}=${JSON.stringify(empty)} must fail`,
+      );
+    }
+  }
+});
+
+test('the two halves of an owner declaration must name the same authority', () => {
+  // Section says owner_declaration, registry entry says the runtime was read —
+  // or the reverse. Either way one half is claiming evidence the other denies.
+  const roleDrift = ownerDeclaredAttestation((a) => {
+    a.projectRefRegistry.refs[0].role = 'deployed_production';
+  });
+  assert.ok(codes(checkDeploymentIdentity(roleDrift, {})).includes('production_basis_role_mismatch'));
+
+  const classDrift = ownerDeclaredAttestation((a) => {
+    a.projectRefRegistry.refs[0].evidenceClass = 'deployed_config';
+  });
+  assert.ok(codes(checkDeploymentIdentity(classDrift, {})).includes('verified_production_evidence_class'));
+
+  // And the inverse: a runtime-verified section with an owner-declared entry.
+  const inverse = verifiedAttestation((a) => {
+    a.projectRefRegistry.refs[0].role = 'owner_declared_production';
+    a.projectRefRegistry.refs[0].evidenceClass = 'owner_declaration';
+  });
+  assert.ok(codes(checkDeploymentIdentity(inverse, {})).includes('production_basis_role_mismatch'));
+});
+
+test('an owner declaration is not a licence to skip the extra fields on a runtime read', () => {
+  // deployed_config does NOT require the owner-declaration fields, so their
+  // absence there must stay clean — otherwise the new state has leaked into the
+  // old one and the two are no longer distinguishable.
+  assert.deepEqual(checkDeploymentIdentity(verifiedAttestation(), {}), []);
+});
+
+test('an owner-declared identity still cannot carry a stale blocker', () => {
+  const att = ownerDeclaredAttestation((a) => {
+    a.deploymentIdentity.blocker = 'Railway unreachable.';
+  });
+  // The limitation belongs in independentRuntimeInspection; a blocker means
+  // identity is not established, which contradicts the rest of the section.
+  assert.ok(codes(checkDeploymentIdentity(att, {})).includes('verified_stale_blocker'));
+});
+
+test('only one project may hold a production role, across both bases', () => {
+  const att = ownerDeclaredAttestation((a) => {
+    a.projectRefRegistry.refs[1].role = 'deployed_production';
+    a.projectRefRegistry.refs[1].evidenceClass = 'deployed_config';
+  });
+  assert.ok(codes(checkDeploymentIdentity(att, {})).includes('conflicting_production_refs'));
+});
+
+test('the UNVERIFIED state still refuses an owner-declared production role', () => {
+  const att = baseAttestation();
+  att.projectRefRegistry.refs[0].role = 'owner_declared_production';
+  assert.ok(codes(checkDeploymentIdentity(att, {})).includes('unverified_production_role'));
+});
+
+test('a half-applied owner declaration fails at every intermediate step', () => {
+  const steps = [
+    (d) => { d.verificationPerformed = true; },
+    (d) => { d.canonicalProjectRef = PROD; },
+    (d) => { d.evidenceClass = 'owner_declaration'; },
+    (d) => { d.blocker = null; },
+    (d) => { d.verifiedAtUtc = '2026-08-26T12:00:00Z'; },
+    (d) => { d.verificationMethod = 'Declared by the repository owner.'; },
+    (d) => { d.authoritativeSource = 'Repository owner declaration'; },
+    (d) => { d.independentRuntimeInspection = 'NOT PERFORMED. 403 to CONNECT.'; },
+    (d) => { d.corroboration = 'Read-only catalog agrees.'; },
+    (d) => { d.preDeploymentRequirement = 'Resolve the live target before acting.'; },
+    (d, a) => {
+      const e = a.projectRefRegistry.refs.find((r) => r.ref === PROD);
+      e.role = 'owner_declared_production';
+      e.evidenceClass = 'owner_declaration';
+    },
+  ];
+  for (let n = 1; n < steps.length; n += 1) {
+    const att = baseAttestation();
+    for (let i = 0; i < n; i += 1) steps[i](att.deploymentIdentity, att);
+    assert.notEqual(
+      checkDeploymentIdentity(att, {}).length, 0,
+      `owner-declaration transition stopped after step ${n} must fail`,
+    );
+  }
+  const complete = baseAttestation();
+  for (const step of steps) step(complete.deploymentIdentity, complete);
+  assert.deepEqual(checkDeploymentIdentity(complete, {}), []);
+  assert.equal(parseAttestation(JSON.stringify(complete)).schemaVersion, 1);
 });
 
 test('fails when a canonical doc names an unregistered project ref', () => {

@@ -1,0 +1,46 @@
+{
+  "$comment": [
+    "Canonical, NON-SECRET deployment-target registry for scripts/ci/production-target-guard.mjs.",
+    "A Supabase project ref is a public routing identifier, not an authentication secret: it appears",
+    "in every URL the browser sends. It is recorded here so a target can be COMPARED, and nowhere",
+    "else, so there is exactly one place to change when the owner rotates or moves a project.",
+    "",
+    "canonicalProductionRef is set from the REPOSITORY OWNER'S DECLARATION. The owner knows their",
+    "own deployment; that is authority. It is NOT a reading of the deployed Railway runtime, which",
+    "no verifying environment has been able to reach, and it is deliberately not recorded as one.",
+    "See identityBasis below and deploymentIdentity in CURRENT_STATE.attestation.json.",
+    "",
+    "Setting it does NOT make deployment unconditional. This guard still resolves the target from",
+    "the environment it is actually run in and rejects anything that is not this ref. A declaration",
+    "fixes the expected answer; the guard checks the environment in front of you against it.",
+    "",
+    "OWNER UPDATE PROCEDURE is documented in docs/runbooks/deployment-target-guard.md."
+  ],
+  "schemaVersion": 1,
+  "canonicalProductionRef": "ncyqqitqtsyjrijieykd",
+  "identityBasis": "owner_declaration",
+  "identityBasisNote": "Declared by the repository owner in the 'Production Identity and Supabase Preview Integrity' follow-up work order, 2026-08-26. Corroborated by read-only catalog evidence (see the entry below). NOT independently read from the deployed Railway service: the egress policy answered 403 to CONNECT for the live app host, so that evidence class was unobtainable in this environment.",
+  "knownRefs": [
+    {
+      "ref": "ncyqqitqtsyjrijieykd",
+      "classification": "CANONICAL_PRODUCTION",
+      "displayName": "russellvault2-production",
+      "note": "Canonical production, established by REPOSITORY OWNER DECLARATION and corroborated by read-only catalog evidence: governed ledger 79 with this repository's tail, 119 public tables whose sha256 over sorted names matches the local replay exactly, 54 enums, 17 views, all four governed marker tables, 8 receiving RPCs, migration 80 not applied. The corroboration is what a database CONTAINS; the owner declaration is what makes it canonical. Its display name contains 'production'; that played no part in the classification, and never may.",
+      "deployable": true
+    },
+    {
+      "ref": "ykdyqnvmwpxhowbwhzqz",
+      "classification": "STALE_PREVIEW",
+      "displayName": "The Russell Vault 2",
+      "note": "Target of the repository's Supabase Preview GitHub check, whose preview branching is DISABLED, so the check is a permanent no-op. Structurally far behind this repository. Displayed under a name that reads like the product, which is exactly what makes it dangerous.",
+      "deployable": false
+    },
+    {
+      "ref": "ssqrgfbhqfufnjrsjpgj",
+      "classification": "LEGACY_OR_DECOY",
+      "displayName": "TheRussellOps",
+      "note": "A different product's project (harmonicforce/the-russellops), INACTIVE. Never a target for this repository.",
+      "deployable": false
+    }
+  ]
+}

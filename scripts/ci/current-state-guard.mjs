@@ -103,14 +103,26 @@ const PROHIBITION_RE =
 
 export const VALID_REF_ROLES = new Set([
   'deployed_production',
+  'owner_declared_production',
   'ledger_match_candidate',
   'superseded_documentation_ref',
   'historical_reference',
   'local_shadow',
 ]);
 
+// The two evidence classes that can carry an established production identity,
+// mapped to the registry role that must accompany each. They are kept distinct
+// so a declaration can never be read back as a runtime reading.
+export const PRODUCTION_IDENTITY_BASES = new Map([
+  ['deployed_config', 'deployed_production'],
+  ['owner_declaration', 'owner_declared_production'],
+]);
+
+export const PRODUCTION_ROLES = new Set(PRODUCTION_IDENTITY_BASES.values());
+
 export const VALID_EVIDENCE_CLASSES = new Set([
   'deployed_config',
+  'owner_declaration',
   'live_schema',
   'repository',
   'github_api',
@@ -430,16 +442,37 @@ export function checkDerivedDocumentation(attestation, derivedText) {
   return findings;
 }
 
-// The deployment-identity state machine. Exactly two coherent states exist, and
-// every field, registry role, and document assertion must agree with the one
-// declared. A half-populated state is itself a failure.
+// The deployment-identity state machine. Three coherent states exist, and every
+// field, registry role, and document assertion must agree with the one declared.
+// A half-populated state is itself a failure.
+//
+//   UNVERIFIED         verificationPerformed=false. Nobody has established an
+//                      identity. No ref, no production role, no assertion.
+//   OWNER_DECLARED     verificationPerformed=true, evidenceClass=owner_declaration.
+//                      The repository owner has declared which project is
+//                      production. That is real authority — an owner knows their
+//                      own deployment — but it is NOT a reading of the deployed
+//                      runtime, so it must never be recorded as one.
+//   RUNTIME_VERIFIED   verificationPerformed=true, evidenceClass=deployed_config.
+//                      The ref was read from the environment the deployed
+//                      service actually consumes.
+//
+// verificationPerformed stays the single state variable for "is there an
+// established identity". evidenceClass — an existing, already-validated field —
+// says on what authority. No second boolean is introduced, because a duplicate
+// flag is precisely what can drift out of agreement with everything around it.
+//
+// OWNER_DECLARED does not weaken the deployment invariant. It fixes WHICH
+// project is canonical; production-target-guard.mjs still has to resolve the
+// live environment at execution time and match it. A declaration says what the
+// answer is, not that the environment in front of you agrees with it.
 export function checkDeploymentIdentity(attestation, docs = {}) {
   const findings = [];
   const deployment = attestation.deploymentIdentity;
   const refs = attestation.projectRefRegistry.refs;
   const registry = new Map(refs.map((e) => [e.ref, e]));
   const verified = deployment.verificationPerformed === true;
-  const productionEntries = refs.filter((e) => e.role === 'deployed_production');
+  const productionEntries = refs.filter((e) => PRODUCTION_ROLES.has(e.role));
 
   // --- refs asserted as production inside canonical documents ---
   const assertedInDocs = new Map();
@@ -533,8 +566,11 @@ export function checkDeploymentIdentity(attestation, docs = {}) {
     return findings;
   }
 
-  // ---------------- VERIFIED state ----------------
+  // ------- ESTABLISHED state: OWNER_DECLARED or RUNTIME_VERIFIED -------
   const canonical = deployment.canonicalProjectRef;
+  const basis = deployment.evidenceClass;
+  const requiredRole = PRODUCTION_IDENTITY_BASES.get(basis);
+  const ownerDeclared = basis === 'owner_declaration';
   if (typeof canonical !== 'string' || !REF_EXACT_RE.test(canonical)) {
     findings.push({
       code: 'verified_missing_canonical_ref',
@@ -548,14 +584,15 @@ export function checkDeploymentIdentity(attestation, docs = {}) {
       code: 'verified_missing_production_entry',
       message:
         `verificationPerformed is true, so exactly one projectRefRegistry entry must carry role ` +
-        `deployed_production. None does.`,
+        `${requiredRole ?? 'deployed_production'}. None does.`,
     });
   } else if (productionEntries.length > 1) {
     findings.push({
       code: 'conflicting_production_refs',
       message:
-        `The registry assigns role deployed_production to more than one project ref: ` +
-        `${productionEntries.map((e) => e.ref).join(', ')}. Exactly one project can be production.`,
+        `The registry assigns a production role to more than one project ref: ` +
+        `${productionEntries.map((e) => `${e.ref} (${e.role})`).join(', ')}. Exactly one project ` +
+        `can be production.`,
     });
   } else {
     const entry = productionEntries[0];
@@ -563,17 +600,32 @@ export function checkDeploymentIdentity(attestation, docs = {}) {
       findings.push({
         code: 'verified_production_entry_mismatch',
         message:
-          `The deployed_production registry entry is ${entry.ref} but ` +
+          `The production registry entry is ${entry.ref} but ` +
           `deploymentIdentity.canonicalProjectRef is ${canonical}. They must be the same ref.`,
       });
     }
-    if (entry.evidenceClass !== 'deployed_config') {
+    // The registry entry must be labelled with the SAME authority the section
+    // claims. A ref recorded as owner-declared while the section says the
+    // runtime was read — or the reverse — is the half-applied state this guard
+    // exists to reject.
+    if (requiredRole && entry.role !== requiredRole) {
+      findings.push({
+        code: 'production_basis_role_mismatch',
+        message:
+          `deploymentIdentity.evidenceClass is ${JSON.stringify(basis)}, so the production registry ` +
+          `entry ${entry.ref} must carry role ${JSON.stringify(requiredRole)}. It carries ` +
+          `${JSON.stringify(entry.role)}. The two halves must name the same authority.`,
+      });
+    }
+    if (requiredRole && entry.evidenceClass !== basis) {
       findings.push({
         code: 'verified_production_evidence_class',
         message:
-          `The deployed_production registry entry ${entry.ref} has evidenceClass ` +
-          `${JSON.stringify(entry.evidenceClass)}. Production identity may only rest on ` +
-          `deployed_config evidence — a live_schema ledger match is not deployment verification.`,
+          `The production registry entry ${entry.ref} has evidenceClass ` +
+          `${JSON.stringify(entry.evidenceClass)} while deploymentIdentity.evidenceClass is ` +
+          `${JSON.stringify(basis)}. Production identity may rest only on deployed_config (read from ` +
+          `the deployed runtime) or owner_declaration (declared by the repository owner) — and both ` +
+          `halves must say the same one. A live_schema ledger match is neither.`,
       });
     }
   }
@@ -582,8 +634,8 @@ export function checkDeploymentIdentity(attestation, docs = {}) {
       code: 'verified_missing_timestamp',
       message:
         `verificationPerformed is true, so deploymentIdentity.verifiedAtUtc must be a strict ISO-8601 ` +
-        `UTC instant (YYYY-MM-DDTHH:MM:SSZ) for when the deployed runtime was actually read. ` +
-        `Found ${JSON.stringify(deployment.verifiedAtUtc)}.`,
+        `UTC instant (YYYY-MM-DDTHH:MM:SSZ) for when the identity was established — the runtime read, ` +
+        `or the owner declaration. Found ${JSON.stringify(deployment.verifiedAtUtc)}.`,
     });
   }
   if (!isPresentString(deployment.verificationMethod)) {
@@ -591,24 +643,28 @@ export function checkDeploymentIdentity(attestation, docs = {}) {
       code: 'verified_missing_method',
       message:
         `verificationPerformed is true, so deploymentIdentity.verificationMethod must record how the ` +
-        `deployed runtime was read (for example: read VITE_SUPABASE_URL from the Railway service).`,
+        `identity was established (for example: read VITE_SUPABASE_URL from the Railway service, or ` +
+        `declared by the repository owner in a named work order).`,
     });
   }
   if (!isPresentString(deployment.authoritativeSource)) {
     findings.push({
       code: 'verified_missing_source',
       message:
-        `verificationPerformed is true, so deploymentIdentity.authoritativeSource must name the ` +
-        `deployed source the identity was read from.`,
+        `verificationPerformed is true, so deploymentIdentity.authoritativeSource must name where ` +
+        `production identity comes from — the deployed source it was read from, or the owner whose ` +
+        `declaration establishes it.`,
     });
   }
-  if (deployment.evidenceClass !== 'deployed_config') {
+  if (!requiredRole) {
     findings.push({
       code: 'verified_evidence_class',
       message:
-        `deploymentIdentity.evidenceClass is ${JSON.stringify(deployment.evidenceClass)} while ` +
-        `verificationPerformed is true. In the VERIFIED state it must be deployed_config: identity ` +
-        `read from the deployed runtime cannot be described as not_inspectable or as a schema reading.`,
+        `deploymentIdentity.evidenceClass is ${JSON.stringify(basis)} while verificationPerformed is ` +
+        `true. An established identity must be either deployed_config (read from the deployed ` +
+        `runtime) or owner_declaration (declared by the repository owner). not_inspectable and ` +
+        `live_schema describe neither: a schema reading says what a database contains, never which ` +
+        `one the deployed service is configured to use.`,
     });
   }
   if (!isAbsent(deployment.blocker)) {
@@ -616,9 +672,45 @@ export function checkDeploymentIdentity(attestation, docs = {}) {
       code: 'verified_stale_blocker',
       message:
         `deploymentIdentity.blocker is still populated while verificationPerformed is true. A blocker ` +
-        `explains why verification could not happen; it must be cleared once it has. Found ` +
-        `${JSON.stringify(String(deployment.blocker).slice(0, 80))}…`,
+        `explains why identity could not be established; it must be cleared once it has been. A ` +
+        `remaining LIMITATION belongs in independentRuntimeInspection, which does not block ` +
+        `identity. Found ${JSON.stringify(String(deployment.blocker).slice(0, 80))}…`,
     });
+  }
+  if (ownerDeclared) {
+    // An owner declaration settles WHICH project is canonical. It says nothing
+    // about whether this environment ever looked at the deployed service, so
+    // the file has to keep saying so out loud — otherwise a later reader
+    // upgrades a declaration into a runtime reading simply by not being told.
+    if (!isPresentString(deployment.independentRuntimeInspection)) {
+      findings.push({
+        code: 'owner_declared_missing_runtime_note',
+        message:
+          `deploymentIdentity.evidenceClass is owner_declaration, so ` +
+          `independentRuntimeInspection must record, in plain words, whether the deployed runtime ` +
+          `was independently inspected and what prevented it if not. Silence here is how a ` +
+          `declaration gets mistaken for a runtime reading.`,
+      });
+    }
+    if (!isPresentString(deployment.corroboration)) {
+      findings.push({
+        code: 'owner_declared_missing_corroboration',
+        message:
+          `deploymentIdentity.evidenceClass is owner_declaration, so corroboration must record the ` +
+          `independent evidence that agrees with the declaration — or state plainly that there is ` +
+          `none.`,
+      });
+    }
+    if (!isPresentString(deployment.preDeploymentRequirement)) {
+      findings.push({
+        code: 'owner_declared_missing_predeployment_rule',
+        message:
+          `deploymentIdentity.evidenceClass is owner_declaration, so preDeploymentRequirement must ` +
+          `state that the target is still resolved from the live environment immediately before any ` +
+          `migration or deployment. A declaration fixes the expected answer; it does not confirm ` +
+          `the environment in front of you matches it.`,
+      });
+    }
   }
   // A document may only assert the one canonical ref.
   for (const [ref, at] of assertedInDocs) {

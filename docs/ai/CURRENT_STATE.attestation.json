@@ -41,34 +41,43 @@
   },
   "deploymentIdentity": {
     "$comment": [
-      "canonicalProjectRef stays null unless deployment verification was ACTUALLY performed.",
-      "A ledger that matches the repository is strong circumstantial evidence about a database;",
-      "it is not evidence about which database the deployed service is configured to use.",
-      "Repeating a remembered ref in more documents does not make it verified."
+      "Production identity is ESTABLISHED, on the authority of the repository owner's declaration.",
+      "It was NOT read from the deployed Railway runtime — see independentRuntimeInspection, which",
+      "must keep saying so. A ledger or fingerprint that matches the repository is corroboration",
+      "about what a database CONTAINS; it is never evidence of which database the deployed service",
+      "is configured to use, and it is recorded here as corroboration only.",
+      "An established identity is not a licence to deploy: see preDeploymentRequirement."
     ],
-    "verificationPerformed": false,
-    "canonicalProjectRef": null,
-    "authoritativeSource": "VITE_SUPABASE_URL in the deployed Railway service environment, or the Supabase URL embedded in the bundle served by the live app",
+    "verificationPerformed": true,
+    "canonicalProjectRef": "ncyqqitqtsyjrijieykd",
+    "authoritativeSource": "Declaration by the repository owner (kam032289@gmail.com) in the 'Production Identity and Supabase Preview Integrity' follow-up work order",
     "liveApp": "https://russellvault2-production.up.railway.app",
-    "blocker": "Railway configuration and the live app host were not reachable from the verifying environment: the egress policy answered 403 to CONNECT for russellvault2-production.up.railway.app:443. Railway environment variables are not stored in this repository.",
-    "evidenceClass": "not_inspectable",
+    "evidenceClass": "owner_declaration",
+    "independentRuntimeInspection": "NOT PERFORMED. No verifying environment has reached the deployed Railway service or the live app host: the egress policy answered 403 to CONNECT for russellvault2-production.up.railway.app:443, and Railway environment variables are not stored in this repository. Nothing in this file may be read as a claim that the deployed runtime was inspected.",
+    "corroboration": "Read-only catalog inspection of ncyqqitqtsyjrijieykd on 2026-08-26 agrees with the declaration: governed public.schema_migrations_log at 79 with this repository's tail, 119 public tables whose sha256 over sorted names is identical to the local 80-migration replay, 54 enums, 17 views, all four governed marker tables, 8 receiving RPCs, migration 80 not applied, and the three ESC-002 receiving functions still carrying unnamed parameters. Corroboration agrees with the declaration; it does not substitute for it, and neither substitutes for resolving the live target before acting.",
+    "preDeploymentRequirement": "Every migration, deployment, reset, restore or parity claim must still resolve the Supabase target from the environment it is about to act on, immediately before acting, and confirm it equals canonicalProjectRef. scripts/ci/production-target-guard.mjs performs exactly that comparison and fails closed. A declaration fixes the expected answer; it does not confirm that the environment in front of you matches it.",
     "destructiveActionRule": "No live action may rely on this file for production identity. Before any live Supabase read, migration, reset, restore, or parity claim, re-read the deployed Supabase URL from the running environment immediately before acting, and confirm the target project ref matches it. A remembered ref, a project display name, a scoped project listing, an agent handoff, and this attestation are all insufficient.",
     "$stateMachine": [
-      "verificationPerformed is the SINGLE state variable. There is deliberately no second state label:",
-      "a duplicate could be left saying one thing while every other field says the other. The guard",
-      "rejects a 'currentState' key outright for that reason.",
+      "verificationPerformed is the SINGLE state variable for 'is there an established identity'.",
+      "evidenceClass says on what AUTHORITY. There is deliberately no second boolean: a duplicate flag",
+      "could be left saying one thing while every other field says the other. The guard rejects a",
+      "'currentState' key outright for that reason.",
       "UNVERIFIED (verificationPerformed=false) requires: canonicalProjectRef=null; zero registry entries",
-      "with role deployed_production; evidenceClass=not_inspectable; a nonempty blocker; verifiedAtUtc=null;",
+      "with a production role; evidenceClass=not_inspectable; a nonempty blocker; verifiedAtUtc=null;",
       "verificationMethod=null; and no canonical document asserting any production project.",
-      "VERIFIED (verificationPerformed=true) requires: canonicalProjectRef is one valid ref; exactly one",
-      "registry entry has role deployed_production and equals it; that entry's evidenceClass=deployed_config;",
-      "this section's evidenceClass=deployed_config; blocker null or absent; verifiedAtUtc a strict ISO-8601",
-      "UTC instant; verificationMethod and authoritativeSource nonempty; and every production assertion in",
-      "canonical documents names that exact ref.",
-      "The transition is all-or-nothing: a partial edit fails CI rather than half-asserting an identity."
+      "OWNER_DECLARED (verificationPerformed=true, evidenceClass=owner_declaration) requires: exactly one",
+      "registry entry with role owner_declared_production and evidenceClass owner_declaration, equal to",
+      "canonicalProjectRef; blocker cleared; verifiedAtUtc, verificationMethod and authoritativeSource",
+      "populated; and independentRuntimeInspection, corroboration and preDeploymentRequirement all nonempty.",
+      "RUNTIME_VERIFIED (verificationPerformed=true, evidenceClass=deployed_config) requires the same shape",
+      "with role deployed_production and evidenceClass deployed_config on both halves.",
+      "OWNER_DECLARED is a real, weaker-evidence state, not a lesser version of RUNTIME_VERIFIED: the owner",
+      "settles WHICH project is canonical, and the deployment guard still has to resolve the live target",
+      "and match it before anything is applied.",
+      "Every transition is all-or-nothing: a partial edit fails CI rather than half-asserting an identity."
     ],
-    "verifiedAtUtc": null,
-    "verificationMethod": null
+    "verifiedAtUtc": "2026-08-26T12:00:00Z",
+    "verificationMethod": "Repository-owner declaration in the 'Production Identity and Supabase Preview Integrity' follow-up work order, recorded together with read-only catalog corroboration. The deployed Railway runtime was NOT read; see independentRuntimeInspection."
   },
   "projectRefRegistry": {
     "$comment": [
@@ -79,21 +88,28 @@
     "refs": [
       {
         "ref": "ncyqqitqtsyjrijieykd",
-        "role": "ledger_match_candidate",
-        "evidenceClass": "live_schema",
-        "observedAtUtc": "2026-08-22T04:08:00Z",
+        "role": "owner_declared_production",
+        "evidenceClass": "owner_declaration",
+        "observedAtUtc": "2026-08-26T11:52:00Z",
         "governedLedgerCount": 79,
         "lastMigrationName": "20260819000200_null_safe_acquisition_mutation_guards",
-        "note": "Its governed public.schema_migrations_log matches the reviewed repository set exactly (79/79, same last migration). Not returned by the scoped Supabase project listing available to the verifier, yet directly reachable — absence from a scoped listing is not evidence of absence. Matching a ledger is not proof of deployment; production identity remains unverified."
+        "note": "CANONICAL PRODUCTION, on the authority of the repository owner's declaration. Read-only catalog on 2026-08-26 corroborates it: governed public.schema_migrations_log at 79/79 with the same last migration as the reviewed repository set; migration 80 (20260826000100_receiving_rpc_named_parameters) NOT applied; 119 public tables with a sha256 over their sorted names identical to the local replay; 54 enums; 17 views; 8 receiving RPCs, the three ESC-002 ones still carrying UNNAMED parameters. Reachable and ACTIVE_HEALTHY, in organization mbxqxhxmvocethwktvct — a DIFFERENT organization from the one a scoped project listing returns, which is why that listing appears to omit it. Its Supabase display name contains the word 'production'; a name is not authority and played no part in this classification. The corroboration proves what this database CONTAINS; the owner declaration is what makes it canonical. The deployed Railway runtime was not independently read — see deploymentIdentity.independentRuntimeInspection."
       },
       {
         "ref": "ykdyqnvmwpxhowbwhzqz",
         "role": "superseded_documentation_ref",
         "evidenceClass": "live_schema",
-        "observedAtUtc": "2026-08-22T04:09:00Z",
+        "observedAtUtc": "2026-08-26T11:52:00Z",
         "governedLedgerCount": 40,
         "lastMigrationName": "20260729000300_cycle_count_observations",
-        "note": "Named as 'Supabase project' by canonical documents until this repair. It is a real, ACTIVE_HEALTHY Russell Vault database displayed as 'The Russell Vault 2', but its governed ledger stops 39 migrations behind the reviewed repository set, at the Cycle Count era that the stale CURRENT_STATE.md described. Because it is a plausible-looking Russell Vault database, a destructive action aimed here on the strength of the old documentation would have hit the wrong database. Do not treat it as production."
+        "note": "Governed public.schema_migrations_log reports 40, tail 20260729000300_cycle_count_observations — re-confirmed by read-only catalog on 2026-08-26, which also found only 69 public tables, 2 of 4 governed marker tables, and ZERO receiving RPCs. It is additionally the target of this repository's 'Supabase Preview' GitHub check; that integration's preview branching is DISABLED, so the check is a permanent no-op that neither deploys nor mutates. It remains an ACTIVE_HEALTHY database displayed as 'The Russell Vault 2', which is exactly what makes it dangerous. Do not treat it as production."
+      },
+      {
+        "ref": "ssqrgfbhqfufnjrsjpgj",
+        "role": "historical_reference",
+        "evidenceClass": "live_schema",
+        "observedAtUtc": "2026-08-26T11:52:00Z",
+        "note": "Displayed as 'TheRussellOps', INACTIVE, organization kdhymqcheiwhnjxdffrl. Belongs to the separate harmonicforce/the-russellops product, which CLAUDE.md forbids modifying. Registered here only so it is classified rather than unknown if it is ever encountered in a project list."
       }
     ]
   },
@@ -203,9 +219,9 @@
     "note": "Legacy SQLite surfaces (/inventory, /purchases, /cost-links, /listings, /sales, /checks) remain mounted ungated during transition and must never be conflated with governed truth."
   },
   "liveParity": {
-    "$comment": "Parity is a claim about a NAMED database. It cannot be stated for production while production identity is unverified.",
+    "$comment": "Parity is a claim about a NAMED database. Production is named: ncyqqitqtsyjrijieykd. Parity against it has simply not been measured yet.",
     "checkedForCanonicalProduction": false,
-    "reason": "deploymentIdentity.verificationPerformed is false, so there is no verified production target to claim parity against.",
-    "evidenceClass": "not_inspectable"
+    "reason": "Read-only catalog inspection on 2026-08-26 confirmed the canonical production project is at governed ledger 79 with migration 80 not applied — the pre-repair state. A full parity run has not been performed, so no parity claim is made either way.",
+    "evidenceClass": "live_schema"
   }
 }
